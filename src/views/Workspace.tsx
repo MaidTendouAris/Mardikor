@@ -74,6 +74,7 @@ export const Workspace = forwardRef<
   {
     file: string;
     initialView?: Tab;
+    initialFragment?: string;
     preferences: Preferences;
     ask: Ask;
     notify: Notify;
@@ -85,6 +86,7 @@ export const Workspace = forwardRef<
   {
     file,
     initialView = "source",
+    initialFragment,
     preferences,
     ask,
     notify,
@@ -1325,6 +1327,7 @@ export const Workspace = forwardRef<
                 buffer={buffers[group.path] ?? null}
                 project={project}
                 file={file}
+                initialFragment={index === 0 ? initialFragment : undefined}
                 settings={settings}
                 projectFont={projectFont}
                 modelPool={modelPool}

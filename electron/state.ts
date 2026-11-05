@@ -13,12 +13,14 @@ const defaults: Preferences = {
   externalOpenView: "preview",
   autoCheckUpdates: true,
 };
+type WindowSize = { width: number; height: number; maximized: boolean };
 export class AppState {
   private file: string;
   private value: {
     recent: RecentProject[];
     preferences: Preferences;
     updateLastChecked?: number;
+    windowSize?: WindowSize;
   };
   private recoveryTargets = new Map<string, string>();
   private recoveryClaims = new Map<string, string>();
@@ -36,6 +38,19 @@ export class AppState {
         )
         .slice(0, 20);
       this.value.preferences = { ...defaults, ...saved.preferences };
+      const size = saved.windowSize;
+      if (
+        size &&
+        Number.isSafeInteger(size.width) &&
+        size.width > 0 &&
+        Number.isSafeInteger(size.height) &&
+        size.height > 0
+      )
+        this.value.windowSize = {
+          width: size.width,
+          height: size.height,
+          maximized: size.maximized === true,
+        };
       if (typeof this.value.preferences.autoCheckUpdates !== "boolean")
         this.value.preferences.autoCheckUpdates = true;
       if (
@@ -53,6 +68,13 @@ export class AppState {
   }
   recent() {
     return this.value.recent;
+  }
+  windowSize(size?: WindowSize) {
+    if (size) {
+      this.value.windowSize = size;
+      this.save();
+    }
+    return this.value.windowSize;
   }
   updateCheck(at?: number) {
     if (at !== undefined) {

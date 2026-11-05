@@ -4,9 +4,12 @@ import { resolveReference } from "../../shared/references";
 import type { MdkSettings } from "./mdk";
 import Token from "markdown-it/lib/token.mjs";
 
-const md = createMarkdownParser(),
-  plain = createMarkdownParser(false);
-for (const parser of [md, plain]) {
+function createPreviewParser(containers: boolean, standalone = false) {
+  const parser = createMarkdownParser(containers);
+  if (standalone) {
+    const validate = parser.validateLink;
+    parser.validateLink = (href) => /^file:\/\//i.test(href) || validate(href);
+  }
   parser.renderer.rules.image = (tokens, index) => {
     const token = tokens[index],
       source = token.attrGet("src") ?? "",
@@ -31,15 +34,20 @@ for (const parser of [md, plain]) {
     const token = tokens[index],
       href = token.attrGet("href") ?? "";
     if (
+      standalone ||
       resolveReference(env.sourcePath ?? "markdown/document.md", href).kind !==
-      "unsafe"
+        "unsafe"
     )
       token.attrSet("data-mdk-link", href);
     token.attrs = token.attrs?.filter(([key]) => key !== "href") ?? [];
     token.attrSet("href", "#");
     return link(tokens, index, options, env, renderer);
   };
+  return parser;
 }
+const md = createPreviewParser(true),
+  plain = createPreviewParser(false),
+  standaloneParser = createPreviewParser(false, true);
 
 export function renderPreview(
   markdown: string,
@@ -48,14 +56,20 @@ export function renderPreview(
   mode = "00",
   prefix = "",
   sourcePath = "markdown/document.md",
+  standalone = false,
 ) {
-  const parser = settings?.preview.render_containers === false ? plain : md;
+  const parser = standalone
+    ? standaloneParser
+    : settings?.preview.render_containers === false
+      ? plain
+      : md;
   const env = { sourcePath };
   const tokens = parser.parse(markdown, env),
     headings: { level: number; title: string; id: string }[] = [];
   const counters = [0, 0, 0, 0, 0, 0];
   let removedTitle = false;
   let headingNumber = 0;
+  const fragments = new Set<string>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.type !== "heading_open") continue;
@@ -63,6 +77,18 @@ export function renderPreview(
       inline = tokens[index + 1],
       id = `${prefix}mdk-heading-${++headingNumber}`;
     token.attrSet("id", id);
+    if (standalone) {
+      const base = parser.renderer
+        .renderInlineAsText(inline.children ?? [], parser.options, env)
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
+        .replace(/\s+/g, "-");
+      let fragment = base;
+      for (let n = 1; fragments.has(fragment); n++) fragment = `${base}-${n}`;
+      fragments.add(fragment);
+      token.attrSet("data-fragment", fragment);
+    }
     if (
       settings?.preview.show_title === false &&
       level === 1 &&

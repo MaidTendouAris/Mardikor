@@ -108,6 +108,14 @@ const api: DesktopApi = {
   window: (action) => ipcRenderer.invoke("app:window", action),
   setDirty: (dirty) => ipcRenderer.send("app:dirty", dirty),
   openExternal: (url) => ipcRenderer.invoke("app:open-url", url),
+  openMarkdownLink: (href) =>
+    ipcRenderer.invoke("app:open-markdown-link", href),
+  onWindowMaximized: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, maximized: boolean) =>
+      callback(maximized);
+    ipcRenderer.on("app:window-maximized", listener);
+    return () => ipcRenderer.removeListener("app:window-maximized", listener);
+  },
   recovery: (path, value) => ipcRenderer.invoke("app:recovery", path, value),
   onSaveBeforeClose: (callback) => {
     const listener = () => {
@@ -119,8 +127,11 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener("app:save-before-close", listener);
   },
   onOpenProject: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, file: string) =>
-      callback(file);
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      file: string,
+      fragment?: string,
+    ) => callback(file, fragment);
     ipcRenderer.on("app:open-project", listener);
     ipcRenderer.send("app:ready");
     return () => ipcRenderer.removeListener("app:open-project", listener);

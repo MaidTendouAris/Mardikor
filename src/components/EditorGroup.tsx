@@ -20,6 +20,7 @@ import { MediaPreview } from "./MediaPreview";
 import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
 import { desktop } from "../services/desktop";
 import { renderPreview, settingsToCss } from "../services/preview";
+import { followPreviewLink } from "../services/document-links";
 import { resolveReference } from "../../shared/references";
 import { isManuscript } from "../../shared/workspace";
 import {
@@ -51,6 +52,7 @@ interface Props {
   buffer: TextBuffer | null;
   project: MdkProject | null;
   file: string;
+  initialFragment?: string;
   settings: MdkSettings;
   projectFont: string;
   modelPool: SourceModelPool;
@@ -83,6 +85,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       buffer,
       project,
       file,
+      initialFragment,
       settings,
       projectFont,
       modelPool,
@@ -230,6 +233,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       project?.mode,
       group.id + "-",
       activePath,
+      standalone,
     );
     useEffect(() => {
       let live = true;
@@ -591,6 +595,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               settings={settings}
               style={style}
               onOpen={(path) => void execute(() => openFile(path))}
+              onError={(error) => notify(error, true)}
+              initialFragment={initialFragment}
               activeDocument={
                 isMarkdown && buffer
                   ? { path: buffer.path, markdown: previewMarkdown }
@@ -613,6 +619,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     tab === "write" && isMarkdown ? "write" : undefined
                   }
                   data-document-path={buffer.path}
+                  onClick={(event) => {
+                    if (standalone && (event.ctrlKey || event.metaKey))
+                      followPreviewLink(
+                        event,
+                        activePath,
+                        true,
+                        () => {},
+                        (error) => notify(error, true),
+                      );
+                  }}
                 >
                   <RichEditor
                     content={buffer.content}
@@ -639,6 +655,15 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     className="document-paper preview-body"
                     style={{ ...style, background: settings.colors.background }}
                     ref={previewRef}
+                    onClick={(event) =>
+                      followPreviewLink(
+                        event,
+                        activePath,
+                        standalone,
+                        (path) => void execute(() => openFile(path)),
+                        (error) => notify(error, true),
+                      )
+                    }
                     dangerouslySetInnerHTML={{ __html: previewHtml }}
                   />
                 </div>

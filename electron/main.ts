@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   protocol,
+  screen,
   shell,
 } from "electron";
 import path from "node:path";
@@ -31,6 +32,7 @@ interface DocumentWindow {
   dirty: boolean;
   activeProject: string;
   queuedFile?: string;
+  queuedFragment?: string;
   approvedFiles: Set<string>;
   revisions: Map<string, string>;
   droppedFiles: Map<string, { paths: string[]; expires: number }>;
@@ -41,6 +43,18 @@ const pendingFiles: string[] = [];
 let acceptingFiles = false;
 let state: AppState;
 let updates: UpdateService;
+let pendingWindowSize: Parameters<AppState["windowSize"]>[0];
+let windowSizeTimer: ReturnType<typeof setTimeout> | undefined;
+function persistWindowSize() {
+  clearTimeout(windowSizeTimer);
+  if (!pendingWindowSize) return;
+  try {
+    state.windowSize(pendingWindowSize);
+  } catch (error) {
+    console.error("无法保存窗口尺寸", error);
+  }
+  pendingWindowSize = undefined;
+}
 const updateSaves = new Map<
   string,
   { sender: number; finish: (saved: boolean) => void }
@@ -354,6 +368,20 @@ function registerIpc() {
       throw new Error("禁止的导航协议。");
     return shell.openExternal(url);
   });
+  ipcMain.handle("app:open-markdown-link", async (event, href) => {
+    const context = verifySender(event);
+    if (typeof href !== "string" || !isMarkdownFile(context.activeProject))
+      throw new Error("此窗口不能打开本地文件链接。");
+    const target = markdownFile.resolveMarkdownLink(
+      context.activeProject,
+      href,
+    );
+    if (isMarkdownFile(target.path)) createWindow(target.path, target.fragment);
+    else {
+      const error = await shell.openPath(target.path);
+      if (error) throw new Error(`无法用默认应用打开文件：${error}`);
+    }
+  });
   ipcMain.handle(
     "mdk:invoke",
     (event, command: keyof MdkCommands, args: unknown[]) => {
@@ -571,8 +599,13 @@ function registerIpc() {
   ipcMain.on("app:ready", (event) => {
     const context = verifySender(event);
     if (context.queuedFile) {
-      context.window.webContents.send("app:open-project", context.queuedFile);
+      context.window.webContents.send(
+        "app:open-project",
+        context.queuedFile,
+        context.queuedFragment,
+      );
       context.queuedFile = undefined;
+      context.queuedFragment = undefined;
     }
   });
 }
@@ -587,14 +620,27 @@ function openArguments(argv: string[], workingDirectory = process.cwd()) {
     if (!argument.startsWith("-") && isSupportedDocument(argument))
       openExternalProject(path.resolve(workingDirectory, argument));
 }
-function createWindow(file?: string) {
+function createWindow(file?: string, fragment?: string) {
+  const previous = pendingWindowSize ?? state.windowSize();
+  const focused = BrowserWindow.getFocusedWindow();
+  const { workAreaSize } = focused
+    ? screen.getDisplayMatching(focused.getBounds())
+    : screen.getPrimaryDisplay();
+  const minWidth = Math.min(1024, workAreaSize.width);
+  const minHeight = Math.min(700, workAreaSize.height);
   const window = new BrowserWindow({
     title: "Mardikor",
     icon: path.join(app.getAppPath(), "assets/icon.png"),
-    width: 1440,
-    height: 940,
-    minWidth: 1024,
-    minHeight: 700,
+    width: Math.min(
+      workAreaSize.width,
+      Math.max(minWidth, previous?.width ?? 1440),
+    ),
+    height: Math.min(
+      workAreaSize.height,
+      Math.max(minHeight, previous?.height ?? 940),
+    ),
+    minWidth,
+    minHeight,
     frame: false,
     show: false,
     backgroundColor: "#f4f6fa",
@@ -616,6 +662,7 @@ function createWindow(file?: string) {
     dirty: false,
     activeProject: "",
     queuedFile: file,
+    queuedFragment: fragment,
     approvedFiles: new Set(
       state.recent().map((recent) => path.resolve(recent.path)),
     ),
@@ -626,6 +673,13 @@ function createWindow(file?: string) {
   if (file) context.approvedFiles.add(file);
   const id = window.webContents.id;
   windows.set(id, context);
+  const rememberSize = () => {
+    if (window.isMinimized() || window.isFullScreen()) return;
+    const { width, height } = window.getNormalBounds();
+    pendingWindowSize = { width, height, maximized: window.isMaximized() };
+    clearTimeout(windowSizeTimer);
+    windowSizeTimer = setTimeout(persistWindowSize, 250);
+  };
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler(
@@ -666,13 +720,23 @@ function createWindow(file?: string) {
     }
   });
   window.on("closed", () => {
+    persistWindowSize();
     for (const pending of updateSaves.values())
       if (pending.sender === id) pending.finish(false);
     windows.delete(id);
     state.releaseRecovery(context.recoveryOwner);
   });
   window.once("ready-to-show", () => {
+    if (previous?.maximized) window.maximize();
     if (!process.env.MARDIKOR_HEADLESS) window?.show();
+    window.on("resize", rememberSize);
+    const maximizedChanged = () => {
+      rememberSize();
+      window.webContents.send("app:window-maximized", window.isMaximized());
+    };
+    window.on("maximize", maximizedChanged);
+    window.on("unmaximize", maximizedChanged);
+    window.webContents.send("app:window-maximized", window.isMaximized());
   });
   window.webContents.on("did-start-loading", () => {
     context.queuedFile ??= context.activeProject || undefined;

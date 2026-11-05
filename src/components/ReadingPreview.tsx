@@ -3,6 +3,10 @@ import type { MdkProject, MdkSettings, ReadingUnit } from "../../shared/mdk";
 import { desktop } from "../services/desktop";
 import { renderPreview } from "../services/preview";
 import { resolveReference } from "../../shared/references";
+import {
+  followPreviewLink,
+  scrollToFragment,
+} from "../services/document-links";
 
 export function ReadingPreview({
   file,
@@ -13,6 +17,8 @@ export function ReadingPreview({
   activeDocument,
   heading,
   onLayout,
+  onError,
+  initialFragment,
 }: {
   file: string;
   project: MdkProject;
@@ -22,6 +28,8 @@ export function ReadingPreview({
   activeDocument?: { path: string; markdown: string };
   heading?: { path: string; index: number; key: number };
   onLayout?: () => void;
+  onError: (error: string) => void;
+  initialFragment?: string;
 }) {
   const [units, setUnits] = useState<ReadingUnit[]>([]),
     [error, setError] = useState("");
@@ -49,6 +57,21 @@ export function ReadingPreview({
     };
   }, [file, project.revision, project.mode]);
   const fluid = project.mode === "00";
+  const standalone = project.format === "markdown";
+  const initialJump = useRef(false);
+  useEffect(() => {
+    if (initialJump.current || !initialFragment || !activeDocument?.path)
+      return;
+    // Apply the link after the editor's first scroll restoration.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (!host.current) return;
+        initialJump.current = true;
+        scrollToFragment(host.current, initialFragment);
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [initialFragment, activeDocument?.path]);
   useEffect(() => {
     onLayout?.();
   }, [units, activeDocument?.path, activeDocument?.markdown, project.mode]);
@@ -132,41 +155,11 @@ export function ReadingPreview({
         } as CSSProperties
       }
       onClick={(event) => {
-        const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>(
-          "a",
-        );
-        if (!anchor) return;
-        const url = anchor.dataset.mdkLink;
-        if (!url) {
-          const href = anchor.getAttribute("href") ?? "";
-          if (href.startsWith("#")) {
-            event.preventDefault();
-            host.current
-              ?.querySelectorAll<HTMLElement>("[id]")
-              .forEach((node) => {
-                if (node.id === href.slice(1)) node.scrollIntoView();
-              });
-          }
-          return;
-        }
-        event.preventDefault();
-        const source =
-          anchor.closest<HTMLElement>("[data-source-path]")?.dataset.sourcePath;
-        if (!source) return;
-        const target = resolveReference(source, url);
-        if (target.kind === "external") void desktop().openExternal(target.url);
-        else if (target.kind === "local") {
-          if (target.path === source && target.suffix.startsWith("#")) {
-            const section = anchor.closest("article");
-            section?.querySelectorAll("[id]").forEach((node) => {
-              if (
-                node.id === target.suffix.slice(1) ||
-                node.id.endsWith("-" + target.suffix.slice(1))
-              )
-                node.scrollIntoView();
-            });
-          } else onOpen(target.path);
-        }
+        const source = (event.target as Element).closest<HTMLElement>(
+          "[data-source-path]",
+        )?.dataset.sourcePath;
+        if (source)
+          followPreviewLink(event, source, standalone, onOpen, onError);
       }}
     >
       {error && <p role="alert">{error}</p>}
@@ -204,6 +197,7 @@ export function ReadingPreview({
                       namespace +
                         (fluid ? "" : "entry-" + units.indexOf(unit) + "-"),
                       unit.path,
+                      standalone,
                     ),
                   }}
                 />

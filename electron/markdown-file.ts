@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { defaultSettings } from "../shared/defaults";
-import { validatePath } from "../shared/schema";
+import { containsControl, validatePath } from "../shared/schema";
 import { createMarkdownParser } from "../shared/markdown-parser";
 import { resolveReference } from "../shared/references";
 import { isMarkdownFile } from "../shared/workspace";
@@ -23,6 +24,54 @@ const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const parser = createMarkdownParser(false);
 const digest = (data: Buffer) =>
   createHash("sha256").update(data).digest("hex");
+
+const executable =
+  /\.(?:exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msp|mst|scr|cpl|lnk|url|website|reg|appref-ms|application|appx|msix|jar|command|sh|desktop|appimage|scf|pif|sct|inf|chm|msc|dll)$/i;
+
+export function resolveMarkdownLink(file: string, href: string) {
+  if (!href || href.length > 8192 || containsControl(href))
+    throw new Error("文件链接无效。");
+  const raw = href.split(/[?#]/, 1)[0];
+  const fragment = href.includes("#") ? href.slice(href.indexOf("#") + 1) : "";
+  let destination: string;
+  try {
+    if (/^file:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      if (url.hostname) throw new Error();
+      destination = fileURLToPath(url);
+    } else destination = decodeURIComponent(raw);
+  } catch {
+    throw new Error("文件链接的路径或百分号编码无效。");
+  }
+  const localPath = (value: string) => {
+    const withoutDrive =
+      process.platform === "win32" ? value.replace(/^[a-z]:[\\/]/i, "") : value;
+    return (
+      !containsControl(value) &&
+      !/^[\\/]{2}/.test(value) &&
+      !withoutDrive.includes(":")
+    );
+  };
+  if (!destination || !localPath(destination))
+    throw new Error("仅支持本地文件链接。");
+  const target = path.resolve(path.dirname(file), destination);
+  if (!localPath(target)) throw new Error("仅支持本地文件链接。");
+  let actual: string;
+  try {
+    actual = fs.realpathSync(target);
+    if (!fs.statSync(actual).isFile()) throw new Error();
+  } catch {
+    throw new Error(`找不到链接文件：${destination}`);
+  }
+  if (
+    !localPath(actual) ||
+    [target, actual].some((value) =>
+      executable.test(value.trimEnd().replace(/\.+$/, "")),
+    )
+  )
+    throw new Error("此链接的文件类型不支持直接打开。");
+  return { path: actual, fragment };
+}
 function read(file: string) {
   if (!isMarkdownFile(file))
     throw new Error("单 Markdown 工程须使用 .md 扩展名。");

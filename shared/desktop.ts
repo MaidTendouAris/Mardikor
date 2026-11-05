@@ -138,10 +138,14 @@ export interface DesktopApi {
   window(
     action: "minimize" | "maximize" | "close" | "isMaximized",
   ): Promise<boolean>;
-  onOpenProject(callback: (path: string) => void): () => void;
+  onOpenProject(
+    callback: (path: string, fragment?: string) => void,
+  ): () => void;
   setDirty(dirty: boolean): void;
+  onWindowMaximized(callback: (maximized: boolean) => void): () => void;
   onSaveBeforeClose(callback: () => Promise<boolean>): () => void;
   openExternal(url: string): Promise<void>;
+  openMarkdownLink(href: string): Promise<void>;
   recovery(
     path: string,
     value?: SaveSnapshot | null,

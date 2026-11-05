@@ -53,6 +53,7 @@ export default function App() {
   const [currentPath, setCurrentPath] = useState("");
   const [generation, setGeneration] = useState(0);
   const [initialView, setInitialView] = useState<EditorTab>("source");
+  const [initialFragment, setInitialFragment] = useState<string>();
   const [mode, setMode] = useState("01");
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [preferences, setPreferences] = useState<Preferences>({
@@ -74,6 +75,16 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    const api = window.mardikor;
+    if (!api) return;
+    const unsubscribe = api.onWindowMaximized(setMaximized);
+    void api
+      .window("isMaximized")
+      .then(setMaximized)
+      .catch(() => {});
+    return unsubscribe;
+  }, []);
   const [compact, setCompact] = useState(false);
   const workspace = useRef<WorkspaceHandle>(null);
   const ask: Ask = useCallback(
@@ -137,11 +148,16 @@ export default function App() {
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [isDirty]);
-  async function activate(file: string, view: EditorTab = "source") {
+  async function activate(
+    file: string,
+    view: EditorTab = "source",
+    fragment?: string,
+  ) {
     if (workspace.current && !(await workspace.current.flush())) return;
     await desktop().invoke("open", file);
     setCurrentPath(file);
     setInitialView(view);
+    setInitialFragment(fragment);
     setGeneration((n) => n + 1);
     setPage("editor");
     setIsDirty(false);
@@ -175,12 +191,15 @@ export default function App() {
   );
   useEffect(
     () =>
-      window.mardikor?.onOpenProject((file) => {
+      window.mardikor?.onOpenProject((file, fragment) => {
         void run(async () => {
           await preferencesReady.current;
           await activateRef.current(
             file,
-            preferencesRef.current.externalOpenView ?? "preview",
+            fragment
+              ? "preview"
+              : (preferencesRef.current.externalOpenView ?? "preview"),
+            fragment,
           );
         });
       }),
@@ -442,6 +461,7 @@ export default function App() {
               ref={workspace}
               file={currentPath}
               initialView={initialView}
+              initialFragment={initialFragment}
               preferences={preferences}
               ask={ask}
               notify={notify}
