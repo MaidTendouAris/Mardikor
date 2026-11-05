@@ -1,0 +1,180 @@
+{
+  "name": "mardikor",
+  "version": "0.1.0",
+  "description": "A portable creative workspace for MDK projects.",
+  "author": "Mardikor",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "icons": "node scripts/render-icons.cjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "npm run typecheck && vite build && node scripts/build-electron.mjs",
+    "start": "electron .",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "oxlint src electron shared tests scripts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:roundtrip": "tsx --test tests/markdown-tools.test.ts",
+    "test:desktop": "node scripts/smoke-desktop.mjs",
+    "test:revision": "tsx scripts/smoke-revision.ts",
+    "test:editor": "tsx scripts/smoke-editor.ts",
+    "test:groups": "tsx scripts/smoke-groups.ts",
+    "test:native-drag": "tsx scripts/smoke-native-drag.ts",
+    "test:markdown-tools": "tsx scripts/smoke-markdown-tools.ts",
+    "test:markdown-file": "tsx scripts/smoke-markdown-file.ts",
+    "test:open-preview": "tsx scripts/smoke-open-preview.ts",
+    "test:controls": "tsx scripts/smoke-controls.ts",
+    "test:publication": "tsx scripts/smoke-publication.ts",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --publish never",
+    "format": "prettier --write src electron shared scripts tests *.json *.ts README.md \"docs/**/*.md\"",
+    "test:windows": "tsx scripts/smoke-windows.ts",
+    "test:updates": "tsx scripts/smoke-updates.ts",
+    "pretest": "node -e \"require('node:fs').mkdirSync('.test-artifacts', {recursive:true})\"",
+    "prebuild": "node scripts/third-party-notices.mjs"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "1.1.1",
+    "@radix-ui/react-popover": "1.3.1",
+    "@radix-ui/react-select": "2.4.1",
+    "@tiptap/core": "3.32.2",
+    "@tiptap/extension-code-block": "3.32.2",
+    "@tiptap/extension-image": "3.32.2",
+    "@tiptap/extension-link": "3.32.2",
+    "@tiptap/extension-table": "3.32.2",
+    "@tiptap/extension-task-item": "3.32.2",
+    "@tiptap/extension-task-list": "3.32.2",
+    "@tiptap/markdown": "3.32.2",
+    "@tiptap/pm": "3.32.2",
+    "@tiptap/react": "3.32.2",
+    "@tiptap/starter-kit": "3.32.2",
+    "@xmldom/xmldom": "0.9.12",
+    "adm-zip": "^0.6.1",
+    "electron-updater": "6.8.12",
+    "lucide-react": "^0.468.0",
+    "markdown-it": "^14.2.0",
+    "markdown-it-container": "^4.0.0",
+    "markdown-it-task-lists": "2.1.1",
+    "monaco-editor": "0.57.0",
+    "pdf-lib": "1.17.1",
+    "react": "^19.3.1",
+    "react-arborist": "4.0.1",
+    "react-dnd": "16.0.1",
+    "react-dnd-html5-backend": "16.0.1",
+    "react-dom": "^19.3.1",
+    "smol-toml": "^1.4.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/adm-zip": "^0.5.7",
+    "@types/markdown-it": "^14.1.2",
+    "@types/markdown-it-container": "^4.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "happy-dom": "21.0.4",
+    "oxlint": "1.90.0",
+    "prettier": "^3.3.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "3.4.17"
+    }
+  },
+  "build": {
+    "appId": "com.mardikor.app",
+    "productName": "Mardikor",
+    "asar": true,
+    "directories": {
+      "output": "build-output/electron"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "assets/icon.png",
+      "assets/export/**/*",
+      "package.json",
+      "LICENSE",
+      "docs/THIRD_PARTY_NOTICES.txt"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "mdk",
+        "name": "Mardikor Project",
+        "icon": "assets/icons/mdk-default.ico",
+        "role": "Editor"
+      }
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "assets/icons",
+          "to": "icons",
+          "filter": [
+            "*.ico"
+          ]
+        }
+      ],
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build-scripts/installer.nsh",
+      "artifactName": "Mardikor-Setup-${version}-${arch}.${ext}",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "license": "LICENSE"
+    },
+    "mac": {
+      "icon": "assets/icon.icns",
+      "target": [
+        "zip"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office",
+      "icon": "assets/icon.png"
+    },
+    "afterPack": "build-scripts/verify-package.cjs",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MaidTendouAris",
+        "repo": "Mardikor",
+        "releaseType": "release"
+      }
+    ],
+    "portable": {
+      "artifactName": "Mardikor-Portable-${version}-${arch}.${ext}"
+    }
+  },
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MaidTendouAris/Mardikor.git"
+  },
+  "homepage": "https://github.com/MaidTendouAris/Mardikor"
+}

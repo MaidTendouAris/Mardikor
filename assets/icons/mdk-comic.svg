@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64" fill="none">
+  <title>MDK — comic</title>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" fill="#f5f3ff"/>
+  <path d="M38 4v12a4 4 0 0 0 4 4h12" fill="#ddd6fe"/>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+  <rect x="18" y="28" width="12" height="10" rx="1.5" fill="#7c3aed"/>
+  <rect x="34" y="28" width="12" height="10" rx="1.5" fill="#7c3aed"/>
+  <rect x="18" y="42" width="28" height="10" rx="1.5" fill="#7c3aed"/>
+</svg>

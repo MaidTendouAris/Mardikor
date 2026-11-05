@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64" fill="none">
+  <title>Markdown</title>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" fill="#f8fafc"/>
+  <path d="M38 4v12a4 4 0 0 0 4 4h12" fill="#cbd5e1"/>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" stroke="#475569" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M16 48V30h5l5 7 5-7h5v18h-5V38l-5 7-5-7v10Zm25-18h5v11h4l-6.5 8-6.5-8h4Z" fill="#475569"/>
+</svg>

@@ -1,0 +1,9 @@
+{
+  "categories": { "correctness": "error" },
+  "ignorePatterns": [
+    "dist/**",
+    "dist-electron/**",
+    "node_modules/**",
+    ".migration-backup/**"
+  ]
+}

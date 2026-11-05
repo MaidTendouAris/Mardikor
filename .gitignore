@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build-output/
+.npm-cache/
+.dev-server.log
+
+dist-electron/
+.migration-backup/
+.test-artifacts/
+
+*.log
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx

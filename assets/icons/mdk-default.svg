@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64" fill="none">
+  <title>MDK — default</title>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" fill="#eff6ff"/>
+  <path d="M38 4v12a4 4 0 0 0 4 4h12" fill="#bfdbfe"/>
+  <path d="M14 4h24l16 16v36a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" stroke="#2563eb" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M18 49V29h6l8 11 8-11h6v20h-6V39l-8 11-8-11v10z" fill="#2563eb"/>
+</svg>

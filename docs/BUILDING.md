@@ -1,0 +1,23 @@
+# Portable Electron builds
+
+Run `npm ci` first. Build on the target OS using Node.js 22.12 or newer.
+
+| Platform | Command                                                                               | Output under `build-output/electron/` |
+| -------- | ------------------------------------------------------------------------------------- | ------------------------------------- |
+| Windows  | `powershell -ExecutionPolicy Bypass -File .\build-scripts\windows\build-portable.ps1` | Portable `.exe`                       |
+| macOS    | `bash ./build-scripts/macos/build-portable.sh`                                        | `.app` in a `.zip`                    |
+| Linux    | `bash ./build-scripts/linux/build-portable.sh`                                        | `.AppImage`                           |
+
+`npm run package` creates an unpacked application directory. On Windows, `npm run dist` builds both the NSIS installer (`Mardikor-Setup-<version>-<arch>.exe`) and the portable executable. The platform scripts above continue to produce portable builds.
+
+The assisted Windows installer uses `build-scripts/installer.nsh` to show an optional `.md` association checkbox (off on first install); `.mdk` registration runs automatically. Updates retain the Markdown preference. Uninstall or deselection removes only Mardikor's Markdown registration and restores its previous default when still owned by Mardikor. No protected Windows UserChoice keys are modified. The portable build does not register associations. Custom hooks follow [electron-builder v26 NSIS](https://www.electron.build/v26/docs/nsis/).
+
+The packages contain Electron and its renderer runtime. They do not require Rust, Cargo, WebView2 or WebKitGTK. macOS distribution signing and Windows code signing must be configured in the release environment.
+
+## Icons and package verification
+
+SVG sources and generated PNG/ICO/ICNS files are maintained under `assets/`. Run `npm run icons` after changing an SVG; ordinary packaging uses the checked-in generated files. See [icon assets](ICONS.md).
+
+Windows executables and installers use `assets/icon.ico`. The application window uses `assets/icon.png`; the renderer includes the application and mode-specific SVG icons. The `.mdk` association uses `mdk-default.ico`, and the optional `.md` association uses `markdown.ico`. All generated ICO files, including book/comic, are copied to `resources/icons/`. The single `.mdk` extension has a static system icon; mode-specific icons are shown inside the application.
+
+`build-scripts/verify-package.cjs` runs automatically after packaging. It compares the actual ASAR renderer, main/preload, publication assets and all Windows file icons against the current build inputs; missing or stale assets fail the build. `npm run package` and `npm run dist` both use this check.

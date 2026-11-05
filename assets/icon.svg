@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64" fill="none">
+  <title>Mardikor</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#2563eb"/>
+  <path d="M16 46V18h7l9 15 9-15h7v28h-7V31l-9 15-9-15v15z" fill="#fff"/>
+</svg>

@@ -1,0 +1,82 @@
+name: Build and publish Windows release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag, for example v0.1.0"
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ELECTRON_BUILDER_COMPRESSION_LEVEL: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Verify version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Version tag does not match package.json' }
+          if (-not (Test-Path "docs/releases/$env:RELEASE_TAG.md")) { throw 'Release notes are missing' }
+          $draft = gh release view $env:RELEASE_TAG --json isDraft -q '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($draft -ne 'true') { throw 'A published release already exists; publish a new version instead of replacing it' }
+            'RELEASE_DRAFT_EXISTS=true' >> $env:GITHUB_ENV
+          }
+          exit 0
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:updates
+      - run: npx electron-builder --win nsis portable --publish never
+      - name: Validate packaged application
+        shell: pwsh
+        run: |
+          $env:MARDIKOR_TEST_EXECUTABLE = Join-Path $pwd 'build-output/electron/win-unpacked/Mardikor.exe'
+          npm run test:updates
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:windows
+          exit $LASTEXITCODE
+      - run: node scripts/release-checksums.mjs
+      - name: Publish verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $files = @(
+            "build-output/electron/Mardikor-Setup-$version-x64.exe",
+            "build-output/electron/Mardikor-Setup-$version-x64.exe.blockmap",
+            "build-output/electron/Mardikor-Portable-$version-x64.exe",
+            'build-output/electron/latest.yml',
+            'build-output/electron/CHECKSUMS.sha256'
+          )
+          if ($env:RELEASE_DRAFT_EXISTS -ne 'true') {
+            gh release create $env:RELEASE_TAG --verify-tag --draft --title "Mardikor $version" --notes-file "docs/releases/$env:RELEASE_TAG.md"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $env:RELEASE_TAG @files --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          exit $LASTEXITCODE

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "@pdf-lib/fontkit",
+    "version": "1.1.1",
+    "file": "_pdf-lib_fontkit-1.1.1.LICENSE.txt",
+    "url": "https://github.com/foliojs/fontkit/blob/master/LICENSE",
+    "blob": "34d142021809672bcbbd880ec9c8957d9c474dd2"
+  },
+  {
+    "name": "@react-dnd/invariant",
+    "version": "4.0.2",
+    "file": "_react-dnd_invariant-4.0.2.LICENSE.txt",
+    "url": "https://github.com/react-dnd/react-dnd/blob/main/LICENSE",
+    "blob": "af2353dca4ed9d421d1a124482e63977b28e895f"
+  },
+  {
+    "name": "@react-dnd/shallowequal",
+    "version": "4.0.2",
+    "file": "_react-dnd_shallowequal-4.0.2.LICENSE.txt",
+    "url": "https://github.com/react-dnd/react-dnd/blob/main/LICENSE",
+    "blob": "af2353dca4ed9d421d1a124482e63977b28e895f"
+  },
+  {
+    "name": "lazy-val",
+    "version": "1.0.5",
+    "file": "lazy-val-1.0.5.LICENSE.txt",
+    "url": "https://github.com/electron-userland/electron-builder/blob/master/LICENSE",
+    "blob": "7d8fa01c28f3b5888f349b062cf3fff47baf1c0a"
+  },
+  {
+    "name": "react-arborist",
+    "version": "4.0.1",
+    "file": "react-arborist-4.0.1.LICENSE.txt",
+    "url": "https://github.com/jameskerr/react-arborist/blob/main/LICENSE",
+    "blob": "03198917ea274924955e5b1a7c842f6350571454"
+  },
+  {
+    "name": "react-remove-scroll-bar",
+    "version": "2.3.8",
+    "file": "react-remove-scroll-bar-2.3.8.LICENSE.txt",
+    "url": "https://github.com/theKashey/react-remove-scroll-bar/blob/master/LICENSE",
+    "blob": "7c08c3990396ecefd90f99ff5d9a34f26f5b5616"
+  }
+]
