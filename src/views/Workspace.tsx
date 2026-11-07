@@ -191,6 +191,11 @@ export const Workspace = forwardRef<
   const isMarkdown = !!buffer && isManuscript(project, buffer.path);
   const markdown = isMarkdown ? buffer.content : "";
   const headings = useMemo(() => markdownHeadings(markdown), [markdown]);
+  const characterCount = useMemo(() => {
+    let count = 0;
+    for (const _character of markdown) count++;
+    return count;
+  }, [markdown]);
   useEffect(() => {
     const source = settings.appearance.font_family;
     if (!source.startsWith("resources/font/")) {
@@ -375,6 +380,24 @@ export const Workspace = forwardRef<
         x: -1,
         y: -1,
       });
+  }
+  async function pasteImage(groupId: string, image: File) {
+    const group = groupsRef.current.find((item) => item.id === groupId);
+    if (!group || project?.readonly || locked.current) return;
+    if (image.size > 16 * 1024 * 1024)
+      throw new Error("剪贴板图片超过 16 MiB。");
+    const pasted = await desktop().pasteDocumentImage(
+      new Uint8Array(await image.arrayBuffer()),
+      image.type,
+    );
+    await insertDrop({
+      ...pasted,
+      group: groupId,
+      document: group.path,
+      target: group.tab === "write" ? "write" : "source",
+      x: -1,
+      y: -1,
+    });
   }
   const dropHandler = useRef(insertDrop);
   dropHandler.current = insertDrop;
@@ -671,12 +694,11 @@ export const Workspace = forwardRef<
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
   }, [notify]);
-  async function openFile(
-    path: string,
-    view: Tab = "source",
-    groupId = activeId,
-  ) {
+  async function openFile(path: string, groupId = activeId) {
     if (!project) return;
+    const previousTab = groupsRef.current.find(
+      (group) => group.id === groupId,
+    )?.tab;
     if (path === "contents.toml" && directoryDirty) {
       if (
         !(await ask({
@@ -696,6 +718,11 @@ export const Workspace = forwardRef<
         contents: { ...loaded.contents, entries: project.contents.entries },
       };
     setProject(loaded);
+    const view =
+      isManuscript(loaded, path) &&
+      (previousTab === "write" || previousTab === "preview")
+        ? previousTab
+        : "source";
     await loadFile(path, loaded, view, groupId);
   }
   async function changeTab(next: Tab, groupId = activeId) {
@@ -824,7 +851,7 @@ export const Workspace = forwardRef<
     if (!project) return;
     if (action === "open-side") {
       const target = splitEditor();
-      await openFile(path, "source", target);
+      await openFile(path, target);
       return;
     }
     if (standalone)
@@ -1345,10 +1372,11 @@ export const Workspace = forwardRef<
                 notify={notify}
                 execute={execute}
                 flush={() => flushRef.current()}
-                openFile={(path) => openFile(path, "source", group.id)}
+                openFile={(path) => openFile(path, group.id)}
                 changeTab={(tab) => changeTab(tab, group.id)}
                 updateContent={(content) => updateContent(group.path, content)}
                 importResources={() => insertFromPicker(group.id)}
+                pasteImage={(image) => pasteImage(group.id, image)}
                 revert={revert}
                 splitEntry={splitEntry}
                 setSettings={setSettings}
@@ -1380,7 +1408,7 @@ export const Workspace = forwardRef<
           <span>
             {tab === "source" ? `行 ${cursor.line}，列 ${cursor.column}` : ""}
             {settings.preview.show_word_count && isMarkdown
-              ? ` · ${markdown.replace(/\s/g, "").length.toLocaleString()} 字`
+              ? ` · ${characterCount.toLocaleString()} 字符`
               : ""}
           </span>
           <div className="zoom-control">

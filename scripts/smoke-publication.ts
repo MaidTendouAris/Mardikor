@@ -7,7 +7,15 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { PDFDocument } from "pdf-lib";
+import {
+  decodePDFRawStream,
+  PDFDict,
+  PDFDocument,
+  PDFName,
+  PDFHexString,
+  PDFRawStream,
+  PDFString,
+} from "pdf-lib";
 import * as mdk from "../electron/mdk";
 import { AppState } from "../electron/state";
 import { validateGeneratedEpub } from "../electron/epub";
@@ -34,7 +42,7 @@ mdk.createTextFile(
 mdk.saveMdkTextFile(
   file,
   "markdown/001.md",
-  "# 第一章\n\n可复现 PDF 与 EPUB 出版验证。\n\n正文包含 **加粗**、*斜体*、~~删除线~~ 和 `代码`。\n\n[转到第二章](002.md#第二章)\n\n## 内容\n\n> 引用内容\n\n- [x] 已完成\n- [ ] 待完成\n\n| 项目 | 值 |\n| --- | ---: |\n| 标准 | EPUB 3 |\n\n```ts\nconst answer = 42;\n```\n\n![示例图片](../resources/image/icon.png)",
+  "# 第一章\n\n可复现 PDF 与 EPUB 出版验证。\n\n正文包含 **加粗**、*斜体*、~~删除线~~ 和 `代码`。\n\n[转到第二章](002.md#第二章)\n\n## 内容\n\n> 引用内容\n\n- [x] 已完成\n- [ ] 待完成\n\n| 项目 | 值 |\n| --- | ---: |\n| 标准 | EPUB 3 |\n\n```ts\nconst answer = 42;\n```\n\n![示例图片](../resources/image/icon.png)\n\n脚注示例[^1]。\n\n[^1]: 第一章的脚注。",
 );
 mdk.saveMdkTextFile(
   file,
@@ -193,6 +201,18 @@ try {
   expect(pdf.getTitle()).toBe("出版导出验证");
   expect(pdf.getAuthor()).toBe("Mardikor");
   expect(pdf.getPages()[0].getWidth()).toBeCloseTo((148 / 25.4) * 72, 0);
+  const titles = pdf.context.enumerateIndirectObjects().flatMap(([, value]) => {
+    if (!(value instanceof PDFDict) || !value.has(PDFName.of("Dest")))
+      return [];
+    const title = value.lookupMaybe(
+      PDFName.of("Title"),
+      PDFString,
+      PDFHexString,
+    );
+    return title ? [title.decodeText()] : [];
+  });
+  expect(titles).toContain("1 第一章");
+  expect(titles).not.toContain("1 第一章1 第一章");
   const bookEpub = path.join(run, "book.epub");
   await output(app, page, file, "epub", bookEpub);
   validateGeneratedEpub(await fs.readFile(bookEpub));
@@ -330,7 +350,10 @@ try {
   ).rejects.toThrow(/输出路径在确认后发生变化/);
   expect(await fs.readFile(protectedFile, "utf8")).toBe("external-change");
   const standalone = path.join(run, "standalone.md");
-  await fs.writeFile(standalone, "# 单 Markdown\n\n普通文件的 PDF 导出。\n");
+  await fs.writeFile(
+    standalone,
+    "# 单 Markdown\n\n普通文件的 PDF 导出。😀🚀👍\n\n:::note\n容器正文。\n:::\n",
+  );
   await app.evaluate(({ dialog }, file) => {
     dialog.showOpenDialog = async () => ({
       canceled: false,
@@ -351,7 +374,23 @@ try {
       info.revision,
     );
   }, standalone);
-  await output(app, page, standalone, "pdf", path.join(run, "standalone.pdf"));
+  const standalonePdf = path.join(run, "standalone.pdf");
+  await output(app, page, standalone, "pdf", standalonePdf);
+  const single = await PDFDocument.load(await fs.readFile(standalonePdf));
+  expect(single.getPages()[0].getWidth()).toBeCloseTo((210 / 25.4) * 72, 0);
+  // Chromium can emit the fallback font as Type 3 without a BaseFont name.
+  const unicodeMaps = single.context
+    .enumerateIndirectObjects()
+    .flatMap(([, value]) => {
+      if (!(value instanceof PDFDict)) return [];
+      const map = value.lookupMaybe(PDFName.of("ToUnicode"), PDFRawStream);
+      return map
+        ? [Buffer.from(decodePDFRawStream(map).decode()).toString()]
+        : [];
+    })
+    .join("\n");
+  for (const code of ["D83DDE00", "D83DDE80", "D83DDC4D"])
+    expect(unicodeMaps).toContain("<" + code + ">");
   expect(await fs.readFile(standalone)).toEqual(original);
   const forbidden = await page.evaluate(
     async (file) => window.mardikor!.invoke("planPublication", file, "epub"),

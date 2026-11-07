@@ -121,6 +121,25 @@ try {
   await expect(page.locator(".document-title")).toContainText(
     "markdown/001.md",
   );
+  const tree = page.getByRole("tree", { name: "文稿目录树", exact: true });
+  await page.getByRole("tab", { name: "可视化", exact: true }).click();
+  await tree.locator('[data-path="markdown/second.md"]').click();
+  await expect(page.locator(".document-title")).toContainText(
+    "markdown/second.md",
+  );
+  await expect(
+    page.getByRole("tab", { name: "可视化", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".document-body h1")).toHaveText("右侧文稿");
+  await page.getByRole("tab", { name: "预览", exact: true }).click();
+  await tree.locator('[data-path="markdown/001.md"]').click();
+  await expect(page.locator(".document-title")).toContainText(
+    "markdown/001.md",
+  );
+  await expect(
+    page.getByRole("tab", { name: "预览", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".reading-preview h1")).toHaveText("左侧文稿");
   await page.getByRole("tab", { name: "源码", exact: true }).click();
   const separator = page.getByRole("separator", {
     name: "调整文稿目录与标题大纲高度",
@@ -151,11 +170,20 @@ try {
       (await left.boundingBox())!.width - (await right.boundingBox())!.width,
     ),
   ).toBeLessThan(2);
+  await right.getByRole("tab", { name: "可视化", exact: true }).click();
   await selectOption(
     page,
     page.getByLabel("右栏文件", { exact: true }),
     "markdown/second.md",
   );
+  await expect(
+    right.getByRole("tab", { name: "可视化", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(right.locator(".document-body h1")).toHaveText("右侧文稿");
+  await expect(
+    left.getByRole("tab", { name: "源码", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await right.getByRole("tab", { name: "源码", exact: true }).click();
   await expect(page.getByLabel("左栏文件", { exact: true })).toHaveAttribute(
     "data-value",
     "markdown/001.md",
@@ -239,6 +267,7 @@ try {
     page.getByLabel("右栏文件", { exact: true }),
     "markdown/second.md",
   );
+  await right.getByRole("tab", { name: "源码", exact: true }).click();
   await right.getByRole("textbox", { name: "源码编辑器", exact: true }).focus();
   await page.keyboard.press("Control+End");
   await expect.poll(() => ratio(left)).toBeGreaterThan(0.95);

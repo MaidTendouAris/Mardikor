@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Check } from "lucide-react";
+import { Check, ExternalLink } from "lucide-react";
+import { version } from "../../package.json";
+import license from "../../LICENSE?raw";
 import type { Preferences } from "../../shared/desktop";
 import type { Notify } from "../App";
 import { desktop } from "../services/desktop";
 import { Select } from "../components/Select";
 import { UpdateControls } from "../components/AppUpdate";
-import type { UpdateStatus } from "../../shared/updates";
+import { repositoryUrl, type UpdateStatus } from "../../shared/updates";
 
 export function AppSettings({
   value,
@@ -147,6 +149,48 @@ export function AppSettings({
       <p className="settings-storage-note">
         应用设置保存在本机，不写入 .mdk 文件。
       </p>
+      <section
+        className="settings-card app-information"
+        aria-labelledby="app-information-heading"
+      >
+        <div className="settings-card-heading">
+          <h2 id="app-information-heading">关于 Mardikor</h2>
+        </div>
+        <div className="setting-row">
+          <span>版本号</span>
+          <code>{update?.currentVersion ?? version}</code>
+        </div>
+        <details className="update-notes app-license">
+          <summary>许可证（GPL-3.0-only）</summary>
+          <pre tabIndex={0} aria-label="GPLv3 许可证全文">
+            {license}
+          </pre>
+        </details>
+        <div className="button-row">
+          {[
+            { label: "GitHub 仓库", url: repositoryUrl },
+            { label: "问题反馈", url: repositoryUrl + "/issues" },
+          ].map(({ label, url }) => (
+            <a
+              key={url}
+              className="button"
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                if (!window.mardikor) return;
+                event.preventDefault();
+                void desktop()
+                  .openExternal(url)
+                  .catch((error) => notify(String(error), true));
+              }}
+            >
+              {label}
+              <ExternalLink size={14} aria-hidden="true" />
+            </a>
+          ))}
+        </div>
+      </section>
     </section>
   );
 }

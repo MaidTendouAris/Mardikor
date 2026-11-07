@@ -99,11 +99,20 @@ export function PublicationExport({
     setError("");
     try {
       if (!(await flush())) return;
+      const current = await desktop().invoke("publicationInfo", file);
+      if (
+        current.revision !== info.revision &&
+        (current.mode !== info.mode ||
+          current.saved !== info.saved ||
+          JSON.stringify(current.configuration) !==
+            JSON.stringify(info.configuration))
+      )
+        throw new Error("工程导出设置已变化，请重新读取配置后再保存。");
       const value = await desktop().invoke(
         "configurePublication",
         file,
         draft,
-        info.revision,
+        current.revision,
       );
       setInfo(value);
       setDraft(value.configuration);
@@ -245,8 +254,12 @@ export function PublicationExport({
     Object.entries(paperSizes).find(
       ([, dimensions]) =>
         draft &&
-        Math.abs((draft.layout.page_width * 25.4) / 96 - dimensions[0]) <
-          0.001 &&
+        Math.abs(
+          ((draft.publication.pdf.page_width ?? draft.layout.page_width) *
+            25.4) /
+            96 -
+            dimensions[0],
+        ) < 0.001 &&
         Math.abs(
           (draft.publication.pdf.page_height * 25.4) / 96 - dimensions[1],
         ) < 0.001,
@@ -308,12 +321,24 @@ export function PublicationExport({
             <button
               className="button primary"
               disabled={busy || changed || !info.saved}
+              aria-describedby={
+                changed || !info.saved ? "publication-save-required" : undefined
+              }
               onClick={() => void perform(true)}
             >
               <Download size={15} />
               导出 {format.toUpperCase()}
             </button>
           </div>
+          {(changed || !info.saved) && (
+            <p
+              id="publication-save-required"
+              className="publication-preflight"
+              role="status"
+            >
+              请先保存当前导出配置，再执行预检或导出。
+            </p>
+          )}
           {busy && (
             <p role="status" className="publication-note">
               正在处理导出任务，请稍候…
@@ -323,7 +348,6 @@ export function PublicationExport({
             {info.standalone
               ? "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。"
               : "以下选项保存在 settings.toml。内置字体会自动存入 resources/font；将 MDK 分发到其他电脑时配置与字体一并保留。"}
-            {changed || !info.saved ? " 请先保存导出配置。" : ""}
           </p>
           {plan && (
             <p className="publication-preflight" role="status">
@@ -506,7 +530,7 @@ export function PublicationExport({
                         Letter: [215.9, 279.4],
                       };
                       if (dimensions[value]) {
-                        c.layout.page_width =
+                        c.publication.pdf.page_width =
                           (dimensions[value][0] / 25.4) * 96;
                         c.publication.pdf.page_height =
                           (dimensions[value][1] / 25.4) * 96;
@@ -514,17 +538,17 @@ export function PublicationExport({
                     }),
                 )}
                 {number(
-                  "页面宽度（mm）",
-                  draft.layout.page_width,
+                  "纸张宽度（mm）",
+                  draft.publication.pdf.page_width ?? draft.layout.page_width,
                   (value) =>
                     change((c) => {
-                      c.layout.page_width = value;
+                      c.publication.pdf.page_width = value;
                     }),
                   25.4,
                   25.4 / 96,
                 )}
                 {number(
-                  "页面高度（mm）",
+                  "纸张高度（mm）",
                   draft.publication.pdf.page_height,
                   (value) =>
                     change((c) => {

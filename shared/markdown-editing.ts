@@ -97,7 +97,7 @@ export const markdownSyntax: MarkdownSyntax[] = [
   { id: "escape", label: "转义标点", group: "源码写法", example: "\\*文字\\*" },
   {
     id: "html",
-    label: "原始 HTML",
+    label: "原始 HTML（预览显示源码）",
     group: "源码写法",
     example: "<div>内容</div>",
     sourceOnly: true,

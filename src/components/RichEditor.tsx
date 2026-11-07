@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { editorExtensions } from "../services/rich-markdown";
+import { chapterHeadingNumberer } from "../../shared/heading-numbering";
 export { editorExtensions } from "../services/rich-markdown";
 export { RichToolbar } from "./RichToolbar";
 export { richDropDraft } from "../services/rich-markdown";
@@ -11,6 +14,8 @@ export function RichEditor({
   onChange,
   onReady,
   resolveResource,
+  chapterPosition,
+  reservedSections,
 }: {
   content: string;
   revision: number;
@@ -18,6 +23,8 @@ export function RichEditor({
   onChange: (value: string) => void;
   onReady: (editor: Editor | null) => void;
   resolveResource: (src: string) => Promise<string>;
+  chapterPosition?: string;
+  reservedSections?: ReadonlySet<string>;
 }) {
   const changeRef = useRef(onChange);
   changeRef.current = onChange;
@@ -37,6 +44,36 @@ export function RichEditor({
     },
     onUpdate: ({ editor }) => changeRef.current(editor.getMarkdown()),
   });
+  useEffect(() => {
+    if (!editor) return;
+    let previous: ProseMirrorNode | undefined;
+    let decorations = DecorationSet.empty;
+    editor.setOptions({
+      editorProps: {
+        ...editor.options.editorProps,
+        decorations: chapterPosition
+          ? ({ doc }) => {
+              if (doc === previous) return decorations;
+              previous = doc;
+              const number = chapterHeadingNumberer(
+                chapterPosition,
+                reservedSections,
+              );
+              const headings: Decoration[] = [];
+              doc.descendants((node, position) => {
+                if (node.type.name === "heading")
+                  headings.push(
+                    Decoration.node(position, position + node.nodeSize, {
+                      "data-heading-number": number(node.attrs.level),
+                    }),
+                  );
+              });
+              return (decorations = DecorationSet.create(doc, headings));
+            }
+          : undefined,
+      },
+    });
+  }, [editor, chapterPosition, reservedSections]);
   useEffect(() => {
     if (editor) {
       editor.setEditable(editable, false);

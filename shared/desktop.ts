@@ -91,6 +91,7 @@ export interface MdkCommands {
     newPath: string,
   ) => MdkProject;
   deleteFile: (path: string, internalPath: string) => MdkProject;
+  checkPackDirectory: (directory: string) => void;
   pack: (directory: string, output: string, mode: string) => MdkSummary;
   unpack: (path: string, directory: string) => MdkSummary;
 }
@@ -128,6 +129,10 @@ export interface DesktopApi {
   onSaveForUpdate(callback: () => Promise<boolean>): () => void;
   edit(action: EditAction, text?: string): Promise<void>;
   pickDocumentResources(): Promise<{ token: string; names: string[] } | null>;
+  pasteDocumentImage(
+    bytes: Uint8Array,
+    mime: string,
+  ): Promise<{ token: string; names: string[] }>;
   invoke<K extends keyof MdkCommands>(
     command: K,
     ...args: Parameters<MdkCommands[K]>

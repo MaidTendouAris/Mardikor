@@ -1,5 +1,5 @@
-export const releasePage =
-  "https://github.com/MaidTendouAris/Mardikor/releases/latest";
+export const repositoryUrl = "https://github.com/MaidTendouAris/Mardikor";
+export const releasePage = repositoryUrl + "/releases/latest";
 export type UpdatePhase =
   | "idle"
   | "checking"

@@ -34,11 +34,13 @@ export function markdownHeadings(source: string): MarkdownHeading[] {
 }
 const safetyParser = createMarkdownParser(true, false).set({ html: true });
 export function requiresSourceMode(value: string) {
-  const env: { references?: Record<string, unknown> } = {};
+  const env: { references?: Record<string, unknown>; footnotes?: unknown } = {};
   const tokens = safetyParser.parse(value, env);
-  if (env.references && Object.keys(env.references).length) return true;
+  if (env.footnotes || (env.references && Object.keys(env.references).length))
+    return true;
   const unsafe = (token: (typeof tokens)[number]): boolean =>
     token.type === "mdk_container_open" ||
+    token.type === "mdk_front_matter" ||
     token.type === "html_block" ||
     token.type === "html_inline" ||
     (token.type === "inline" &&

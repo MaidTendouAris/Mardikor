@@ -1,5 +1,6 @@
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
+import footnote from "markdown-it-footnote";
 import type { RuleBlock } from "markdown-it/lib/parser_block.mjs";
 
 // Use MarkdownIt's block tokenizer; the extension only supplies strict container
@@ -67,12 +68,59 @@ const containerRule: RuleBlock = (state, start, end, silent) => {
   state.line = closing + 1;
   return true;
 };
+const frontMatter: RuleBlock = (state, start, end, silent) => {
+  if (start !== 0 || state.parentType !== "root") return false;
+  const line = (index: number) =>
+    state.src.slice(state.bMarks[index], state.eMarks[index]).trim();
+  if (line(0) !== "---") return false;
+  let key = false;
+  for (let index = 1; index < end; index++) {
+    const value = line(index);
+    if (value === "---" || value === "...") {
+      if (!key) return false;
+      if (!silent) {
+        state.push("mdk_front_matter", "", 0).map = [0, index + 1];
+        state.line = index + 1;
+      }
+      return true;
+    }
+    if (!key && value && !value.startsWith("#")) {
+      if (!/^[\p{L}\p{N}_-]+\s*:(?:\s|$)/u.test(value)) return false;
+      key = true;
+    }
+  }
+  return false;
+};
 export function createMarkdownParser(containers = true, taskCheckboxes = true) {
   const parser = new MarkdownIt("commonmark", {
     html: false,
     linkify: false,
     typographer: false,
   }).enable(["table", "strikethrough"]);
+  // The plug-in's declarations target MarkdownIt's equivalent CJS interface.
+  parser.use(footnote as unknown as (md: MarkdownIt) => void);
+  const backlink = parser.renderer.rules.footnote_anchor!;
+  parser.renderer.rules.footnote_anchor = (...args) =>
+    backlink(...args).replace(">↩︎</a>", ' aria-label="返回脚注引用">^</a>');
+  parser.renderer.rules.mdk_container_open = (
+    tokens,
+    index,
+    options,
+    _env,
+    renderer,
+  ) => {
+    const kind = tokens[index].attrGet("class");
+    const label =
+      kind === "mdk-note" ? "Note" : kind === "mdk-warning" ? "Warning" : "Tip";
+    return (
+      renderer.renderToken(tokens, index, options) +
+      '<strong class="container-label">' +
+      label +
+      "</strong>\n"
+    );
+  };
+  parser.block.ruler.before("hr", "mdk_front_matter", frontMatter);
+  parser.renderer.rules.mdk_front_matter = () => "";
   if (taskCheckboxes) parser.use(taskLists);
   if (containers)
     parser.block.ruler.before("fence", "mdk_container", containerRule, {

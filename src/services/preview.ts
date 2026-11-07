@@ -1,5 +1,6 @@
 import { createMarkdownParser } from "../../shared/markdown-parser";
 import { resolveReference } from "../../shared/references";
+import { chapterHeadingNumberer } from "../../shared/heading-numbering";
 
 import type { MdkSettings } from "./mdk";
 import Token from "markdown-it/lib/token.mjs";
@@ -47,7 +48,8 @@ function createPreviewParser(containers: boolean, standalone = false) {
 }
 const md = createPreviewParser(true),
   plain = createPreviewParser(false),
-  standaloneParser = createPreviewParser(false, true);
+  standaloneParser = createPreviewParser(true, true),
+  standalonePlain = createPreviewParser(false, true);
 
 export function renderPreview(
   markdown: string,
@@ -57,16 +59,19 @@ export function renderPreview(
   prefix = "",
   sourcePath = "markdown/document.md",
   standalone = false,
+  reservedSections?: ReadonlySet<string>,
 ) {
   const parser = standalone
-    ? standaloneParser
+    ? settings?.preview.render_containers === false
+      ? standalonePlain
+      : standaloneParser
     : settings?.preview.render_containers === false
       ? plain
       : md;
-  const env = { sourcePath };
+  const env = { sourcePath, docId: prefix || "preview" };
   const tokens = parser.parse(markdown, env),
     headings: { level: number; title: string; id: string }[] = [];
-  const counters = [0, 0, 0, 0, 0, 0];
+  const numberHeading = chapterHeadingNumberer(position, reservedSections);
   let removedTitle = false;
   let headingNumber = 0;
   const fragments = new Set<string>();
@@ -100,21 +105,22 @@ export function renderPreview(
       inline.children = [];
       tokens[index + 2].hidden = true;
       removedTitle = true;
+      numberHeading(level);
       continue;
     }
+    let title = parser.renderer.renderInlineAsText(
+      inline.children ?? [],
+      parser.options,
+      env,
+    );
     if (settings?.mode.book.chapter_numbering && mode === "01") {
-      counters[level - 1]++;
-      counters.fill(0, level);
-      const prefix =
-        level === 1 && position
-          ? position
-          : [position, ...counters.slice(1, level)].filter(Boolean).join(".") ||
-            counters.slice(0, level).join(".");
+      const prefix = numberHeading(level);
       const text = new Token("text", "", 0);
-      text.content = prefix + " ";
+      text.content = prefix ? prefix + " " : "";
       inline.children?.unshift(text);
+      title = text.content + title;
     }
-    headings.push({ level, title: inline.content, id });
+    headings.push({ level, title, id });
   }
   const depth = mode === "01" ? (settings?.mode.book.toc_depth ?? 6) : 6;
   const toc =
@@ -127,7 +133,29 @@ export function renderPreview(
           )
           .join("")}</nav>`
       : "";
-  return toc + parser.renderer.render(tokens, parser.options, env);
+  if (tokens.length < 800)
+    return toc + parser.renderer.render(tokens, parser.options, env);
+  // Split only between top-level blocks, after parsing the whole document.
+  // References, lists, footnotes and heading anchors keep their original scope.
+  const sections: string[] = [toc];
+  let start = 0;
+  for (let end = 0; end <= tokens.length; end++) {
+    if (
+      end === tokens.length ||
+      (end - start >= 160 &&
+        tokens[end].level === 0 &&
+        tokens[end].nesting !== -1)
+    ) {
+      const html = parser.renderer.render(
+        tokens.slice(start, end),
+        parser.options,
+        env,
+      );
+      sections.push('<div class="preview-section">' + html + "</div>");
+      start = end;
+    }
+  }
+  return sections.join("");
 }
 
 export function settingsToCss(settings: MdkSettings) {

@@ -196,7 +196,7 @@ try {
   await page!.getByRole("button", { name: "工程", exact: true }).click();
   await page!.getByRole("radio", { name: /单 Markdown 工程/ }).check();
   await expect(
-    page!.getByRole("button", { name: "从目录打包", exact: true }),
+    page!.getByRole("button", { name: "打包已解包的 MDK 目录", exact: true }),
   ).toBeDisabled();
   await app.evaluate(({ dialog }, file) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });

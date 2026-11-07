@@ -54,6 +54,8 @@ export function Delivery({
         selected = (await desktop().dialog("open-project")) ?? "";
       if (!selected) return;
       setInput(selected);
+      setReport(null);
+      setExportPlan(null);
       const plan = exporting
         ? await desktop().invoke("exportPlan", selected)
         : null;
@@ -137,7 +139,11 @@ export function Delivery({
         file={input}
         flush={flush}
         notify={notify}
-        onConfigured={onConfigured}
+        onConfigured={async (path) => {
+          setReport(null);
+          setExportPlan(null);
+          await onConfigured(path);
+        }}
       />
       {!isMarkdownFile(input) && (
         <>
@@ -160,7 +166,7 @@ export function Delivery({
               </h2>
               <p>
                 {report
-                  ? `${report.issues.filter((i) => i.severity === "error").length} 个错误 · ${report.issues.filter((i) => i.severity === "warning").length} 个警告`
+                  ? `${report.issues.filter((i) => i.severity === "error").length} 个错误 · ${report.issues.filter((i) => i.severity === "warning").length} 个警告 · ${report.issues.filter((i) => i.severity === "info").length} 条提示`
                   : "检查容器、目录结构与资源引用是否完整。"}
               </p>
               <div className="button-row">
@@ -202,7 +208,7 @@ export function Delivery({
             </dl>
           </div>
           <div className="section-heading">
-            <h2>校验详情</h2>
+            <h2>MDK 容器校验详情</h2>
           </div>
           {exportPlan && (
             <div className="export-meta-plan">

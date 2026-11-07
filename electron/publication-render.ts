@@ -1,5 +1,15 @@
-import { escapeXml, type PreparedPublication } from "./publication";
+import {
+  emojiFontFile,
+  escapeXml,
+  type PreparedPublication,
+} from "./publication";
 import { publicationLabels } from "../shared/publication";
+
+export function publicationFontFamily(prepared: PreparedPublication) {
+  return prepared.emojiFont
+    ? "PublicationEmoji,PublicationFont"
+    : "PublicationFont";
+}
 
 export function publicationCss(prepared: PreparedPublication, fixed: boolean) {
   const { configuration: c, height, fontFile } = prepared,
@@ -10,6 +20,10 @@ export function publicationCss(prepared: PreparedPublication, fixed: boolean) {
       publication: { pdf },
     } = c;
   const scale = prepared.format === "pdf" ? pdf.scale : 1;
+  const fontFamily = publicationFontFamily(prepared);
+  const emojiRanges = [...(prepared.emojiFont?.text ?? "")]
+    .map((character) => "U+" + character.codePointAt(0)!.toString(16))
+    .join(",");
   const gray = (color: string) => {
     if (!pdf.grayscale || prepared.format !== "pdf") return color;
     const hex = color.slice(1),
@@ -25,12 +39,14 @@ export function publicationCss(prepared: PreparedPublication, fixed: boolean) {
   };
   return `
 @font-face{font-family:PublicationFont;src:url("${fontFile}");font-style:normal;font-weight:100 900;font-display:block}
-*{box-sizing:border-box}html{font-family:PublicationFont;font-size:${a.font_size}px;line-height:${a.line_height};font-synthesis:weight style;overflow-wrap:anywhere;color:${gray(colors.text)};background:${prepared.format === "pdf" && !pdf.print_background ? "#fff" : gray(colors.background)}}
+${emojiRanges ? `@font-face{font-family:PublicationEmoji;src:url("assets/${emojiFontFile}");font-weight:300 700;unicode-range:${emojiRanges}}` : ""}
+*{box-sizing:border-box}html{font-family:${fontFamily};font-size:${a.font_size}px;line-height:${a.line_height};font-synthesis:weight style;overflow-wrap:anywhere;color:${gray(colors.text)};background:${prepared.format === "pdf" && !pdf.print_background ? "#fff" : gray(colors.background)}}
 body{margin:0}h1,h2,h3,h4,h5,h6{line-height:1.35;margin:1.3em 0 .6em;break-after:avoid}h1:first-child,h2:first-child{margin-top:0}h1{font-size:2em}h2{font-size:1.5em}h3{font-size:1.25em}h4,h5,h6{font-size:1em}
 p{margin:0 0 ${a.paragraph_spacing}em}a{color:${gray(colors.link)};text-decoration:underline}img{max-width:100%;height:auto;object-fit:${c.comic.page_fit === "cover" ? "cover" : "contain"};${pdf.grayscale && prepared.format === "pdf" ? "filter:grayscale(1)" : ""}}
-pre,code,kbd,samp{font-family:PublicationFont;font-size:.9em}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:.75em;background:#f3f5f8;border:1px solid #ddd;break-inside:auto}code{white-space:pre-wrap}blockquote{margin:1em 0;padding-left:1em;border-left:3px solid #bbc7db;color:${gray(colors.quote)}}
+pre,code,kbd,samp{font-family:${fontFamily};font-size:.9em}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:.75em;background:#f3f5f8;border:1px solid #ddd;break-inside:auto}code{white-space:pre-wrap}blockquote{margin:1em 0;padding-left:1em;border-left:3px solid #bbc7db;color:${gray(colors.quote)}}
 table{border-collapse:collapse;table-layout:fixed;width:100%;margin:1em 0}th,td{border:1px solid #bbc2cb;padding:.45em;overflow-wrap:anywhere}thead{display:table-header-group}tr{break-inside:avoid}hr{border:0;border-top:1px solid #bbb;margin:1.5em 0}ul,ol{padding-left:1.8em}li>p{margin-bottom:.3em}li{orphans:2;widows:2}p{orphans:2;widows:2}.task-list-item{list-style:none}.task-marker{margin-right:.4em}aside{border-left:3px solid #6a8ec9;padding:.75em;margin:1em 0;background:#f2f6fc}
 .toc a{color:inherit}.toc ol{list-style:none;padding-left:1.2em}.toc>ol{padding-left:0}.toc li{margin:.3em 0}.cover{display:flex;align-items:center;justify-content:center}.cover img{max-height:100%;width:100%;height:100%;object-fit:contain}
+th{text-align:left}
 ${fixed ? `.unit{height:${(height - l.margin_top - l.margin_bottom) / scale}px;min-width:0}.unit>p:only-child:has(>img:only-child){height:100%;margin:0;line-height:0}.unit>p:only-child>img:only-child{height:${c.comic.page_fit === "width" ? "auto" : "100%"};max-height:${c.comic.page_fit === "width" ? "none" : "100%"};width:100%;object-fit:${c.comic.page_fit === "width" ? "contain" : c.comic.page_fit}}` : ""}
 @media print{a{text-decoration:inherit}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 `;
@@ -53,6 +69,10 @@ export function publicationHtml(prepared: PreparedPublication) {
   const rewrite = (html: string, index: number) =>
     html
       .replace(/\bid="([^"]+)"/g, (_match, id) => `id="u${index}-${id}"`)
+      .replace(
+        /href="#(fn(?:ref)?[^"]+)"/g,
+        (_match, id) => `href="#u${index}-${id}"`,
+      )
       .replace(
         /href="(chapter-\d+\.xhtml)(#[^"]*)?"/g,
         (_match, name: string, suffix?: string) => {
@@ -100,7 +120,7 @@ export function publicationHtml(prepared: PreparedPublication) {
         );
       })
       .join(" ");
-  const furniture = `font-family:PublicationFont;font-size:${pdf.furniture_size}px;font-weight:normal;line-height:1.2;color:#555;white-space:pre;vertical-align:middle;`;
+  const furniture = `font-family:${publicationFontFamily(prepared)};font-size:${pdf.furniture_size}px;font-weight:normal;line-height:1.2;color:#555;white-space:pre;vertical-align:middle;`;
   const marginBoxes =
     prepared.format === "pdf"
       ? `@top-center{content:${marginContent(pdf.header)};${furniture}}@bottom-center{content:${marginContent(pdf.footer || (pdf.page_numbers ? "{page} / {pages}" : ""))};${furniture}}`

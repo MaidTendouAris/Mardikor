@@ -5,6 +5,10 @@ import fontkit from "@pdf-lib/fontkit";
 import Token from "markdown-it/lib/token.mjs";
 import { DOMParser } from "@xmldom/xmldom";
 import { createMarkdownParser } from "../shared/markdown-parser";
+import {
+  chapterHeadingNumberer,
+  reservedSectionNumbers,
+} from "../shared/heading-numbering";
 import { resolveReference } from "../shared/references";
 import { buildOutline, type OutlineNode } from "../shared/tree";
 import { isMarkdownFile } from "../shared/workspace";
@@ -39,6 +43,9 @@ import { pdfCjkAliases } from "./pdf-text";
 
 export const sha256 = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
+export const emojiFontFile = "NotoEmoji.ttf";
+const emojiFontHash =
+  "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551";
 export const escapeXml = (text: string) =>
   text.replace(
     /[&<>"']/g,
@@ -64,7 +71,7 @@ export interface PublicationRuntime {
   pdf: (
     prepared: PreparedPublication,
   ) => Promise<{ bytes: Buffer; pages: number }>;
-  epub: (prepared: PreparedPublication) => Buffer;
+  epub: (prepared: PreparedPublication) => Promise<Buffer>;
 }
 type Snapshot = {
   project: MdkProject;
@@ -95,6 +102,7 @@ export interface PreparedPublication {
   width: number;
   height: number;
   fontText: string;
+  emojiFont?: { bytes: Buffer; text: string };
 }
 function applyConfiguration(
   project: MdkProject,
@@ -354,10 +362,11 @@ export function preparePublication(
       "漫画 EPUB 必须使用固定版式，一篇文稿对应一个展示页。",
     );
   const { layout, appearance } = project.settings;
+  const paperWidth = pdf.page_width ?? layout.page_width;
   const width =
-    pdf.landscape && format === "pdf" ? pdf.page_height : layout.page_width;
+    pdf.landscape && format === "pdf" ? pdf.page_height : paperWidth;
   const height =
-    pdf.landscape && format === "pdf" ? layout.page_width : pdf.page_height;
+    pdf.landscape && format === "pdf" ? paperWidth : pdf.page_height;
   if (
     width < 96 ||
     width > 14400 ||
@@ -509,6 +518,11 @@ export function preparePublication(
       visit(token);
       if (token.children) walk(token.children, visit);
     });
+  const reserved = reservedSectionNumbers(
+    source.units.map((unit) => unit.position),
+  );
+  const numbered =
+    project.mode === "01" && configuration.book.chapter_numbering;
   source.units.forEach((unit, index) => {
     const markdown = unit.markdown ?? "";
     if (unit.markdown === null)
@@ -534,9 +548,23 @@ export function preparePublication(
     walk(tokens, (token) => {
       if (["text", "code_inline", "code_block", "fence"].includes(token.type))
         renderedText.push(token.content);
+      if (token.type === "footnote_anchor") renderedText.push("[]:^");
+      if (token.type === "mdk_container_open") {
+        const kind = token.attrGet("class");
+        renderedText.push(
+          kind === "mdk-note"
+            ? "Note"
+            : kind === "mdk-warning"
+              ? "Warning"
+              : "Tip",
+        );
+      }
     });
     const slugs = new Map<string, number>(),
-      counters = [0, 0, 0, 0, 0, 0];
+      numberHeading = chapterHeadingNumberer(
+        unit.position,
+        reserved.get(unit.position),
+      );
     for (let i = 0; i < tokens.length; i++) {
       if (tokens[i].type !== "heading_open") continue;
       const token = tokens[i],
@@ -554,36 +582,23 @@ export function preparePublication(
       anchors.set(base + (count ? "-" + count : ""), id);
       anchors.set("mdk-heading-" + (headings.length + 1), id);
       anchors.set(id, id);
-      headings.push({ id, title, level });
       token.attrSet("id", id);
-      if (
-        project.mode === "01" &&
-        project.settings.mode.book.chapter_numbering
-      ) {
-        counters[level - 1]++;
-        counters.fill(0, level);
-        const number =
-          level === 1
-            ? unit.position
-            : [unit.position, ...counters.slice(1, level)].join(".");
-        if (inline.children?.[0]) {
-          const first = inline.children[0];
-          if (first.type === "text")
-            first.content = number + " " + first.content;
-          else
-            inline.children.unshift(
-              Object.assign(new Token("text", "", 0), {
-                content: number + " ",
-              }),
-            );
-        }
-      }
+      const prefix = numbered ? numberHeading(level) + " " : "";
+      if (prefix)
+        inline.children?.unshift(
+          Object.assign(new Token("text", "", 0), { content: prefix }),
+        );
+      headings.push({ id, title: prefix + title, level });
     }
+    const firstTitle = headings[0]?.level === 1 ? headings[0].title : "";
     chapters.push({
       unit,
       file: "chapter-" + String(index + 1).padStart(4, "0") + ".xhtml",
       html: "",
-      title: headings[0]?.title || path.posix.basename(unit.path, ".md"),
+      title:
+        firstTitle ||
+        (numbered ? unit.position + " " : "") +
+          path.posix.basename(unit.path, ".md"),
       anchors,
       headings,
     });
@@ -630,7 +645,7 @@ export function preparePublication(
     if (!referenced) {
       issue(
         "E_LINK_NOT_EXPORTED",
-        "内部超链接指向未编排文稿或附件，无法在出版物中保留：" + url,
+        "内部超链接指向未编排文稿或附件，无法在出版物中保留：" + target.path,
         chapter.unit.path,
       );
       return "";
@@ -640,7 +655,7 @@ export function preparePublication(
       try {
         const key = decodeURIComponent(target.suffix.slice(1)),
           id = referenced.anchors.get(key);
-        if (!id) throw new Error("找不到标题锚点：" + url);
+        if (!id) throw new Error("找不到标题锚点：" + target.path + "#" + key);
         fragment = "#" + id;
       } catch (error) {
         issue("E_ANCHOR_MISSING", String(error), chapter.unit.path);
@@ -736,7 +751,7 @@ export function preparePublication(
       .map((node) => {
         const chapter = chapters.find((c) => c.unit.id === node.entry?.id);
         const label = chapter
-          ? `<a href="${chapter.file}">${escapeXml((project.mode === "01" && configuration.book.chapter_numbering ? node.position + " " : "") + chapter.title)}</a>`
+          ? `<a href="${chapter.file}">${escapeXml(chapter.title)}</a>`
           : `<span>${escapeXml(labels.group + " " + node.position)}</span>`;
         const headings = chapter ? headingItems(chapter) : "";
         return `<li>${label}${headings || node.children.length ? "<ol>" + headings + (node.children.length ? list(node.children).slice(4, -5) : "") + "</ol>" : ""}</li>`;
@@ -756,14 +771,16 @@ export function preparePublication(
     : "";
   const fontText =
     renderedText.join("") +
+    chapters.map((chapter) => chapter.title).join("") +
     furniture +
     navigationText +
     markerText +
-    "0123456789 /";
+    "0123456789 ./";
+  let emojiFont: PreparedPublication["emojiFont"];
   if (font.length) {
     try {
       const face = parsedFont(font);
-      const missing = [
+      let missing = [
         ...new Set(
           [...fontText].filter((c) => {
             const point = c.codePointAt(0)!;
@@ -779,6 +796,26 @@ export function preparePublication(
           }),
         ),
       ];
+      const emoji = missing.filter(
+        (char) => char.codePointAt(0)! >= 0x2000 && /\p{Emoji}/u.test(char),
+      );
+      if (format === "pdf" && emoji.length) {
+        const bytes = fs.readFileSync(
+          path.join(runtime.assetDirectory, emojiFontFile),
+        );
+        if (sha256(bytes) !== emojiFontHash)
+          throw new Error("应用内置表情字体校验失败。");
+        const face = parsedFont(bytes);
+        const covered = new Set(
+          emoji.filter((char) =>
+            face.hasGlyphForCodePoint(char.codePointAt(0)!),
+          ),
+        );
+        if (covered.size) {
+          emojiFont = { bytes, text: [...covered].join("") };
+          missing = missing.filter((char) => !covered.has(char));
+        }
+      }
       if (
         missing.length &&
         (format === "pdf" || epub.embed_font || epub.layout === "pre-paginated")
@@ -822,6 +859,7 @@ export function preparePublication(
       configuration,
       resources: [...assets].map(([name, value]) => [name, sha256(value.data)]),
       font: sha256(font),
+      emojiFont: emojiFont && emojiFontHash,
       engine: runtime.engine,
     }),
   );
@@ -841,6 +879,7 @@ export function preparePublication(
     width,
     height,
     fontText,
+    emojiFont,
   };
 }
 export async function planPublication(
@@ -908,7 +947,7 @@ export async function exportPublication(
   const result =
     format === "pdf"
       ? await runtime.pdf(prepared)
-      : { bytes: runtime.epub(prepared), pages: undefined };
+      : { bytes: await runtime.epub(prepared), pages: undefined };
   if (result.bytes.length > 256 * 1024 * 1024)
     throw new Error("导出结果超过 256 MiB，未写入文件。");
   if (fileRevision(file) !== prepared.snapshot.project.revision)

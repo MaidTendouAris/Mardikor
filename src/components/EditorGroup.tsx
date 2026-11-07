@@ -28,6 +28,7 @@ import {
   requiresSourceMode,
   type MarkdownHeading,
 } from "../../shared/markdown";
+import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import type { MdkProject, MdkSettings } from "../../shared/mdk";
 import type { InsertionDraft } from "../../shared/resources";
 import type {
@@ -37,9 +38,12 @@ import type {
 } from "../services/editor-groups";
 import type { Notify } from "../App";
 
-const SourceEditor = lazy(() =>
-  import("./SourceEditor").then((module) => ({ default: module.SourceEditor })),
-);
+const SourceEditor = lazy(async () => {
+  // Monaco translates action labels when its modules are first evaluated.
+  await import("monaco-editor/nls/lang/zh-cn.js");
+  const module = await import("./SourceEditor");
+  return { default: module.SourceEditor };
+});
 export interface EditorGroupHandle {
   scrollTo: (ratio: number) => void;
   jumpHeading: (heading: MarkdownHeading) => void;
@@ -68,6 +72,7 @@ interface Props {
   changeTab: (tab: EditorTab) => Promise<void>;
   updateContent: (content: string) => void;
   importResources: () => Promise<void>;
+  pasteImage: (image: File) => Promise<void>;
   revert: () => Promise<void>;
   splitEntry: () => Promise<void>;
   setSettings: (settings: MdkSettings) => void;
@@ -101,6 +106,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       changeTab,
       updateContent,
       importResources,
+      pasteImage,
       revert,
       splitEntry,
       setSettings,
@@ -179,10 +185,20 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const standalone = project?.format === "markdown";
     const isMarkdown = !!buffer && isManuscript(project, buffer.path);
     const markdown = isMarkdown ? buffer.content : "";
-    const unsupported = requiresSourceMode(markdown);
+    const unsupported = useMemo(
+      () => tab === "write" && requiresSourceMode(markdown),
+      [tab, markdown],
+    );
     const headings = useMemo(() => markdownHeadings(markdown), [markdown]);
     const activeEntry = project?.contents.entries.find(
       (e) => e.path === activePath,
+    );
+    const reserved = useMemo(
+      () =>
+        reservedSectionNumbers(
+          project?.contents.entries.map((entry) => entry.position) ?? [],
+        ),
+      [project?.contents.entries],
     );
     const activeFile = project?.files.find((f) => f.path === activePath);
     const [resourceData, setResourceData] = useState("");
@@ -221,20 +237,42 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       : isMarkdown
         ? buffer.saved
         : "";
-    const previewHtml = renderPreview(
+    const previewHtml = useMemo(() => {
+      if (!isMarkdown || !((tab === "source" && splitPreview) || unsupported))
+        return "";
+      return renderPreview(
+        previewMarkdown,
+        project?.mode === "00"
+          ? {
+              ...settings,
+              preview: {
+                ...settings.preview,
+                show_toc: false,
+                show_title: true,
+              },
+            }
+          : settings,
+        activeEntry?.position,
+        project?.mode,
+        group.id + "-",
+        activePath,
+        standalone,
+        reserved.get(activeEntry?.position ?? ""),
+      );
+    }, [
+      tab,
+      splitPreview,
+      isMarkdown,
+      unsupported,
       previewMarkdown,
-      project?.mode === "00"
-        ? {
-            ...settings,
-            preview: { ...settings.preview, show_toc: false, show_title: true },
-          }
-        : settings,
+      settings,
       activeEntry?.position,
       project?.mode,
-      group.id + "-",
+      group.id,
       activePath,
       standalone,
-    );
+      reserved,
+    ]);
     useEffect(() => {
       let live = true;
       previewRef.current?.querySelectorAll("img").forEach((image) => {
@@ -257,7 +295,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       () => ({
         scrollTo,
         jumpHeading(heading) {
-          if (!richEditor) return;
+          if (!richEditor) {
+            previewRef.current
+              ?.querySelector(`[id$="mdk-heading-${heading.index + 1}"]`)
+              ?.scrollIntoView({ block: "start" });
+            return;
+          }
           let index = 0,
             position = -1;
           richEditor.state.doc.descendants((node, pos) => {
@@ -468,8 +511,20 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         )}
         <div
           className={`document-canvas ${tab === "source" ? "source-canvas" : ""}`}
+          onPasteCapture={(event) => {
+            if (!isMarkdown || !["source", "write"].includes(tab)) return;
+            const image = Array.from(event.clipboardData.files).find((file) =>
+              file.type.startsWith("image/"),
+            );
+            if (!image) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void pasteImage(image).catch((error) =>
+              notify(String(error), true),
+            );
+          }}
         >
-          {codeBuffer && (
+          {codeBuffer && (tab === "source" || sourceEditor.current) && (
             <div
               className={`source-workspace ${splitPreview && isMarkdown ? "split-preview" : ""}`}
               hidden={tab !== "source" || !buffer}
@@ -484,7 +539,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 <div className="source-toolbar">
                   <span>{codeBuffer.path}</span>
                   <span>
-                    UTF-8 ·{" "}
+                    {project?.encoding ?? "UTF-8"} ·{" "}
                     {codeBuffer.content.includes("\r\n") ? "CRLF" : "LF"}
                   </span>
                   {isMarkdown &&
@@ -511,6 +566,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     保存源码
                   </button>
                 </div>
+                {project?.encoding === "GB18030" && (
+                  <p className="source-warning">修改后保存时将转为 UTF-8。</p>
+                )}
                 {["contents.toml", "mimetype"].includes(codeBuffer.path) && (
                   <p className="source-warning">
                     {directoryDirty && codeBuffer.path === "contents.toml"
@@ -520,7 +578,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 )}
                 <Suspense
                   fallback={
-                    <p className="editor-loading">正在加载 Monaco 编辑器…</p>
+                    <p className="editor-loading">正在加载源码编辑器…</p>
                   }
                 >
                   <SourceEditor
@@ -536,6 +594,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     path={codeBuffer.path}
                     value={codeBuffer.content}
                     files={project?.files ?? []}
+                    zoom={group.zoom}
                     readOnly={
                       project?.readonly ||
                       (project?.settings_readonly &&
@@ -609,41 +668,74 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               <div className="paper-wrapper" hidden={tab !== "write"}>
                 {unsupported && (
                   <div className="source-warning">
-                    此文稿含扩展语法，请使用 Monaco 源码编辑以保留原始内容。
+                    此文稿含可视化编辑不支持的语法。
+                    <button
+                      className="button small"
+                      onClick={() => void execute(() => changeTab("source"))}
+                    >
+                      切换到源码
+                    </button>
                   </div>
                 )}
-                <div
-                  className="document-paper"
-                  style={style}
-                  data-document-drop-zone={
-                    tab === "write" && isMarkdown ? "write" : undefined
-                  }
-                  data-document-path={buffer.path}
-                  onClick={(event) => {
-                    if (standalone && (event.ctrlKey || event.metaKey))
+                {unsupported ? (
+                  <article
+                    className="document-paper preview-body"
+                    style={style}
+                    ref={previewRef}
+                    onClick={(event) =>
                       followPreviewLink(
                         event,
                         activePath,
-                        true,
-                        () => {},
+                        standalone,
+                        (path) => void execute(() => openFile(path)),
                         (error) => notify(error, true),
-                      );
-                  }}
-                >
-                  <RichEditor
-                    content={buffer.content}
-                    revision={revision}
-                    editable={
-                      !busy &&
-                      !project?.readonly &&
-                      !unsupported &&
-                      tab === "write"
+                      )
                     }
-                    onChange={updateContent}
-                    onReady={setRichEditor}
-                    resolveResource={resolveResource}
+                    dangerouslySetInnerHTML={{ __html: previewHtml }}
                   />
-                </div>
+                ) : (
+                  <div
+                    className="document-paper"
+                    style={style}
+                    data-document-drop-zone={
+                      tab === "write" && isMarkdown ? "write" : undefined
+                    }
+                    data-document-path={buffer.path}
+                    onClick={(event) => {
+                      if (standalone && (event.ctrlKey || event.metaKey))
+                        followPreviewLink(
+                          event,
+                          activePath,
+                          true,
+                          () => {},
+                          (error) => notify(error, true),
+                        );
+                    }}
+                  >
+                    <RichEditor
+                      content={buffer.content}
+                      chapterPosition={
+                        project?.mode === "01" &&
+                        settings.mode.book.chapter_numbering
+                          ? activeEntry?.position
+                          : undefined
+                      }
+                      reservedSections={reserved.get(
+                        activeEntry?.position ?? "",
+                      )}
+                      revision={revision}
+                      editable={
+                        !busy &&
+                        !project?.readonly &&
+                        !unsupported &&
+                        tab === "write"
+                      }
+                      onChange={updateContent}
+                      onReady={setRichEditor}
+                      resolveResource={resolveResource}
+                    />
+                  </div>
+                )}
               </div>
               {tab === "source" && splitPreview && isMarkdown && (
                 <div

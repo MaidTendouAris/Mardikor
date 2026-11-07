@@ -128,6 +128,7 @@ export const SourceEditor = forwardRef<
     value: string;
     files: ProjectFile[];
     readOnly: boolean;
+    zoom: number;
     onChange: (value: string) => void;
     onSave: () => void;
     onPosition: (line: number, column: number) => void;
@@ -142,6 +143,7 @@ export const SourceEditor = forwardRef<
     value,
     files,
     readOnly,
+    zoom,
     onChange,
     onSave,
     onPosition,
@@ -361,7 +363,7 @@ export const SourceEditor = forwardRef<
       model: null,
       theme: "mdk-light",
       automaticLayout: true,
-      fontSize: 14,
+      fontSize: Math.round((14 * zoom) / 100),
       fontFamily: 'Consolas, "Cascadia Code", monospace',
       minimap: { enabled: false },
       lineNumbers: "on",
@@ -498,6 +500,11 @@ export const SourceEditor = forwardRef<
     // activated, before keyboard selection uses stale wrapped-line geometry.
     if (!readOnly) instance.current?.layout();
   }, [readOnly]);
+  useEffect(() => {
+    instance.current?.updateOptions({
+      fontSize: Math.round((14 * zoom) / 100),
+    });
+  }, [zoom]);
   useEffect(() => {
     if (!reveal || reveal.path !== path || !instance.current) return;
     const line = Math.min(

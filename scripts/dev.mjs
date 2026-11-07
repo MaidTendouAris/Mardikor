@@ -14,7 +14,7 @@ const options = {
   platform: "node",
   target: "node22",
   format: "cjs",
-  external: ["electron", "electron-updater"],
+  external: ["electron", "electron-updater", "subset-font"],
   sourcemap: true,
 };
 const compiler = await context(options);

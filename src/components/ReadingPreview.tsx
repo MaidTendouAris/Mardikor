@@ -1,8 +1,16 @@
-import { useEffect, useRef, useState, useId, type CSSProperties } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useId,
+  useMemo,
+  type CSSProperties,
+} from "react";
 import type { MdkProject, MdkSettings, ReadingUnit } from "../../shared/mdk";
 import { desktop } from "../services/desktop";
 import { renderPreview } from "../services/preview";
 import { resolveReference } from "../../shared/references";
+import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import {
   followPreviewLink,
   scrollToFragment,
@@ -87,12 +95,6 @@ export function ReadingPreview({
         ]
       : []
     : units;
-  const renderSettings = fluid
-    ? {
-        ...settings,
-        preview: { ...settings.preview, show_toc: false, show_title: true },
-      }
-    : settings;
   const comic = project.mode === "02",
     pair = comic && settings.mode.comic.spread_mode === "double",
     width = pair ? 2 : 1;
@@ -100,6 +102,46 @@ export function ReadingPreview({
     { length: Math.ceil(displayed.length / width) },
     (_, index) => displayed.slice(index * width, (index + 1) * width),
   );
+  const rendered = useMemo(() => {
+    const reserved = reservedSectionNumbers(units.map((unit) => unit.position));
+    const viewSettings = fluid
+      ? {
+          ...settings,
+          preview: { ...settings.preview, show_toc: false, show_title: true },
+        }
+      : settings;
+    const currentUnits = fluid
+      ? activeDocument
+        ? [{ ...activeDocument, id: "current", position: "" }]
+        : []
+      : units;
+    return new Map(
+      currentUnits.map((unit, index) => [
+        unit.id,
+        unit.markdown === null
+          ? ""
+          : renderPreview(
+              unit.markdown,
+              viewSettings,
+              unit.position,
+              project.mode,
+              namespace + index + "-",
+              unit.path,
+              standalone,
+              reserved.get(unit.position),
+            ),
+      ]),
+    );
+  }, [
+    activeDocument?.path,
+    activeDocument?.markdown,
+    fluid,
+    namespace,
+    project.mode,
+    settings,
+    standalone,
+    units,
+  ]);
   useEffect(() => {
     let live = true;
     host.current
@@ -189,16 +231,7 @@ export function ReadingPreview({
               ) : (
                 <div
                   dangerouslySetInnerHTML={{
-                    __html: renderPreview(
-                      unit.markdown,
-                      renderSettings,
-                      unit.position,
-                      project.mode,
-                      namespace +
-                        (fluid ? "" : "entry-" + units.indexOf(unit) + "-"),
-                      unit.path,
-                      standalone,
-                    ),
+                    __html: rendered.get(unit.id) ?? "",
                   }}
                 />
               )}

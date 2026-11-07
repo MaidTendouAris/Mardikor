@@ -325,7 +325,15 @@ export function RichToolbar({
           const attrs = { src: url, alt: v.alt, title: v.title };
           if (editor.isActive("image"))
             editor.chain().focus().updateAttributes("image", attrs).run();
-          else editor.chain().focus().setImage(attrs).run();
+          else
+            editor
+              .chain()
+              .focus()
+              .insertContent([
+                { type: "paragraph", content: [{ type: "image", attrs }] },
+                { type: "paragraph" },
+              ])
+              .run();
         }
       } else if (form.kind === "table") {
         const rows = Number(v.rows),

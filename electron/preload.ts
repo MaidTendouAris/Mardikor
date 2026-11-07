@@ -94,6 +94,8 @@ const api: DesktopApi = {
   edit: (action, text) => ipcRenderer.invoke("app:edit", action, text),
   pickDocumentResources: () =>
     ipcRenderer.invoke("app:pick-document-resources"),
+  pasteDocumentImage: (bytes, mime) =>
+    ipcRenderer.invoke("app:paste-document-image", bytes, mime),
   onDocumentDrop: (callback) => {
     dropListeners.add(callback);
     return () => {

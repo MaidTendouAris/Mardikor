@@ -14,6 +14,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import * as mdk from "./mdk";
+import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
 import { containsControl } from "../shared/schema";
 import { insertionFormats } from "../shared/resources";
@@ -35,7 +36,7 @@ interface DocumentWindow {
   queuedFragment?: string;
   approvedFiles: Set<string>;
   revisions: Map<string, string>;
-  droppedFiles: Map<string, { paths: string[]; expires: number }>;
+  droppedFiles: Map<string, { sources: InsertionSource[]; expires: number }>;
   publicationOutputs: Map<string, { revision: string | null; expires: number }>;
 }
 const windows = new Map<number, DocumentWindow>();
@@ -167,8 +168,8 @@ function createHandlers(context: DocumentWindow): MdkCommands {
       if (!files || files.expires < Date.now())
         throw new Error("拖入文件授权已失效，请重新拖入。");
       return isMarkdownFile(file)
-        ? markdownFile.insertMarkdownResources(file, files.paths, insertion)
-        : mdk.insertMdkResources(file, files.paths, insertion);
+        ? markdownFile.insertMarkdownResources(file, files.sources, insertion)
+        : mdk.insertMdkResources(file, files.sources, insertion);
     },
     readText: mdk.readMdkTextFile,
     saveText: mdk.saveMdkTextFile,
@@ -185,6 +186,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     createDirectory: mdk.createProjectDirectory,
     renameFile: mdk.renameProjectFile,
     deleteFile: mdk.deleteProjectFile,
+    checkPackDirectory: mdk.checkMdkDirectory,
     pack: mdk.packMdk,
     unpack: mdk.unpackMdk,
   };
@@ -263,6 +265,7 @@ const counts: Record<keyof MdkCommands, [number, number]> = {
   createDirectory: [2, 2],
   renameFile: [3, 3],
   deleteFile: [2, 2],
+  checkPackDirectory: [1, 1],
   pack: [3, 3],
   unpack: [2, 2],
 };
@@ -277,12 +280,24 @@ function registerDroppedFiles(context: DocumentWindow, paths: unknown) {
     )
   )
     throw new Error("拖入文件无效，一次最多 16 个文件。");
+  return registerInsertionSources(droppedFiles, paths);
+}
+function registerInsertionSources(
+  droppedFiles: DocumentWindow["droppedFiles"],
+  sources: InsertionSource[],
+) {
   for (const [key, value] of droppedFiles)
     if (value.expires < Date.now()) droppedFiles.delete(key);
   if (droppedFiles.size >= 32) throw new Error("请完成当前资源操作后重试。");
   const token = randomUUID();
-  droppedFiles.set(token, { paths, expires: Date.now() + 60000 });
-  return { token, names: paths.map((p) => path.basename(p)) };
+  droppedFiles.set(token, { sources, expires: Date.now() + 60000 });
+  setTimeout(() => droppedFiles.delete(token), 60000).unref();
+  return {
+    token,
+    names: sources.map((source) =>
+      typeof source === "string" ? path.basename(source) : source.name,
+    ),
+  };
 }
 function registerIpc() {
   ipcMain.handle("app:update", async (event, action: UpdateAction) => {
@@ -328,6 +343,29 @@ function registerIpc() {
     return result.canceled || !result.filePaths.length
       ? null
       : registerDroppedFiles(context, result.filePaths);
+  });
+  ipcMain.handle("app:paste-document-image", (event, bytes, mime) => {
+    const { droppedFiles } = verifySender(event);
+    if (
+      !(bytes instanceof Uint8Array) ||
+      !bytes.length ||
+      bytes.length > 16 * 1024 * 1024
+    )
+      throw new Error("剪贴板图片为空或超过 16 MiB。");
+    const extension = Object.keys(insertionFormats).find(
+      (key) =>
+        insertionFormats[key].kind === "image" &&
+        insertionFormats[key].mime === mime,
+    );
+    if (!extension) throw new Error("不支持此剪贴板图片格式。");
+    for (const [token, pending] of droppedFiles)
+      if (typeof pending.sources[0] !== "string") droppedFiles.delete(token);
+    return registerInsertionSources(droppedFiles, [
+      {
+        name: "剪贴板图片." + extension,
+        bytes: Buffer.from(bytes),
+      },
+    ]);
   });
   ipcMain.handle("app:edit", (event, action, text) => {
     verifySender(event);
@@ -465,9 +503,12 @@ function registerIpc() {
         readResource: markdownFile.readMarkdownResource,
         insertResources: handlers.insertResources,
       };
-      const handler = isMarkdownFile(source)
-        ? standaloneHandlers[command]
-        : handlers[command];
+      const handler =
+        command !== "checkPackDirectory" &&
+        command !== "pack" &&
+        isMarkdownFile(source)
+          ? standaloneHandlers[command]
+          : handlers[command];
       if (!handler)
         throw new Error("此功能仅适用于 MDK 工程，单 Markdown 模式不可用。");
       const result = (handler as (...values: unknown[]) => unknown)(...args);

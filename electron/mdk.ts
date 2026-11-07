@@ -24,8 +24,9 @@ import { resolveReference } from "../shared/references";
 import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { loadInsertionAssets } from "./insertion-assets";
+import { loadInsertionAssets, type InsertionSource } from "./insertion-assets";
 import { createMarkdownParser } from "../shared/markdown-parser";
+import { bundledFontPath } from "../shared/publication";
 import type Token from "markdown-it/lib/token.mjs";
 import { defaultSettings } from "../shared/defaults";
 import { comparePosition } from "../shared/outline";
@@ -808,6 +809,8 @@ function referenceIssues(doc: Document): ValidationIssue[] {
       });
   };
   const font = settings(doc).appearance.font_family;
+  if (font === bundledFontPath && files.has(font))
+    used.add("resources/other/Mardikor-Noto-OFL.txt");
   if (font.startsWith("resources/font/")) {
     used.add(font);
     if (!files.has(font))
@@ -1206,7 +1209,7 @@ export function saveMdkSnapshot(
 }
 export function insertMdkResources(
   file: string,
-  sources: string[],
+  sources: InsertionSource[],
   insertion: ResourceInsertion,
 ): ResourceInsertionResult {
   const doc = load(file);
@@ -1279,7 +1282,17 @@ export function readMdkReadingUnits(file: string) {
     });
 }
 
+export function checkMdkDirectory(directory: string) {
+  const control = path.join(directory, "contents.toml");
+  const info = fs.lstatSync(control, { throwIfNoEntry: false });
+  if (!info?.isFile())
+    throw new Error("请选择解包后的 MDK 目录。缺少有效的 contents.toml 文件。");
+  if (info.size > MAX_FILE) throw new Error("contents.toml 超过 64 MiB。");
+  validateContents(parseToml(text(fs.readFileSync(control))));
+}
+
 export function packMdk(directory: string, output: string, mode: string) {
+  checkMdkDirectory(directory);
   const doc = {
     mode: normalizeMode(mode),
     zip: new AdmZip(undefined, { noSort: true }),

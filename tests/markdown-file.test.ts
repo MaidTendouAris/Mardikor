@@ -43,6 +43,26 @@ test("single Markdown is a UTF-8 file, preserves source bytes and never creates 
   assert.throws(() => createMarkdownFile(file));
   assert.throws(() => createMarkdownFile(path.join(root, "bad.mdk")));
 });
+test("standalone Markdown accepts GB18030, retaining legacy bytes until a modified save", (t) => {
+  const { file } = fixture(t);
+  const original = Buffer.from([
+    0x23, 0x20, 0xd6, 0xd0, 0xce, 0xc4, 0x0d, 0x0a,
+  ]);
+  fs.writeFileSync(file, original);
+  const project = openMarkdownFile(file);
+  const text = readMarkdownFile(file, path.basename(file));
+  assert.equal(project.encoding, "GB18030");
+  assert.equal(text.content, "# 中文\r\n");
+  saveMarkdownSnapshot(file, { revision: project.revision, text });
+  assert.deepEqual(fs.readFileSync(file), original);
+  const content = text.content + "修订\r\n";
+  const saved = saveMarkdownSnapshot(file, {
+    revision: project.revision,
+    text: { ...text, content },
+  });
+  assert.equal(saved.encoding, "UTF-8");
+  assert.equal(fs.readFileSync(file, "utf8"), content);
+});
 test("single Markdown rejects control-file writes, invalid text and stale snapshots without changing the document", (t) => {
   const { file } = fixture(t);
   const project = createMarkdownFile(file);

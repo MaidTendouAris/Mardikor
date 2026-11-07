@@ -2,11 +2,21 @@ import { app, BrowserWindow, nativeImage, session } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { PDFDocument, PDFHexString } from "pdf-lib";
+import {
+  PDFDict,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFString,
+} from "pdf-lib";
 import type { AppState } from "./state";
-import { publicationHtml } from "./publication-render";
+import { publicationFontFamily, publicationHtml } from "./publication-render";
 import { buildEpub } from "./epub";
-import type { PreparedPublication, PublicationRuntime } from "./publication";
+import {
+  emojiFontFile,
+  type PreparedPublication,
+  type PublicationRuntime,
+} from "./publication";
 import { pdfCjkAliases, restorePdfSourceCharacters } from "./pdf-text";
 import { publicationRasterSize } from "./media";
 
@@ -31,6 +41,11 @@ async function withRenderer<T>(
         ["/" + name, { data: asset.data, type: asset.mediaType }] as const,
     ),
   ]);
+  if (prepared.emojiFont)
+    resources.set("/assets/" + emojiFontFile, {
+      data: prepared.emojiFont.bytes,
+      type: "font/ttf",
+    });
   ses.protocol.handle(scheme, (request) => {
     const url = new URL(request.url),
       entry =
@@ -81,12 +96,13 @@ async function withRenderer<T>(
             .replace(/\{(?:page|pages)\}/g, "100000"),
         );
         const errors = await window.webContents.executeJavaScript(`(async()=>{
+          ${prepared.emojiFont ? `await document.fonts.load('16px PublicationEmoji', ${JSON.stringify(prepared.emojiFont.text)});` : ""}
           await document.fonts.ready;
           if (![...document.fonts].length || [...document.fonts].some(font=>font.status !== 'loaded')) throw new Error('工程字体无法解码或加载');
           await Promise.all([...document.images].map(async image=>{await image.decode();if(!image.naturalWidth || image.naturalWidth*image.naturalHeight>40000000)throw new Error('图片无法解码或超过四千万像素');}));
           const errors=[];
           if(${prepared.format === "pdf"}){
-            const context=document.createElement('canvas').getContext('2d');context.font='${pdf.furniture_size}px PublicationFont';
+            const context=document.createElement('canvas').getContext('2d');context.font='${pdf.furniture_size}px ${publicationFontFamily(prepared)}';
             for(const text of ${JSON.stringify(samples)})if(context.measureText(text).width>${prepared.width - prepared.configuration.layout.margin_left - prepared.configuration.layout.margin_right})errors.push('页眉或页脚过长，请缩短文字或调整字号');
           }
           for(const unit of document.querySelectorAll('.unit')){
@@ -146,6 +162,35 @@ async function renderPdf(prepared: PreparedPublication) {
       });
     }
     const document = await PDFDocument.load(raw, { updateMetadata: false });
+    // Chromium can repeat the complete heading in a tagged PDF bookmark.
+    // Only repair titles that exactly match two copies of a rendered heading.
+    const headings = new Set(
+      prepared.chapters.flatMap((chapter) =>
+        chapter.headings.map((heading) => heading.title),
+      ),
+    );
+    const repeated = new Map(
+      [...headings].map((title) => [title + title, title]),
+    );
+    const titleKey = PDFName.of("Title");
+    const firstKey = PDFName.of("First");
+    const nextKey = PDFName.of("Next");
+    const root = document.catalog.lookupMaybe(PDFName.of("Outlines"), PDFDict);
+    const stack = [root?.lookupMaybe(firstKey, PDFDict)];
+    while (stack.length) {
+      const bookmark = stack.pop();
+      if (!bookmark) continue;
+      const text = bookmark
+        .lookupMaybe(titleKey, PDFString, PDFHexString)
+        ?.decodeText();
+      const title =
+        text && !headings.has(text) ? repeated.get(text) : undefined;
+      if (title) bookmark.set(titleKey, PDFHexString.fromText(title));
+      stack.push(
+        bookmark.lookupMaybe(nextKey, PDFDict),
+        bookmark.lookupMaybe(firstKey, PDFDict),
+      );
+    }
     restorePdfSourceCharacters(
       document,
       pdfCjkAliases(prepared.font, prepared.fontText),

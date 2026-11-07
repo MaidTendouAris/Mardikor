@@ -198,7 +198,7 @@ test("portable settings embed the exact font, retain unknown TOML and remain val
     bundledFontHash,
   );
 });
-test("book EPUB is deterministic, preserves heading links and escapes XML metadata", () => {
+test("book EPUB is deterministic, preserves heading links and escapes XML metadata", async () => {
   const { file } = fixture();
   const info = publicationInfo(file, runtime);
   info.configuration.publication.metadata.title = '书名 & <标题> "引用"';
@@ -208,21 +208,22 @@ test("book EPUB is deterministic, preserves heading links and escapes XML metada
     prepared.issues.filter((i) => i.severity === "error"),
     [],
   );
-  const epub = buildEpub(prepared);
-  assert.ok(epub.equals(buildEpub(prepared)));
+  const epub = await buildEpub(prepared);
+  assert.ok(epub.equals(await buildEpub(prepared)));
   validateGeneratedEpub(epub);
   const zip = new AdmZip(epub),
     chapter = zip.readAsText("EPUB/chapter-0001.xhtml");
   assert.match(chapter, /href="chapter-0001.xhtml#heading-2"/);
   assert.match(
     zip.readAsText("EPUB/nav.xhtml"),
-    /后文<\/a><ol><li><a href="chapter-0001.xhtml#heading-3">小节/,
+    /1\.1 后文<\/a><ol><li><a href="chapter-0001.xhtml#heading-3">1\.1\.1 小节/,
   );
   assert.match(
     zip.readAsText("EPUB/package.opf"),
     /书名 &amp; &lt;标题&gt; &quot;引用&quot;/,
   );
-  assert.ok(zip.getEntry("EPUB/assets/body-font.otf"));
+  const subset = zip.getEntry("EPUB/assets/body-font.otf")!.getData();
+  assert.ok(subset.length < prepared.font.length / 4);
   assert.ok(zip.getEntry("META-INF/font-license.txt"));
 });
 test("mode and strict conversion preflight reject unsupported or lossy content", async () => {
@@ -249,7 +250,7 @@ test("mode and strict conversion preflight reject unsupported or lossy content",
     );
   }
 });
-test("virtual hierarchy, repeated documents, comic spreads and RTL remain distinct", () => {
+test("virtual hierarchy, repeated documents, comic spreads and RTL remain distinct", async () => {
   const { file } = fixture("02");
   const contents = parseToml(
     mdk.readMdkTextFile(file, "contents.toml").content,
@@ -268,7 +269,7 @@ test("virtual hierarchy, repeated documents, comic spreads and RTL remain distin
   info.configuration.comic.reading_direction = "rtl";
   configurePublication(file, info.configuration, info.revision, runtime);
   const prepared = preparePublication(file, "epub", runtime),
-    zip = new AdmZip(buildEpub(prepared));
+    zip = new AdmZip(await buildEpub(prepared));
   assert.equal(prepared.chapters.length, 3);
   assert.match(zip.readAsText("EPUB/nav.xhtml"), /分组 2/);
   const opf = zip.readAsText("EPUB/package.opf");
@@ -298,10 +299,10 @@ test("strict export rejects engine drift and stale preflight without publishing 
   );
   assert.equal(fs.existsSync(output), false);
 });
-test("generated EPUB validation catches broken generated references and malformed XHTML", () => {
+test("generated EPUB validation catches broken generated references and malformed XHTML", async () => {
   const { file } = fixture();
   configure(file);
-  const epub = buildEpub(preparePublication(file, "epub", runtime));
+  const epub = await buildEpub(preparePublication(file, "epub", runtime));
   const broken = new AdmZip(epub, { noSort: true });
   broken.updateFile(
     "EPUB/chapter-0001.xhtml",

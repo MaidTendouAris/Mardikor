@@ -17,11 +17,12 @@ import type {
   ResourceFile,
 } from "../shared/mdk";
 import { checkMedia, detectMediaType, assertPassiveSvg } from "./media";
-import { loadInsertionAssets } from "./insertion-assets";
+import { loadInsertionAssets, type InsertionSource } from "./insertion-assets";
 
 const limit = 64 * 1024 * 1024;
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const parser = createMarkdownParser(false);
+const legacyDecoder = new TextDecoder("gb18030", { fatal: true });
+const parser = createMarkdownParser();
 const digest = (data: Buffer) =>
   createHash("sha256").update(data).digest("hex");
 
@@ -79,11 +80,25 @@ function read(file: string) {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1)
     throw new Error("请选择普通 Markdown 文件，不支持链接文件。");
   if (info.size > limit) throw new Error("Markdown 文件超过 64 MiB。");
-  const bytes = fs.readFileSync(file),
+  const bytes = fs.readFileSync(file);
+  let content: string;
+  let encoding: "UTF-8" | "GB18030" = "UTF-8";
+  const invalidEncoding =
+    "无法按 UTF-8 或 GB18030 读取此 Markdown，请转换为 UTF-8 文本后重新打开。";
+  try {
     content = decoder.decode(bytes);
-  if (content.includes("\0"))
-    throw new Error("Markdown 文件必须是 UTF-8 文本。");
-  return { content, revision: digest(bytes) };
+  } catch {
+    if (bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])))
+      throw new Error(invalidEncoding);
+    try {
+      content = legacyDecoder.decode(bytes);
+      encoding = "GB18030";
+    } catch {
+      throw new Error(invalidEncoding);
+    }
+  }
+  if (content.includes("\0")) throw new Error(invalidEncoding);
+  return { content, encoding, revision: digest(bytes) };
 }
 function localFile(file: string, relative: string) {
   validatePath(relative);
@@ -129,7 +144,7 @@ function write(file: string, content: string, revision?: string) {
   }
 }
 export function openMarkdownFile(file: string): MdkProject {
-  const { content, revision } = read(file),
+  const { content, encoding, revision } = read(file),
     name = path.basename(file);
   const files: MdkProject["files"] = [
     {
@@ -178,9 +193,9 @@ export function openMarkdownFile(file: string): MdkProject {
   };
   visit(parser.parse(content, {}));
   const settings = defaultSettings();
-  settings.preview.render_containers = false;
   return {
     format: "markdown",
+    encoding,
     mode: "00",
     revision,
     contents: {
@@ -219,7 +234,8 @@ export function saveMarkdownSnapshot(file: string, snapshot: SaveSnapshot) {
   if (texts.length) {
     if (texts[0].path !== path.basename(file))
       throw new Error("不能修改单 Markdown 工程以外的文件。");
-    write(file, texts[0].content, current.revision);
+    if (texts[0].content !== current.content)
+      write(file, texts[0].content, current.revision);
   }
   return openMarkdownFile(file);
 }
@@ -245,7 +261,7 @@ export function readMarkdownResource(file: string, relative: string) {
 }
 export function insertMarkdownResources(
   file: string,
-  sources: string[],
+  sources: InsertionSource[],
   insertion: ResourceInsertion,
 ): ResourceInsertionResult {
   const current = read(file);

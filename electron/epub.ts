@@ -1,4 +1,5 @@
 import AdmZip from "adm-zip";
+import subsetFont from "subset-font";
 import { DOMParser } from "@xmldom/xmldom";
 import {
   escapeXml as x,
@@ -131,7 +132,7 @@ export function validateGeneratedEpub(bytes: Buffer) {
     )
       throw new Error("EPUB 包含未声明的出版资源。");
 }
-export function buildEpub(prepared: PreparedPublication) {
+export async function buildEpub(prepared: PreparedPublication) {
   const {
       configuration: c,
       snapshot: { project },
@@ -240,7 +241,10 @@ export function buildEpub(prepared: PreparedPublication) {
   );
   if (epub.embed_font || fixed) {
     item("body-font", prepared.fontFile, prepared.fontType);
-    add("EPUB/" + prepared.fontFile, prepared.font);
+    add(
+      "EPUB/" + prepared.fontFile,
+      await subsetFont(prepared.font, prepared.fontText),
+    );
   } else {
     // No reference to an absent font resource in the no-embedding variant.
     const entry = zip.readAsText("EPUB/style.css");

@@ -18,6 +18,7 @@ export interface PublicationSettings {
   pdf: {
     engine: string;
     font_sha256: string;
+    page_width?: number;
     page_height: number;
     landscape: boolean;
     scale: number;
@@ -117,7 +118,8 @@ export function defaultPublication(
     pdf: {
       engine: "",
       font_sha256: "",
-      page_height: 1018.285714,
+      page_width: (210 * 96) / 25.4,
+      page_height: (297 * 96) / 25.4,
       landscape: false,
       scale: 1,
       print_background: true,
@@ -181,6 +183,9 @@ export function inspectPublication(value: unknown): PublicationSettings {
     for (const [key, fallback] of Object.entries(template)) {
       let current = source[key];
       const field = prefix + "." + key;
+      // Original v1 configurations used layout.page_width for the paper.
+      if (field === "publication.pdf.page_width" && current === undefined)
+        continue;
       if (object(fallback)) result[key] = visit(current, fallback, field);
       else {
         if (typeof fallback === "number" && typeof current === "bigint")
@@ -243,6 +248,8 @@ export function inspectPublication(value: unknown): PublicationSettings {
   )
     throw new Error("出版日期须为有效的 UTC 时间，例如 2026-11-04T00:00:00Z。");
   if (
+    (pdf.page_width !== undefined &&
+      (pdf.page_width < 96 || pdf.page_width > 14400)) ||
     pdf.page_height < 96 ||
     pdf.page_height > 14400 ||
     pdf.scale < 0.25 ||
@@ -253,7 +260,7 @@ export function inspectPublication(value: unknown): PublicationSettings {
     pdf.first_page_number < 1 ||
     pdf.first_page_number > 100000
   )
-    throw new Error("PDF 页高、缩放、页码或页眉字号超出支持范围。");
+    throw new Error("PDF 纸张尺寸、缩放、页码或页眉字号超出支持范围。");
   if (
     !["none", "page", "right"].includes(pdf.chapter_break) ||
     !["reflowable", "pre-paginated"].includes(epub.layout) ||

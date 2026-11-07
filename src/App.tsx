@@ -227,6 +227,7 @@ export default function App() {
     if (workspace.current && !(await workspace.current.flush())) return;
     const directory = await desktop().dialog("directory");
     if (!directory) return;
+    await desktop().invoke("checkPackDirectory", directory);
     const output = await desktop().dialog("save-project", "工程.mdk");
     if (!output) return;
     await desktop().invoke("pack", directory, output, mode);
@@ -388,7 +389,7 @@ export default function App() {
                     disabled={busy || mode === "markdown"}
                     onClick={() => void run(packDirectory)}
                   >
-                    从目录打包
+                    打包已解包的 MDK 目录
                   </button>
                   <button
                     className="button primary"

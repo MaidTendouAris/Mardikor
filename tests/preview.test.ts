@@ -3,7 +3,12 @@ import { test } from "node:test";
 import { defaultSettings } from "../shared/defaults";
 import { renderPreview } from "../src/services/preview";
 import { validateSourceText } from "../shared/schema";
-import { splitMarkdownByHeading, requiresSourceMode } from "../shared/markdown";
+import {
+  splitMarkdownByHeading,
+  requiresSourceMode,
+  markdownHeadings,
+} from "../shared/markdown";
+import { reservedSectionNumbers } from "../shared/heading-numbering";
 test("preview supports task lists and switches custom container rendering", () => {
   const settings = defaultSettings();
   const markdown = "- [x] 已完成\n- [ ] 待处理\n\n:::note\n正文\n:::\n";
@@ -11,6 +16,30 @@ test("preview supports task lists and switches custom container rendering", () =
   assert.match(renderPreview(markdown, settings), /mdk-note/);
   settings.preview.render_containers = false;
   assert.doesNotMatch(renderPreview(markdown, settings), /class="mdk-note"/);
+});
+test("preview hides leading front matter and keeps footnotes, standalone containers and numbered links", () => {
+  const markdown =
+    "---\ntitle: Metadata\n---\n\n# Chapter\n\n## Section\n\nBody[^note].\n\n[^note]: Footnote.\n\n:::warning\nBody\n:::\n";
+  assert.deepEqual(
+    markdownHeadings(markdown).map((heading) => heading.title),
+    ["Chapter", "Section"],
+  );
+  const html = renderPreview(
+    markdown,
+    defaultSettings(),
+    "1",
+    "01",
+    "test-",
+    "a.md",
+    true,
+    reservedSectionNumbers(["1.1"]).get("1"),
+  );
+  assert.match(html, /<h2[^>]+>1\.2 Section/);
+  assert.match(html, /<a [^>]+>1\.2 Section/);
+  assert.match(html, /href="#fn-test--1"/);
+  assert.match(html, /id="fn-test--1"/);
+  assert.match(html, /class="container-label">Warning/);
+  assert.doesNotMatch(html, /Metadata/);
 });
 test("preview title, table of contents, numbering and depth follow project settings", () => {
   const settings = defaultSettings(),

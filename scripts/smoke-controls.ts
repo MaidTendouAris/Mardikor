@@ -89,6 +89,46 @@ try {
   if (!executablePath)
     await page.screenshot({ path: path.join(root, "custom-dropdown.png") });
   await page.keyboard.press("Escape");
+  const about = page.getByRole("region", { name: "关于 Mardikor" });
+  await expect(about.locator("code")).toHaveText(
+    await app.evaluate(({ app }) => app.getVersion()),
+  );
+  await about.getByText("许可证（GPL-3.0-only）", { exact: true }).click();
+  const license = about.getByLabel("GPLv3 许可证全文");
+  await expect(license).toBeVisible();
+  expect((await license.textContent())?.replace(/\r\n/g, "\n")).toBe(
+    (await fs.readFile("LICENSE", "utf8")).replace(/\r\n/g, "\n"),
+  );
+  const opened: string[] = [];
+  await app.evaluate(({ shell }) => {
+    shell.openExternal = async (url) => {
+      (
+        globalThis as typeof globalThis & { openedAboutUrls?: string[] }
+      ).openedAboutUrls ??= [];
+      (
+        globalThis as typeof globalThis & { openedAboutUrls: string[] }
+      ).openedAboutUrls.push(url);
+    };
+  });
+  for (const [name, suffix] of [
+    ["GitHub 仓库", ""],
+    ["问题反馈", "/issues"],
+  ]) {
+    const url = "https://github.com/MaidTendouAris/Mardikor" + suffix;
+    const link = about.getByRole("link", { name, exact: true });
+    await expect(link).toHaveAttribute("href", url);
+    await link.click();
+    opened.push(url);
+  }
+  await expect
+    .poll(() =>
+      app.evaluate(
+        () =>
+          (globalThis as typeof globalThis & { openedAboutUrls: string[] })
+            .openedAboutUrls,
+      ),
+    )
+    .toEqual(opened);
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   const font = page.getByRole("combobox", { name: "字体", exact: true });

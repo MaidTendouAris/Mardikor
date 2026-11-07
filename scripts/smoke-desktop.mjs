@@ -470,7 +470,9 @@ try {
     "01",
   );
   await page.getByRole("button", { name: "工程", exact: true }).click();
-  await page.getByRole("button", { name: "从目录打包", exact: true }).click();
+  await page
+    .getByRole("button", { name: "打包已解包的 MDK 目录", exact: true })
+    .click();
   await expect(page.locator(".project-heading")).toContainText(
     path.basename(repacked, ".mdk"),
   );

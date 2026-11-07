@@ -58,7 +58,7 @@ const groups: { title: string; note?: string; fields: Field[] }[] = [
     ].map((key, index) => ({
       path: "layout." + key,
       label: [
-        "页面宽度 / px",
+        "预览版心宽度 / px",
         "上边距 / px",
         "下边距 / px",
         "左边距 / px",

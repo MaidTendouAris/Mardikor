@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 
 const publicationSources = [
+  "assets/export/NotoEmoji.ttf",
   "electron/publication.ts",
   "electron/publication-render.ts",
   "electron/publication-runtime.ts",
@@ -14,6 +15,7 @@ const publicationSources = [
   "electron/archive.ts",
   "shared/publication.ts",
   "shared/markdown-parser.ts",
+  "shared/heading-numbering.ts",
   "shared/defaults.ts",
   "shared/schema.ts",
   "shared/references.ts",
@@ -30,7 +32,7 @@ export const options = {
   platform: "node",
   target: "node22",
   format: "cjs",
-  external: ["electron", "electron-updater"],
+  external: ["electron", "electron-updater", "subset-font"],
   sourcemap: true,
   plugins: [
     {
