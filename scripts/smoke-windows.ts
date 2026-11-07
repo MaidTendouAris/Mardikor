@@ -173,11 +173,16 @@ try {
   });
   expect(sessions).toBe(true);
 
+  // Make the duplicate dirty first, so it retains the old revision instead
+  // of automatically reloading the first window's save.
+  await append(duplicate, "重复窗口的过期编辑");
   await save(first);
   await expect
     .poll(() => fs.readFile(a, "utf8"))
     .toContain("第一窗口未保存内容");
-  await append(duplicate, "重复窗口的过期编辑");
+  await expect(duplicate.locator(".disk-change-bar")).toContainText(
+    "本地修改已保留",
+  );
   await save(duplicate);
   await expect(duplicate.locator('.toast[role="alert"]')).toContainText(/冲突/);
   expect(await fs.readFile(a, "utf8")).not.toContain("重复窗口的过期编辑");

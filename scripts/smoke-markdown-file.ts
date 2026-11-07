@@ -234,8 +234,15 @@ try {
     .poll(() => fs.readFile(created, "utf8"), { timeout: 15000 })
     .toContain("重启恢复草稿");
   await expect(page!.locator(".document-title")).toContainText("已保存");
-  await fs.writeFile(created, "外部进程内容");
+  await fs.writeFile(created, "外部进程已同步");
+  await expect(page!.locator(".monaco-source .view-lines")).toContainText(
+    "外部进程已同步",
+  );
   await append("冲突缓冲保留");
+  await fs.writeFile(created, "外部进程内容");
+  await expect(page!.locator(".disk-change-bar")).toContainText(
+    "本地修改已保留",
+  );
   await save();
   await expect(page!.locator('.toast[role="alert"]')).toContainText("其他进程");
   expect(await fs.readFile(created, "utf8")).toBe("外部进程内容");
