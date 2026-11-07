@@ -20,6 +20,7 @@ import { containsControl } from "../shared/schema";
 import { insertionFormats } from "../shared/resources";
 import { isMarkdownFile, isSupportedDocument } from "../shared/workspace";
 import * as markdownFile from "./markdown-file";
+import { watchProjectFile } from "./project-watch";
 import * as publication from "./publication";
 import { publicationRuntime } from "./publication-runtime";
 import { autoUpdater } from "electron-updater";
@@ -36,6 +37,7 @@ interface DocumentWindow {
   queuedFragment?: string;
   approvedFiles: Set<string>;
   revisions: Map<string, string>;
+  stopWatching?: () => void;
   droppedFiles: Map<string, { sources: InsertionSource[]; expires: number }>;
   publicationOutputs: Map<string, { revision: string | null; expires: number }>;
 }
@@ -134,12 +136,13 @@ function createHandlers(context: DocumentWindow): MdkCommands {
   const handlers: MdkCommands = {
     publicationInfo: (file) =>
       publication.publicationInfo(file, exportRuntime()),
-    configurePublication: (file, configuration, revision) =>
+    configurePublication: (file, configuration, revision, format) =>
       publication.configurePublication(
         file,
         configuration,
         revision,
         exportRuntime(),
+        format,
       ),
     planPublication: (file, format) =>
       publication.planPublication(file, format, exportRuntime()),
@@ -177,6 +180,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     export: mdk.exportMdk,
     exportPlan: mdk.planMdkExport,
     saveSnapshot: mdk.saveMdkSnapshot,
+    copyDraft: mdk.copyMdkDraft,
     readingUnits: mdk.readMdkReadingUnits,
     validate: mdk.validateMdk,
     readMode: mdk.readMdkMode,
@@ -235,7 +239,7 @@ function assertApproved(
 }
 const counts: Record<keyof MdkCommands, [number, number]> = {
   publicationInfo: [1, 1],
-  configurePublication: [3, 3],
+  configurePublication: [3, 4],
   planPublication: [2, 2],
   exportPublication: [4, 4],
   create: [2, 2],
@@ -256,6 +260,7 @@ const counts: Record<keyof MdkCommands, [number, number]> = {
   export: [2, 3],
   exportPlan: [1, 1],
   saveSnapshot: [2, 2],
+  copyDraft: [3, 3],
   readingUnits: [1, 1],
   validate: [1, 1],
   readMode: [1, 1],
@@ -393,7 +398,8 @@ function registerIpc() {
         typeof value.revision !== "string")
     )
       throw new Error("恢复草稿参数无效。");
-    return state.recovery(file, value, context.recoveryOwner);
+    const recovery = state.recovery(file, value, context.recoveryOwner);
+    return value === undefined ? recovery : null;
   });
   ipcMain.handle("app:open-url", (event, url) => {
     verifySender(event);
@@ -448,6 +454,10 @@ function registerIpc() {
           return;
         if (index === 2 && command === "addEntry" && arg === undefined) return;
         if (index === 2 && command === "insertResources") return;
+        if (index === 2 && command === "copyDraft") {
+          if (!arg || typeof arg !== "object") throw new Error("草稿无效。");
+          return;
+        }
         if (typeof arg !== "string" || arg.length > 16 * 1024 * 1024)
           throw new Error("IPC 参数类型或大小无效。");
       });
@@ -456,6 +466,7 @@ function registerIpc() {
         [
           "export",
           "exportPublication",
+          "copyDraft",
           "pack",
           "unpack",
           "importResource",
@@ -500,6 +511,7 @@ function registerIpc() {
         open: markdownFile.openMarkdownFile,
         readText: markdownFile.readMarkdownFile,
         saveSnapshot: markdownFile.saveMarkdownSnapshot,
+        copyDraft: markdownFile.copyMarkdownDraft,
         readResource: markdownFile.readMarkdownResource,
         insertResources: handlers.insertResources,
       };
@@ -519,14 +531,38 @@ function registerIpc() {
             ? "markdown"
             : (result as { mode: string }).mode,
         );
-        context.activeProject = source;
+        if (context.activeProject !== source) {
+          context.stopWatching?.();
+          context.activeProject = source;
+          context.stopWatching = watchProjectFile(source, (revision) => {
+            if (
+              !context.window.isDestroyed() &&
+              context.activeProject === source &&
+              context.revisions.get(source) !== revision
+            )
+              context.window.webContents.send(
+                "app:project-changed",
+                source,
+                revision,
+              );
+          });
+        }
         context.window.setTitle(`${path.basename(source)} - Mardikor`);
       }
       if (
         (mutating || command === "open" || command === "create") &&
         fs.existsSync(source)
       )
-        revisions.set(source, mdk.fileRevision(source));
+        revisions.set(
+          source,
+          (
+            result as
+              { revision?: string; project?: { revision: string } } | undefined
+          )?.revision ??
+            (result as { project?: { revision: string } } | undefined)?.project
+              ?.revision ??
+            mdk.fileRevision(source),
+        );
       return result;
     },
   );
@@ -761,6 +797,7 @@ function createWindow(file?: string, fragment?: string) {
     }
   });
   window.on("closed", () => {
+    context.stopWatching?.();
     persistWindowSize();
     for (const pending of updateSaves.values())
       if (pending.sender === id) pending.finish(false);

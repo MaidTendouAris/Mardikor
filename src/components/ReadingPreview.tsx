@@ -8,7 +8,8 @@ import {
 } from "react";
 import type { MdkProject, MdkSettings, ReadingUnit } from "../../shared/mdk";
 import { desktop } from "../services/desktop";
-import { renderPreview } from "../services/preview";
+import { mayContainMath, renderPreview } from "../services/preview";
+import { usePreviewMath } from "../services/preview-math";
 import { resolveReference } from "../../shared/references";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import {
@@ -95,6 +96,9 @@ export function ReadingPreview({
         ]
       : []
     : units;
+  const previewMath = usePreviewMath(
+    displayed.some((unit) => mayContainMath(unit.markdown ?? "")),
+  );
   const comic = project.mode === "02",
     pair = comic && settings.mode.comic.spread_mode === "double",
     width = pair ? 2 : 1;
@@ -137,6 +141,7 @@ export function ReadingPreview({
     activeDocument?.markdown,
     fluid,
     namespace,
+    previewMath,
     project.mode,
     settings,
     standalone,
@@ -168,14 +173,7 @@ export function ReadingPreview({
     return () => {
       live = false;
     };
-  }, [
-    units,
-    file,
-    settings,
-    project.mode,
-    activeDocument?.path,
-    activeDocument?.markdown,
-  ]);
+  }, [units, file, settings, project.mode, activeDocument?.path, rendered]);
   useEffect(() => {
     if (!heading) return;
     const article = Array.from(
@@ -217,7 +215,6 @@ export function ReadingPreview({
               key={unit.id}
               data-entry-id={unit.id}
               data-source-path={unit.path}
-              style={{ background: settings.colors.background }}
             >
               {!fluid && (
                 <header className="reading-unit-label">

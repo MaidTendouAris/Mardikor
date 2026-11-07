@@ -102,6 +102,15 @@ const api: DesktopApi = {
       dropListeners.delete(callback);
     };
   },
+  onProjectChanged: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      file: string,
+      revision: string | null,
+    ) => callback(file, revision);
+    ipcRenderer.on("app:project-changed", listener);
+    return () => ipcRenderer.removeListener("app:project-changed", listener);
+  },
   invoke: (command, ...args) => ipcRenderer.invoke("mdk:invoke", command, args),
   dialog: (kind, defaultPath) =>
     ipcRenderer.invoke("app:dialog", kind, defaultPath),

@@ -96,10 +96,17 @@ export const markdownSyntax: MarkdownSyntax[] = [
   },
   { id: "escape", label: "转义标点", group: "源码写法", example: "\\*文字\\*" },
   {
-    id: "html",
-    label: "原始 HTML（预览显示源码）",
+    id: "math-inline",
+    label: "行内公式",
     group: "源码写法",
-    example: "<div>内容</div>",
+    example: "$E=mc^2$",
+    sourceOnly: true,
+  },
+  {
+    id: "math-block",
+    label: "块级公式",
+    group: "源码写法",
+    example: "$$\n\\frac{a}{b}\n$$",
     sourceOnly: true,
   },
 ];

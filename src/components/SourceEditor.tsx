@@ -116,10 +116,58 @@ export interface SourceEditorHandle {
   scrollTo: (ratio: number) => void;
   dropDraft: (x: number, y: number, marker: string) => InsertionDraft;
   applyValue: (content: string) => void;
+  firstVisibleLine: () => number;
+}
+export function ConflictDiff({
+  path,
+  disk,
+  local,
+}: {
+  path: string;
+  disk: string;
+  local: string;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const original = monaco.editor.createModel(disk, language(path));
+    const modified = monaco.editor.createModel(local, language(path));
+    const editor = monaco.editor.createDiffEditor(host.current!, {
+      theme: "mdk-light",
+      readOnly: true,
+      originalEditable: false,
+      automaticLayout: true,
+      renderSideBySide: true,
+      useInlineViewWhenSpaceIsLimited: false,
+      minimap: { enabled: false },
+      maxComputationTime: 2000,
+    });
+    editor.setModel({ original, modified });
+    return () => {
+      editor.dispose();
+      original.dispose();
+      modified.dispose();
+    };
+  }, [path, disk, local]);
+  return <div className="disk-diff" ref={host} />;
 }
 export interface SourceModelPool {
   id: string;
   models: Map<string, monaco.editor.ITextModel>;
+}
+const modelText = new WeakMap<
+  monaco.editor.ITextModel,
+  { version: number; value: string }
+>();
+function readModel(model: monaco.editor.ITextModel) {
+  const version = model.getVersionId();
+  const cached = modelText.get(model);
+  if (cached?.version === version) return cached.value;
+  const value = model.getValue(
+    monaco.editor.EndOfLinePreference.TextDefined,
+    true,
+  );
+  modelText.set(model, { version, value });
+  return value;
 }
 export const SourceEditor = forwardRef<
   SourceEditorHandle,
@@ -129,10 +177,11 @@ export const SourceEditor = forwardRef<
     files: ProjectFile[];
     readOnly: boolean;
     zoom: number;
+    largeDocument?: boolean;
     onChange: (value: string) => void;
     onSave: () => void;
     onPosition: (line: number, column: number) => void;
-    onScroll?: (ratio: number) => void;
+    onScroll?: (ratio: number, firstLine: number) => void;
     onViewportReady?: () => void;
     reveal?: { path: string; line: number; key: number };
     modelPool?: SourceModelPool;
@@ -144,6 +193,7 @@ export const SourceEditor = forwardRef<
     files,
     readOnly,
     zoom,
+    largeDocument,
     onChange,
     onSave,
     onPosition,
@@ -160,6 +210,15 @@ export const SourceEditor = forwardRef<
     modelPool?.models ?? new Map<string, monaco.editor.ITextModel>(),
   );
   const views = useRef(new Map<string, monaco.editor.ICodeEditorViewState>());
+  function release(path: string, model: monaco.editor.ITextModel | null) {
+    if (
+      !model ||
+      monaco.editor.getEditors().some((item) => item.getModel() === model)
+    )
+      return;
+    if (models.current.get(path) === model) models.current.delete(path);
+    if (!model.isDisposed()) model.dispose();
+  }
   const selected = useRef("");
   const updating = useRef(false);
   const changingModel = useRef(false);
@@ -267,6 +326,9 @@ export const SourceEditor = forwardRef<
             monaco.editor.ScrollType.Immediate,
           );
       },
+      firstVisibleLine() {
+        return instance.current?.getVisibleRanges()[0]?.startLineNumber ?? 1;
+      },
       dropDraft(x, y, marker) {
         const editor = instance.current,
           model = editor?.getModel();
@@ -369,11 +431,14 @@ export const SourceEditor = forwardRef<
       lineNumbers: "on",
       folding: true,
       bracketPairColorization: { enabled: false },
-      wordWrap: "on",
+      wordWrap: largeDocument ? "off" : "on",
+      unicodeHighlight: { ambiguousCharacters: false },
       renderWhitespace: "selection",
       scrollBeyondLastLine: false,
       ariaLabel: "源码编辑器",
-      accessibilitySupport: "on",
+      // Monaco's forced screen reader mode sends entire visible lines to the
+      // input surface. In auto mode it bounds that text unless a reader is active.
+      accessibilitySupport: largeDocument ? "auto" : "on",
       readOnly: false,
       tabSize: 2,
       insertSpaces: true,
@@ -416,9 +481,7 @@ export const SourceEditor = forwardRef<
       if (updating.current) return;
       const model = editor.getModel();
       if (!model) return;
-      callbacks.current.onChange(
-        model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true),
-      );
+      callbacks.current.onChange(readModel(model));
       diagnostics(model);
     });
     const cursor = editor.onDidChangeCursorPosition((e) =>
@@ -428,7 +491,10 @@ export const SourceEditor = forwardRef<
       if (!e.scrollTopChanged || changingModel.current) return;
       const range = editor.getScrollHeight() - editor.getLayoutInfo().height;
       if (range > 0)
-        callbacks.current.onScroll?.(editor.getScrollTop() / range);
+        callbacks.current.onScroll?.(
+          editor.getScrollTop() / range,
+          editor.getVisibleRanges()[0]?.startLineNumber ?? 1,
+        );
     });
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
       callbacks.current.onSave(),
@@ -438,7 +504,10 @@ export const SourceEditor = forwardRef<
       cursor.dispose();
       scroll.dispose();
       actions.forEach((action) => action.dispose());
+      const model = editor.getModel();
       editor.dispose();
+      instance.current = null;
+      release(selected.current, model);
       if (!modelPool) {
         models.current.forEach((model) => model.dispose());
         models.current.clear();
@@ -450,8 +519,12 @@ export const SourceEditor = forwardRef<
     if (!editor || !path) return;
     markdownKey.current?.set(language(path) === "markdown");
     if (selected.current !== path) {
+      const previousPath = selected.current;
+      const previousModel = editor.getModel();
       const previous = editor.saveViewState();
       if (previous) views.current.set(selected.current, previous);
+      if (views.current.size > 32)
+        views.current.delete(views.current.keys().next().value!);
       let model = models.current.get(path);
       if (!model) {
         model = monaco.editor.createModel(
@@ -464,10 +537,12 @@ export const SourceEditor = forwardRef<
           }),
         );
         models.current.set(path, model);
+        modelText.set(model, { version: model.getVersionId(), value });
       }
       selected.current = path;
       changingModel.current = true;
       editor.setModel(model);
+      release(previousPath, previousModel);
       const view = views.current.get(path);
       if (view) editor.restoreViewState(view);
       const position = editor.getPosition();
@@ -477,17 +552,14 @@ export const SourceEditor = forwardRef<
       callbacks.current.onViewportReady?.();
     }
     const model = editor.getModel();
-    if (
-      model &&
-      model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true) !==
-        value
-    ) {
+    if (model && readModel(model) !== value) {
       // Loading or refreshing a model must never mark an untouched source dirty.
       // Monaco internally normalizes mixed line endings, while the saved buffer
       // retains the original bytes until an actual user edit.
       updating.current = true;
       try {
         model.setValue(value);
+        modelText.set(model, { version: model.getVersionId(), value });
       } finally {
         updating.current = false;
       }
@@ -505,6 +577,12 @@ export const SourceEditor = forwardRef<
       fontSize: Math.round((14 * zoom) / 100),
     });
   }, [zoom]);
+  useEffect(() => {
+    instance.current?.updateOptions({
+      wordWrap: largeDocument ? "off" : "on",
+      accessibilitySupport: largeDocument ? "auto" : "on",
+    });
+  }, [largeDocument]);
   useEffect(() => {
     if (!reveal || reveal.path !== path || !instance.current) return;
     const line = Math.min(

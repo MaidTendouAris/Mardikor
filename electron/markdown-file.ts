@@ -191,7 +191,13 @@ export function openMarkdownFile(file: string): MdkProject {
       if (token.children) visit(token.children);
     }
   };
-  visit(parser.parse(content, {}));
+  // The source editor can open files much larger than the preview limit.
+  // Resource reads resolve relative paths independently of this optional list.
+  if (
+    content.length <= 2_000_000 &&
+    (content.includes("[") || content.includes("<"))
+  )
+    visit(parser.parse(content, {}));
   const settings = defaultSettings();
   return {
     format: "markdown",
@@ -238,6 +244,23 @@ export function saveMarkdownSnapshot(file: string, snapshot: SaveSnapshot) {
       write(file, texts[0].content, current.revision);
   }
   return openMarkdownFile(file);
+}
+export function copyMarkdownDraft(
+  file: string,
+  output: string,
+  snapshot: SaveSnapshot,
+) {
+  const texts = [
+    ...(snapshot.text ? [snapshot.text] : []),
+    ...(snapshot.texts ?? []),
+  ];
+  if (
+    !isMarkdownFile(output) ||
+    texts.length !== 1 ||
+    texts[0].path !== path.basename(file)
+  )
+    throw new Error("请选择 .md 输出路径，并提供当前文稿的草稿。");
+  write(output, texts[0].content);
 }
 export function readMarkdownResource(file: string, relative: string) {
   const target = localFile(file, relative),

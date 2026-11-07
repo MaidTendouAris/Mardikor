@@ -236,7 +236,6 @@ test("mode and strict conversion preflight reject unsupported or lossy content",
   mdk.setMdkMode(file, "01");
   for (const [markdown, code] of [
     ["# 标题\n\n[坏锚点](#不存在)", "E_ANCHOR_MISSING"],
-    ['# 标题\n\n<img src="x.png"/>', "E_EPUB_RAW_HTML"],
     ["# 标题\n\n![图](https://example.com/x.png)", "E_REMOTE_MEDIA"],
     ["# 标题\n\n[附件](../resources/other/a.pdf)", "E_LINK_NOT_EXPORTED"],
     ["# 标题\n\n[危险](javascript:alert(1))", "E_CONVERSION_URL"],
@@ -249,6 +248,33 @@ test("mode and strict conversion preflight reject unsupported or lossy content",
       code,
     );
   }
+});
+test("EPUB-only configuration embeds emoji subsets and escapes raw HTML without copying the body font into MDK", async () => {
+  const { file } = fixture();
+  mdk.saveMdkTextFile(
+    file,
+    "markdown/001.md",
+    "# 中文 😀🚀👍\n\n<kbd>按键</kbd>",
+  );
+  const info = publicationInfo(file, runtime);
+  configurePublication(
+    file,
+    info.configuration,
+    info.revision,
+    runtime,
+    "epub",
+  );
+  assert.ok(fs.statSync(file).size < 200_000);
+  const prepared = preparePublication(file, "epub", runtime);
+  assert.equal(
+    prepared.issues.some((i) => i.severity === "error"),
+    false,
+  );
+  assert.ok(prepared.issues.some((i) => i.code === "W_EPUB_HTML_TEXT"));
+  const zip = new AdmZip(await buildEpub(prepared));
+  assert.match(zip.readAsText("EPUB/chapter-0001.xhtml"), /&lt;kbd&gt;/);
+  assert.ok(zip.getEntry("EPUB/assets/NotoEmoji.ttf"));
+  assert.ok(zip.getEntry("META-INF/emoji-font-license.txt"));
 });
 test("virtual hierarchy, repeated documents, comic spreads and RTL remain distinct", async () => {
   const { file } = fixture("02");

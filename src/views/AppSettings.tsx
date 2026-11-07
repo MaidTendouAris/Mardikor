@@ -46,6 +46,45 @@ export function AppSettings({
         </div>
         <label className="setting-row">
           <span>
+            <strong>默认文稿配色</strong>
+            <small>
+              用于预览和可视化编辑。工程可单独选择配色，出版仍使用导出配置。
+            </small>
+          </span>
+          <Select
+            aria-label="默认文稿配色"
+            className="short-input"
+            value={draft.readingTheme ?? "light"}
+            onValueChange={(value) =>
+              setDraft({
+                ...draft,
+                readingTheme: value as Preferences["readingTheme"],
+              })
+            }
+          >
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+            <option value="warm">护眼</option>
+            <option value="system">跟随系统</option>
+          </Select>
+        </label>
+        <label className="setting-row">
+          <span>
+            <strong>标题大纲跟随窗格</strong>
+            <small>按当前编辑光标或预览位置高亮标题并滚动大纲。</small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="标题大纲跟随窗格"
+            checked={draft.followOutline !== false}
+            onChange={(event) =>
+              setDraft({ ...draft, followOutline: event.target.checked })
+            }
+          />
+        </label>
+        <label className="setting-row">
+          <span>
             <strong>双击文件时打开的视图</strong>
             <small>
               从文件管理器打开 .md/.mdk

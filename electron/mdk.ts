@@ -22,6 +22,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { readArchive, checkNames, MAX_FILE, MAX_TOTAL } from "./archive";
 import { resolveReference } from "../shared/references";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import { loadInsertionAssets, type InsertionSource } from "./insertion-assets";
@@ -80,8 +81,41 @@ export class MdkRevisionError extends Error {
 export class MdkLockedError extends Error {
   readonly code = "E_MDK_LOCKED";
   constructor(lock: string) {
-    super("工程正在写入，请稍后重试：" + lock);
+    super(
+      "工程正在写入，请稍后重试。若进程已退出，可用 mardikor unlock 检查遗留锁：" +
+        lock,
+    );
   }
+}
+export function unlockMdk(file: string) {
+  const lock = path.resolve(file) + ".mardikor-lock";
+  const info = fs.lstatSync(lock, { throwIfNoEntry: false });
+  if (!info) return false;
+  if (!info.isDirectory())
+    throw new MdkLockedError(lock + "（旧格式锁，请确认无写入后手动清理）");
+  const entries = fs.readdirSync(lock);
+  if (entries.length !== 1 || !/^[a-f0-9-]{36}\.json$/.test(entries[0]))
+    throw new MdkLockedError(lock + "（锁的所有者无法确认）");
+  const owner = path.join(lock, entries[0]);
+  const stat = fs.lstatSync(owner);
+  if (!stat.isFile() || stat.size > 1024) throw new MdkLockedError(lock);
+  const data = JSON.parse(fs.readFileSync(owner, "utf8"));
+  if (
+    data.host !== os.hostname() ||
+    !Number.isSafeInteger(data.pid) ||
+    data.pid < 1
+  )
+    throw new MdkLockedError(lock + "（其他主机持锁或所有者无法确认）");
+  try {
+    process.kill(data.pid, 0);
+    throw new MdkLockedError(lock + "（持锁进程仍在运行）");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  // The unique marker keeps a competing unlocker from deleting a new writer's lock.
+  fs.unlinkSync(owner);
+  fs.rmdirSync(lock);
+  return true;
 }
 function load(file: string, expectedRevision?: string): Document {
   const size = fs.statSync(file).size;
@@ -265,16 +299,27 @@ function commit(
         throw new Error(errors.map((issue) => issue.message).join("\n"));
     }
     const lock = path.resolve(file) + ".mardikor-lock";
-    let lockFd: number;
     try {
-      lockFd = fs.openSync(lock, "wx", 0o600);
+      fs.mkdirSync(lock, { mode: 0o700 });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST")
         throw new MdkLockedError(lock);
       throw error;
     }
+    const owner = path.join(lock, randomUUID() + ".json");
     try {
-      fs.writeFileSync(lockFd, process.pid + "\n");
+      fs.writeFileSync(
+        owner,
+        JSON.stringify({
+          pid: process.pid,
+          host: os.hostname(),
+          createdAt: new Date().toISOString(),
+        }),
+        {
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
       if (
         doc.source === path.resolve(file) &&
         doc.revision &&
@@ -303,11 +348,8 @@ function commit(
       }
       doc.revision = verified.revision;
     } finally {
-      try {
-        fs.closeSync(lockFd);
-      } finally {
-        fs.unlinkSync(lock);
-      }
+      if (fs.existsSync(owner)) fs.unlinkSync(owner);
+      fs.rmdirSync(lock);
     }
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
@@ -390,8 +432,9 @@ export function configureMdkPublication(
   file: string,
   patch: Table,
   assets: { path: string; data: Buffer }[],
+  revision?: string,
 ) {
-  const doc = load(file);
+  const doc = load(file, revision);
   assertEditable(doc);
   if (settingsInfo(doc).problems.length)
     throw new Error("请先修复 settings.toml，再保存导出配置。");
@@ -904,7 +947,8 @@ function referenceIssues(doc: Document): ValidationIssue[] {
         if (token.children) walk(token.children);
       }
     };
-    walk(markdownParser.parse(source, {}));
+    if (source.includes("[") || source.includes("<"))
+      walk(markdownParser.parse(source, {}));
   }
   for (const name of files)
     if (name.startsWith("resources/") && !used.has(name))
@@ -1264,6 +1308,16 @@ export function saveMdkSnapshot(
   applySnapshot(doc, snapshot);
   commit(file, doc);
   return project(doc);
+}
+export function copyMdkDraft(
+  file: string,
+  output: string,
+  snapshot: SaveSnapshot,
+) {
+  if (!/\.mdk$/i.test(output)) throw new Error("副本须使用 .mdk 扩展名。");
+  const doc = load(file);
+  applySnapshot(doc, { ...snapshot, revision: doc.revision! });
+  commit(output, doc, { overwrite: false });
 }
 export function insertMdkResources(
   file: string,

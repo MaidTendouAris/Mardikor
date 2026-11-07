@@ -8,7 +8,7 @@
 - **Linux** 需要 Node.js 22.12 或更新版本。将示例中的版本号换成实际归档的版本号。
 
 ```sh
-npm install -g ./mardikor-cli-0.2.0.tgz
+npm install -g ./mardikor-cli-0.2.1.tgz
 mardikor --version
 ```
 
@@ -29,7 +29,9 @@ mardikor validate "小说.mdk"
 
 `list --json` 返回工程模式、修订号和按位置排列的文稿。使用 `entries[].id` 定位文稿，顺序和文件名更改后仍可使用原 ID。`read --json` 返回与该次读取对应的 `revision` 和 `markdown`。
 
-`write`、`write-file` 和 `apply` 默认从标准输入读取 UTF‑8，也接受 `--from <文件>`。在 Windows PowerShell 中，`--from` 便于传入原样的 UTF‑8 文件。
+`write`、`write-file` 和 `apply` 默认从标准输入读取，也接受 `--from <文件>`。`write` 自动识别 UTF‑8 和 GB18030，`write-file` 默认使用 UTF‑8。两者可用 `--encoding utf-8|gb18030|auto` 显式指定，新提交的文本以无 BOM 的 UTF‑8 写入。`apply` 的 JSON 使用 UTF‑8。
+
+每次输入和单个工程内文件最多 64 MiB，容器及其解压后文件总量最多 256 MiB。
 
 在 Linux 终端可以打开指定文稿进行编辑。
 
@@ -37,7 +39,7 @@ mardikor validate "小说.mdk"
 EDITOR=vim mardikor edit "小说.mdk" "<文稿ID>"
 ```
 
-`edit` 使用 `$VISUAL`、`$EDITOR` 或 Linux 的 `vi`。`--editor` 接受会等待编辑结束的可执行文件路径。Windows 可用 `--editor` 或 `VISUAL`／`EDITOR` 指定这个路径。编辑器退出后才提交，提交冲突时错误信息包含草稿路径。
+`edit` 使用 `$VISUAL`、`$EDITOR` 或 Linux 的 `vi`。环境变量和 `--editor` 都只填写会等待编辑结束的可执行文件路径。附加参数用 `--editor-arg` 逐项传入，例如 `--editor code --editor-arg=--wait`。提交冲突时错误信息包含草稿路径。
 
 ## 命令参考
 
@@ -50,13 +52,15 @@ EDITOR=vim mardikor edit "小说.mdk" "<文稿ID>"
 | `edit <工程> <ID> [--editor <程序>]`                | 用终端或外部编辑器修改指定文稿                               |
 | `add <工程> <文件名> [--after <ID>]`                | 新建文稿，可插在指定文稿后                                   |
 | `rename <工程> <ID> <文件名>`                       | 重命名文稿                                                   |
-| `remove <工程> <ID>`                                | 移除目录项，无其他目录项引用时同时删除正文                   |
+| `remove <工程> <ID>`                                | 移除目录项，子级提升一层；无其他引用时删除正文               |
 | `move <工程> <ID> <before\|after\|inside> <目标ID>` | 移动文稿及其子级                                             |
 | `read-file <工程> <内部路径>`                       | 读取工程内的 Markdown、TOML 或其他 UTF‑8 文本                |
 | `write-file <工程> <内部路径>`                      | 写入或创建工程内的 UTF‑8 文本                                |
 | `apply <工程>`                                      | 在一次保存中提交正文和目录位置变更                           |
 | `import <工程> <类型> <本地文件>`                   | 导入 image、video、audio、font 或 other 资源，返回工程内路径 |
 | `validate <工程>`                                   | 检查容器、控制文件和资源引用                                 |
+| `watch <工程> --json`                               | 输出当前修订号，之后每次变化输出一行 JSON                    |
+| `unlock <工程>`                                     | 检查本机退出进程遗留的写入锁                                 |
 
 改写现有工程的命令需要 `--if-revision <修订号>`。交互式 `edit` 会自动记录打开文稿时的修订号。写入成功后返回新的 `revision`。
 
@@ -81,7 +85,7 @@ mardikor apply "小说.mdk" --if-revision "<修订号>" --from changes.json --js
 mardikor validate "小说.mdk" --json
 ```
 
-`--json` 的成功结果写到标准输出，命令错误以 `code`、`message` 写到标准错误。`validate --json` 即使报告含错误也会在标准输出返回完整报告。
+`--json` 的成功结果写到标准输出，命令错误以 `code`、`message` 写到标准错误。`validate --json` 即使报告含错误也会在标准输出返回完整报告。写入类命令默认返回 JSON，以便取得新修订号。`list --json` 同时提供 `mode` 编码和 `mode_name`。运行 `mardikor <命令> --help` 查看单个命令用法。
 
 | 退出码 | 含义                   |
 | ------ | ---------------------- |
@@ -90,4 +94,4 @@ mardikor validate "小说.mdk" --json
 | `2`    | 命令参数无效           |
 | `3`    | 修订冲突或工程正被写入 |
 
-桌面端和 CLI 共用写入锁。进程异常退出后可能遗留与工程相邻的 `<文件名>.mardikor-lock`。先检查文件内记录的进程及其他正在进行的写入，确认已无写入后再删除锁文件。
+桌面端和 CLI 共用写入锁。进程异常退出后可运行 `mardikor unlock "小说.mdk"`。它只清理本机已退出进程持有的锁。遇到旧格式锁或所有者记录缺失，确认所有写入均已结束后再手动清理工程旁的 `<文件名>.mardikor-lock`。

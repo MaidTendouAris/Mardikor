@@ -12,7 +12,8 @@ import {
   imageMarkdown,
   codeFence,
 } from "../shared/markdown-editing";
-import { renderPreview } from "../src/services/preview";
+import math from "@vscode/markdown-it-katex";
+import { enablePreviewMath, renderPreview } from "../src/services/preview";
 
 const window = new Window();
 Object.assign(globalThis, {
@@ -129,4 +130,15 @@ test("source formatting generates safe inline code, fenced blocks and nested par
   assert.equal(markdownInsertion("code", " a "), "`  a  `");
   assert.equal(markdownInsertion("indented-code", "一\n二"), "    一\n    二");
   assert.equal(markdownInsertion("quote", "一\n二"), "> 一\n> 二");
+});
+
+test("math preview renders inline and block MathML without enabling external content", () => {
+  enablePreviewMath(math);
+  const html = renderPreview(
+    "能量 $E=mc^2$，代码 `$a+b$`。\n\n$$\n\\frac{a}{b}\n$$\n\n$\\includegraphics{https://example.com/image.png}$",
+  );
+  assert.match(html, /<math\b[^>]*><semantics>.*<msup>/s);
+  assert.match(html, /<math[^>]+display="block".*<mfrac>/s);
+  assert.match(html, /<code>\$a\+b\$<\/code>/);
+  assert.doesNotMatch(html, /<img\b|href="https:\/\/example\.com/);
 });

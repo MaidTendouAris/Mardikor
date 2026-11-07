@@ -14,6 +14,7 @@ export interface EditorGroupState {
   zoom: number;
   cursor: { line: number; column: number };
   activeHeading: number;
+  outlinePath?: string;
   reveal?: { path: string; line: number; key: number };
   heading?: { path: string; index: number; key: number };
 }

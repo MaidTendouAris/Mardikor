@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
   useMemo,
+  lazy,
+  Suspense,
 } from "react";
 import {
   FileCode2,
@@ -28,6 +30,7 @@ import { HeadingOutline } from "../components/HeadingOutline";
 import { Select } from "../components/Select";
 import { EditorGroup, type EditorGroupHandle } from "../components/EditorGroup";
 import { SplitHandle } from "../components/SplitHandle";
+import { EditorDialog } from "../components/EditorMenu";
 import type { SourceModelPool } from "../components/SourceEditor";
 import type { NativeDocumentDrop } from "../../shared/resources";
 import { ProjectTree, type TreeAction } from "../components/ProjectTree";
@@ -41,7 +44,6 @@ import { comparePosition } from "../../shared/outline";
 import {
   splitMarkdownByHeading,
   requiresSourceMode,
-  markdownHeadings,
   type MarkdownHeading,
 } from "../../shared/markdown";
 import { defaultSettings } from "../../shared/defaults";
@@ -61,6 +63,12 @@ import type {
 } from "../../shared/mdk";
 import type { Preferences } from "../../shared/desktop";
 import type { Ask, Notify } from "../App";
+import {
+  canRenderPreview,
+  isLargeDocument,
+  previewTextLimit,
+} from "../services/document-size";
+import { useMarkdownHeadings } from "../services/markdown-tasks";
 
 export interface WorkspaceHandle {
   flush: () => Promise<boolean>;
@@ -68,6 +76,11 @@ export interface WorkspaceHandle {
 }
 const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const sourceOnly = requiresSourceMode;
+const ConflictDiff = lazy(async () => {
+  await import("monaco-editor/nls/lang/zh-cn.js");
+  const module = await import("../components/SourceEditor");
+  return { default: module.ConflictDiff };
+});
 
 export const Workspace = forwardRef<
   WorkspaceHandle,
@@ -108,6 +121,15 @@ export const Workspace = forwardRef<
   const [resourceKind, setResourceKind] = useState<ResourceKind>("image");
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [lastSaved, setLastSaved] = useState("");
+  const [diskChange, setDiskChange] = useState<{ revision: string | null }>();
+  const lastAutoReload = useRef<typeof diskChange>(undefined);
+  const [comparison, setComparison] = useState<{
+    path: string;
+    local: string;
+    disk: string;
+    truncated: boolean;
+  }>();
+  const [cliInfo, setCliInfo] = useState(false);
   const [projectFont, setProjectFont] = useState("");
   const [buffers, setBuffers] = useState<Record<string, Buffer>>({});
   const buffersRef = useRef(buffers);
@@ -190,8 +212,61 @@ export const Workspace = forwardRef<
   );
   const isMarkdown = !!buffer && isManuscript(project, buffer.path);
   const markdown = isMarkdown ? buffer.content : "";
-  const headings = useMemo(() => markdownHeadings(markdown), [markdown]);
+  const followOutline = preferences.followOutline !== false;
+  const outlinePath =
+    followOutline && tab === "preview"
+      ? (activeGroup.outlinePath ?? activePath)
+      : activePath;
+  const outlineBuffer = buffers[outlinePath];
+  const [outlineText, setOutlineText] = useState<{
+    path: string;
+    text: string;
+  }>();
+  useEffect(() => {
+    if (
+      !outlinePath ||
+      outlinePath === activePath ||
+      outlineBuffer ||
+      !isManuscript(project, outlinePath)
+    )
+      return;
+    let live = true;
+    void desktop()
+      .invoke("readText", file, outlinePath)
+      .then(
+        ({ content }) => {
+          if (live) setOutlineText({ path: outlinePath, text: content });
+        },
+        () => {
+          if (live) setOutlineText(undefined);
+        },
+      );
+    return () => {
+      live = false;
+    };
+  }, [file, outlinePath, activePath, outlineBuffer, project?.revision]);
+  const outlineSource =
+    outlinePath === activePath
+      ? markdown
+      : (outlineBuffer?.content ??
+        (outlineText?.path === outlinePath ? outlineText.text : ""));
+  const headings = useMarkdownHeadings(outlinePath, outlineSource);
+  const groupPaths = groups.map((group) => group.path).join("\0");
+  useEffect(() => {
+    const open = new Set(groupPaths.split("\0"));
+    const current = buffersRef.current;
+    const next = Object.fromEntries(
+      Object.entries(current).filter(
+        ([path, buffer]) => open.has(path) || buffer.content !== buffer.saved,
+      ),
+    );
+    if (Object.keys(current).length !== Object.keys(next).length) {
+      buffersRef.current = next;
+      setBuffers(next);
+    }
+  }, [groupPaths]);
   const characterCount = useMemo(() => {
+    if (markdown.length > previewTextLimit) return markdown.length;
     let count = 0;
     for (const _character of markdown) count++;
     return count;
@@ -226,9 +301,21 @@ export const Workspace = forwardRef<
     };
   }, [file, settings.appearance.font_family, notify]);
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useEffect(
+    () =>
+      window.mardikor?.onProjectChanged((target, revision) => {
+        if (target === file) setDiskChange({ revision });
+      }),
+    [file],
+  );
 
   useEffect(() => {
     if (!draftReady || !project) return;
+    const delay = dirtyBuffers.some(
+      ({ content }) => content.length > previewTextLimit,
+    )
+      ? 3000
+      : 500;
     const timer = setTimeout(() => {
       void desktop()
         .recovery(
@@ -249,7 +336,7 @@ export const Workspace = forwardRef<
             : null,
         )
         .catch((error) => notify("恢复草稿保存失败：" + String(error), true));
-    }, 500);
+    }, delay);
     return () => clearTimeout(timer);
   }, [
     draftReady,
@@ -283,7 +370,7 @@ export const Workspace = forwardRef<
     }
     if (tab === "preview") {
       patchGroup(activeId, {
-        heading: { path: activePath, index: heading.index, key: Date.now() },
+        heading: { path: outlinePath, index: heading.index, key: Date.now() },
       });
       return;
     }
@@ -437,12 +524,16 @@ export const Workspace = forwardRef<
     patchGroup(groupId, (g) => ({
       path,
       tab: current
-        ? view === "write" &&
-          (!isManuscript(loaded, path) || sourceOnly(current.content))
+        ? (view === "write" &&
+            (!isManuscript(loaded, path) ||
+              isLargeDocument(current.content) ||
+              sourceOnly(current.content))) ||
+          (view === "preview" && !canRenderPreview(current.content))
           ? "source"
           : view
         : "source",
       activeHeading: -1,
+      outlinePath: undefined,
       revision: g.revision + 1,
       reveal: undefined,
       heading: undefined,
@@ -568,17 +659,16 @@ export const Workspace = forwardRef<
     };
   }, [file]);
 
-  async function flush(syncDirectory = true): Promise<boolean> {
-    if (!project || !file || !dirty) return true;
+  function makeSnapshot() {
     const submitted = Object.values(buffersRef.current).filter(
       (b) => b.content !== b.saved,
     );
-    const snapshot = {
-      revision: project.revision,
+    return {
+      revision: project!.revision,
       ...textSnapshot(submitted),
       ...(directoryDirty
         ? {
-            positions: project.contents.entries.map(({ id, position }) => ({
+            positions: project!.contents.entries.map(({ id, position }) => ({
               id,
               position,
             })),
@@ -586,7 +676,115 @@ export const Workspace = forwardRef<
         : {}),
       ...(settingsDirty ? { settings } : {}),
     };
-    await desktop().recovery(file, snapshot);
+  }
+  async function reloadDisk(discard = false) {
+    if (
+      discard &&
+      dirty &&
+      !(await ask({
+        title: "丢弃本地修改并重新加载？",
+        description:
+          "重新加载将使用磁盘版本。需要保留本地修改时，可以先另存草稿副本。",
+        confirm: "重新加载磁盘版本",
+        danger: true,
+      }))
+    )
+      return;
+    await execute(async () => {
+      const loaded = await desktop().invoke("open", file);
+      const fallback = loaded.contents.entries[0]?.path ?? "contents.toml";
+      const next: Record<string, Buffer> = {};
+      const updated = [];
+      for (const group of groupsRef.current) {
+        const path =
+          loaded.files.some((item) => item.path === group.path) ||
+          (group.path === "settings.toml" && loaded.format !== "markdown")
+            ? group.path
+            : fallback;
+        const item = loaded.files.find((item) => item.path === path);
+        if (
+          !next[path] &&
+          (item?.is_text || (path === "settings.toml" && !item))
+        ) {
+          const content = item
+            ? (await desktop().invoke("readText", file, path)).content
+            : stringify(loaded.settings);
+          next[path] = { path, content, saved: item ? content : "" };
+        }
+        updated.push({
+          ...group,
+          path,
+          outlinePath: undefined,
+          activeHeading: -1,
+          heading: undefined,
+          reveal: undefined,
+          revision: group.revision + 1,
+        });
+      }
+      await desktop().recovery(file, null);
+      buffersRef.current = next;
+      groupsRef.current = updated;
+      setBuffers(next);
+      setGroups(updated);
+      setProject(loaded);
+      setSettings(loaded.settings);
+      setSettingsDirty(false);
+      setDirectoryDirty(false);
+      setLastSaved("");
+      setDiskChange((previous) =>
+        !previous ||
+        previous === diskChange ||
+        previous.revision === loaded.revision
+          ? undefined
+          : previous,
+      );
+      notify("已加载磁盘中的最新版本。");
+    });
+  }
+  useEffect(() => {
+    if (!diskChange || !project || !draftReady) return;
+    if (diskChange.revision === project.revision) setDiskChange(undefined);
+    else if (diskChange.revision && !dirty && !busy && !locked.current) {
+      // Mark this revision attempted so a failed reload can be retried explicitly.
+      const change = diskChange;
+      if (lastAutoReload.current === change) return;
+      lastAutoReload.current = change;
+      void reloadDisk();
+    }
+  }, [diskChange, project?.revision, draftReady, dirty, busy]);
+
+  async function saveDraftCopy() {
+    const extension = standalone ? ".md" : ".mdk";
+    const output = await desktop().dialog(
+      standalone ? "save-markdown" : "save-project",
+      basename(file).replace(/\.(mdk|md)$/i, "") + "-草稿" + extension,
+    );
+    if (!output) return;
+    await desktop().invoke("copyDraft", file, output, makeSnapshot());
+    notify("已另存草稿副本。");
+  }
+  async function compareDisk() {
+    if (!buffer) return;
+    const { content } = await desktop().invoke("readText", file, activePath);
+    setComparison({
+      path: activePath,
+      local: buffer.content.slice(0, 200_000),
+      disk: content.slice(0, 200_000),
+      truncated: Math.max(buffer.content.length, content.length) > 200_000,
+    });
+  }
+
+  async function flush(syncDirectory = true): Promise<boolean> {
+    if (!project || !file || !dirty) return true;
+    if (diskChange && diskChange.revision !== project.revision)
+      throw new Error("磁盘工程已被其他进程修改；请在冲突提示中处理本地草稿。");
+    const submitted = Object.values(buffersRef.current).filter(
+      (b) => b.content !== b.saved,
+    );
+    const snapshot = makeSnapshot();
+    await desktop()
+      .recovery(file, snapshot)
+      .catch((error) => notify("恢复草稿保存失败：" + String(error), true));
     const loaded = await desktop().invoke("saveSnapshot", file, {
       ...snapshot,
       ...(!syncDirectory ? { positions: undefined } : {}),
@@ -634,6 +832,7 @@ export const Workspace = forwardRef<
     criticalDirty: false,
     settingsDirty,
     directoryDirty,
+    externalChange: false,
   });
   saveState.current = {
     hasTextChanges: dirtyBuffers.length > 0,
@@ -642,6 +841,7 @@ export const Workspace = forwardRef<
     ),
     settingsDirty,
     directoryDirty,
+    externalChange: !!diskChange && diskChange.revision !== project?.revision,
   };
   useImperativeHandle(
     ref,
@@ -671,7 +871,8 @@ export const Workspace = forwardRef<
           state.settingsDirty ||
           state.directoryDirty
         ) ||
-        state.criticalDirty
+        state.criticalDirty ||
+        state.externalChange
       )
         return;
       void execute(() => flushRef.current(true));
@@ -711,7 +912,7 @@ export const Workspace = forwardRef<
         return;
       if (!(await flush(true))) return;
     } else if (!(await flush(false))) return;
-    let loaded = await desktop().invoke("open", file);
+    let loaded = dirty ? await desktop().invoke("open", file) : project;
     if (directoryDirty && path !== "contents.toml")
       loaded = {
         ...loaded,
@@ -732,7 +933,11 @@ export const Workspace = forwardRef<
     const target = groupsRef.current.find((g) => g.id === groupId)!;
     if (next === "write" && !isManuscript(project, target.path))
       throw new Error("请选择 Markdown 文稿。");
-    patchGroup(groupId, (g) => ({ tab: next, revision: g.revision + 1 }));
+    patchGroup(groupId, (g) => ({
+      tab: next,
+      outlinePath: undefined,
+      revision: g.revision + 1,
+    }));
   }
   function updateContent(path: string, content: string) {
     const current = buffersRef.current[path];
@@ -1218,6 +1423,12 @@ export const Workspace = forwardRef<
             headings={headings}
             active={activeHeading}
             enabled={isMarkdown}
+            follow={followOutline}
+            emptyMessage={
+              outlineSource.length > previewTextLimit
+                ? "文稿较大，实时大纲已暂停。"
+                : undefined
+            }
             onSelect={(heading) => {
               void jumpHeading(heading).catch((error) =>
                 notify(String(error), true),
@@ -1295,6 +1506,11 @@ export const Workspace = forwardRef<
             </span>
           </div>
           <div className="button-row">
+            {project && !standalone && (
+              <button className="button small" onClick={() => setCliInfo(true)}>
+                CLI 信息
+              </button>
+            )}
             <button
               className="icon-button"
               aria-label="向右拆分编辑器"
@@ -1322,6 +1538,41 @@ export const Workspace = forwardRef<
             </button>
           </div>
         </div>
+        {diskChange && (
+          <div className="disk-change-bar" role="status">
+            <strong>
+              {diskChange.revision ? "磁盘文件已变化" : "磁盘文件暂不可读取"}
+            </strong>
+            {dirty && (
+              <span>本地修改已保留。另存副本将把本地草稿应用到磁盘版本。</span>
+            )}
+            <button
+              className="button small"
+              disabled={busy}
+              onClick={() => void reloadDisk(true)}
+            >
+              重新加载
+            </button>
+            {dirty && (
+              <button
+                className="button small"
+                disabled={busy}
+                onClick={() => void execute(saveDraftCopy)}
+              >
+                另存草稿副本
+              </button>
+            )}
+            {buffer && diskChange.revision && (
+              <button
+                className="button small"
+                disabled={busy}
+                onClick={() => void execute(compareDisk)}
+              >
+                对比当前文稿
+              </button>
+            )}
+          </div>
+        )}
         <div
           className={
             "editor-groups " + (groups.length === 2 ? "two-editor-groups" : "")
@@ -1365,6 +1616,13 @@ export const Workspace = forwardRef<
                     : (fileProgress.current.get(group.path) ?? 0)
                 }
                 active={activeGroup.id === group.id}
+                followOutline={followOutline}
+                readingTheme={preferences.readingTheme}
+                headings={
+                  outlinePath === group.path && activeGroup.id === group.id
+                    ? headings
+                    : undefined
+                }
                 split={groups.length === 2}
                 label={index === 0 ? "左栏" : "右栏"}
                 busy={busy}
@@ -1408,7 +1666,7 @@ export const Workspace = forwardRef<
           <span>
             {tab === "source" ? `行 ${cursor.line}，列 ${cursor.column}` : ""}
             {settings.preview.show_word_count && isMarkdown
-              ? ` · ${characterCount.toLocaleString()} 字符`
+              ? ` · ${markdown.length > previewTextLimit ? "约 " : ""}${characterCount.toLocaleString()} 字符`
               : ""}
           </span>
           <div className="zoom-control">
@@ -1428,6 +1686,84 @@ export const Workspace = forwardRef<
           </div>
         </footer>
       </div>
+      {comparison && (
+        <EditorDialog
+          title={"对比磁盘与本地 · " + comparison.path}
+          onClose={() => setComparison(undefined)}
+        >
+          <div className="disk-compare">
+            <strong>磁盘版本</strong>
+            <strong>本地缓冲区</strong>
+            {comparison.truncated && <p>长文稿仅对比前 20 万字符。</p>}
+            <Suspense fallback={<p role="status">正在加载差异…</p>}>
+              <ConflictDiff
+                path={comparison.path}
+                disk={comparison.disk}
+                local={comparison.local}
+              />
+            </Suspense>
+          </div>
+        </EditorDialog>
+      )}
+      {cliInfo && project && (
+        <EditorDialog title="CLI 工程信息" onClose={() => setCliInfo(false)}>
+          <div className="cli-project-info">
+            <label>
+              工程路径 <input readOnly value={file} />
+            </label>
+            <label>
+              文稿 ID <input readOnly value={activeEntry?.id ?? ""} />
+            </label>
+            <label>
+              修订号 <input readOnly value={project.revision} />
+            </label>
+            <button
+              className="button"
+              disabled={!activeEntry}
+              onClick={() => {
+                if (!activeEntry) return;
+                const quote = (value: string) =>
+                  "'" + value.replaceAll("'", "''") + "'";
+                void desktop()
+                  .edit(
+                    "copy-text",
+                    `mardikor read ${quote(file)} ${quote(activeEntry.id)}`,
+                  )
+                  .then(
+                    () => notify("已复制 PowerShell 读取命令。"),
+                    (error) => notify(String(error), true),
+                  );
+              }}
+            >
+              复制读取命令（PowerShell）
+            </button>
+            <button
+              className="button"
+              onClick={() => {
+                void desktop()
+                  .edit(
+                    "copy-text",
+                    JSON.stringify(
+                      {
+                        path: file,
+                        id: activeEntry?.id,
+                        revision: project.revision,
+                      },
+                      null,
+                      2,
+                    ),
+                  )
+                  .then(
+                    () => notify("已复制 CLI 工程信息。"),
+                    (error) => notify(String(error), true),
+                  );
+              }}
+            >
+              复制 JSON
+            </button>
+          </div>
+        </EditorDialog>
+      )}
     </div>
   );
 });

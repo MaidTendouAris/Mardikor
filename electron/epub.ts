@@ -3,6 +3,7 @@ import subsetFont from "subset-font";
 import { DOMParser } from "@xmldom/xmldom";
 import {
   escapeXml as x,
+  emojiFontFile,
   sha256,
   type PreparedPublication,
 } from "./publication";
@@ -163,9 +164,7 @@ export async function buildEpub(prepared: PreparedPublication) {
     '<?xml version="1.0" encoding="UTF-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
   );
   if ((epub.embed_font || fixed) && sha256(prepared.font) === bundledFontHash) {
-    const license = prepared.snapshot.files.get(
-      "resources/other/Mardikor-Noto-OFL.txt",
-    );
+    const license = prepared.fontLicense;
     if (!license)
       throw new Error("内置字体的分发许可证缺失，请重新保存导出配置。");
     add("META-INF/font-license.txt", license);
@@ -245,6 +244,15 @@ export async function buildEpub(prepared: PreparedPublication) {
       "EPUB/" + prepared.fontFile,
       await subsetFont(prepared.font, prepared.fontText),
     );
+    if (prepared.emojiFont) {
+      const href = "assets/" + emojiFontFile;
+      item("emoji-font", href, "font/ttf");
+      add(
+        "EPUB/" + href,
+        await subsetFont(prepared.emojiFont.bytes, prepared.emojiFont.text),
+      );
+      add("META-INF/emoji-font-license.txt", prepared.emojiFont.license);
+    }
   } else {
     // No reference to an absent font resource in the no-embedding variant.
     const entry = zip.readAsText("EPUB/style.css");

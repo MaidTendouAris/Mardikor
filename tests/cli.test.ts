@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { buildSync } from "esbuild";
 import { fileRevision, saveMdkSnapshot } from "../electron/mdk";
@@ -19,7 +20,7 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
     platform: "node",
   });
   const file = path.join(root, "测试 & 书籍.mdk");
-  const run = (args: string[], input?: string) => {
+  const run = (args: string[], input?: string | Uint8Array) => {
     const result = spawnSync(process.execPath, [cli, ...args], {
       input,
       encoding: "utf8",
@@ -28,23 +29,29 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
     assert.ifError(result.error);
     return result;
   };
-  const json = (args: string[], input?: string) => {
+  const json = (args: string[], input?: string | Uint8Array) => {
     const result = run([...args, "--json"], input);
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
   const created = json(["new", file, "--mode", "book"]);
   assert.equal(created.mode, "01");
+  assert.equal(created.mode_name, "book");
   assert.equal(run(["new", file]).status, 1);
   assert.equal(fileRevision(file), created.revision);
   if (process.platform !== "win32") fs.chmodSync(file, 0o640);
   const first = created.entries[0].id;
   const markdown = "\ufeff# 开篇\r\n\r\n正文。\r\n";
-  const written = json(
+  const gbk = json(
     ["write", file, first, "--if-revision", created.revision],
+    Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+  );
+  assert.equal(run(["read", file, first]).stdout, "中文");
+  const written = json(
+    ["write", file, first, "--if-revision", gbk.revision],
     markdown,
   );
-  assert.equal(run(["read", file, first]).stdout, markdown);
+  assert.equal(run(["read", file, first]).stdout, markdown.slice(1));
   assert.equal(json(["read", file, first]).revision, written.revision);
   const stale = run(
     ["write", file, first, "--if-revision", created.revision, "--json"],
@@ -95,6 +102,18 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   );
   assert.equal(bad.status, 1);
   assert.equal(fileRevision(file), batch.revision);
+  for (const malformed of [
+    "{",
+    JSON.stringify({ positions: [{ id: first, position: "banana" }] }),
+  ]) {
+    const invalid = run(
+      ["apply", file, "--if-revision", batch.revision, "--json"],
+      malformed,
+    );
+    assert.equal(invalid.status, 2);
+    assert.equal(JSON.parse(invalid.stderr).code, "E_USAGE");
+    assert.equal(fileRevision(file), batch.revision);
+  }
   assert.equal(json(["validate", file]).valid, true);
   const binaryWrite = run(
     [
@@ -146,6 +165,21 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
     [0, 3],
   );
   assert.match(run(["read", file, first]).stdout, /^[甲乙]$/);
+  assert.equal(fs.existsSync(lock), false);
+  fs.mkdirSync(lock);
+  const owner = path.join(lock, randomUUID() + ".json");
+  const ownerRecord = (pid: number) =>
+    JSON.stringify({
+      pid,
+      host: os.hostname(),
+      createdAt: new Date().toISOString(),
+    });
+  fs.writeFileSync(owner, ownerRecord(process.pid));
+  assert.equal(run(["unlock", file]).status, 3);
+  const departed = spawnSync(process.execPath, ["-e", ""]);
+  assert.equal(departed.status, 0);
+  fs.writeFileSync(owner, ownerRecord(departed.pid));
+  assert.equal(json(["unlock", file]).unlocked, true);
   assert.equal(fs.existsSync(lock), false);
   if (process.platform !== "win32")
     assert.equal(fs.statSync(file).mode & 0o777, 0o640);

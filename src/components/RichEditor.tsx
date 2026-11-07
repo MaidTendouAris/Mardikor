@@ -27,6 +27,7 @@ export function RichEditor({
   reservedSections?: ReadonlySet<string>;
 }) {
   const changeRef = useRef(onChange);
+  const editorText = useRef("");
   changeRef.current = onChange;
   const resolveRef = useRef(resolveResource);
   resolveRef.current = resolveResource;
@@ -42,7 +43,10 @@ export function RichEditor({
         "aria-label": "正文编辑器",
       },
     },
-    onUpdate: ({ editor }) => changeRef.current(editor.getMarkdown()),
+    onUpdate: ({ editor }) => {
+      editorText.current = editor.getMarkdown();
+      changeRef.current(editorText.current);
+    },
   });
   useEffect(() => {
     if (!editor) return;
@@ -81,11 +85,13 @@ export function RichEditor({
     }
   }, [editor, editable]);
   useEffect(() => {
-    if (editor && editor.getMarkdown() !== content)
+    if (editor && editorText.current !== content) {
       editor.commands.setContent(content, {
         contentType: "markdown",
         emitUpdate: false,
       });
+      editorText.current = content;
+    }
     // Shared buffers update sibling groups; local typing preserves the selection.
   }, [editor, revision, content]);
   useEffect(() => {

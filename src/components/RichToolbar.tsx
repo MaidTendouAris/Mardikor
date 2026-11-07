@@ -884,8 +884,7 @@ export function RichToolbar({
                 {(selectedSyntax?.sourceOnly ||
                   requiresSourceMode(sourceText)) && (
                   <p className="field-hint">
-                    插入后切换到源码编辑，以保留此语法的完整写法。原始 HTML
-                    在预览中按文本显示。
+                    插入后切换到源码编辑，以保留此语法的完整写法。
                   </p>
                 )}
               </>

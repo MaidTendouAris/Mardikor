@@ -93,36 +93,50 @@ export function PublicationExport({
       setBusy(false);
     }
   }
-  async function save() {
+  const needsSave =
+    !!info &&
+    !!draft &&
+    (changed ||
+      !info.saved ||
+      (!info.standalone &&
+        format === "pdf" &&
+        draft.appearance.font_family === "system"));
+  async function persistConfiguration() {
     if (!draft || !info) return;
+    const current = await desktop().invoke("publicationInfo", file);
+    if (
+      current.revision !== info.revision &&
+      (current.mode !== info.mode ||
+        current.saved !== info.saved ||
+        JSON.stringify(current.configuration) !==
+          JSON.stringify(info.configuration))
+    )
+      throw new Error("工程导出设置已变化，请重新读取配置后再保存。");
+    const value = await desktop().invoke(
+      "configurePublication",
+      file,
+      draft,
+      current.revision,
+      format,
+    );
+    setInfo(value);
+    setDraft(value.configuration);
+    setChanged(false);
+    setPlan(null);
+    await onConfigured(file);
+    return value;
+  }
+  async function save() {
     setBusy(true);
     setError("");
     try {
       if (!(await flush())) return;
-      const current = await desktop().invoke("publicationInfo", file);
-      if (
-        current.revision !== info.revision &&
-        (current.mode !== info.mode ||
-          current.saved !== info.saved ||
-          JSON.stringify(current.configuration) !==
-            JSON.stringify(info.configuration))
-      )
-        throw new Error("工程导出设置已变化，请重新读取配置后再保存。");
-      const value = await desktop().invoke(
-        "configurePublication",
-        file,
-        draft,
-        current.revision,
-      );
-      setInfo(value);
-      setDraft(value.configuration);
-      setChanged(false);
-      setPlan(null);
-      await onConfigured(file);
+      const value = await persistConfiguration();
+      if (!value) return;
       notify(
         value.standalone
           ? "导出配置已保存在本机，Markdown 原文件保持不变。"
-          : "导出配置及字体已保存至工程。",
+          : "导出配置已保存至工程。",
       );
     } catch (error) {
       setError(String(error));
@@ -136,6 +150,7 @@ export function PublicationExport({
     setError("");
     try {
       if (!(await flush())) return;
+      if (needsSave) await persistConfiguration();
       const result = await desktop().invoke("planPublication", file, format);
       setPlan(result);
       if (!result.report.valid || !exporting) return;
@@ -312,31 +327,31 @@ export function PublicationExport({
             </button>
             <button
               className="button"
-              disabled={busy || changed || !info.saved}
+              disabled={busy}
               onClick={() => void perform(false)}
             >
               <FileCheck2 size={15} />
-              严格预检
+              {needsSave ? "保存并预检" : "严格预检"}
             </button>
             <button
               className="button primary"
-              disabled={busy || changed || !info.saved}
+              disabled={busy}
               aria-describedby={
-                changed || !info.saved ? "publication-save-required" : undefined
+                needsSave ? "publication-save-required" : undefined
               }
               onClick={() => void perform(true)}
             >
               <Download size={15} />
-              导出 {format.toUpperCase()}
+              {needsSave ? "保存并导出" : "导出"} {format.toUpperCase()}
             </button>
           </div>
-          {(changed || !info.saved) && (
+          {needsSave && (
             <p
               id="publication-save-required"
               className="publication-preflight"
               role="status"
             >
-              请先保存当前导出配置，再执行预检或导出。
+              执行预检或导出时会先保存当前配置。
             </p>
           )}
           {busy && (
@@ -347,7 +362,9 @@ export function PublicationExport({
           <p className="publication-note">
             {info.standalone
               ? "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。"
-              : "以下选项保存在 settings.toml。内置字体会自动存入 resources/font；将 MDK 分发到其他电脑时配置与字体一并保留。"}
+              : format === "pdf"
+                ? "PDF 配置与固定字体随 MDK 分发，可在其他电脑复现导出。"
+                : "EPUB 配置保存在 settings.toml，内置字体的子集直接写入电子书。"}
           </p>
           {plan && (
             <p className="publication-preflight" role="status">
@@ -795,7 +812,8 @@ export function PublicationExport({
                 <p className="publication-note">
                   EPUB 3
                   转换执行前严格检查容器、控制文件、阅读顺序、链接锚点、字体和资源兼容性。原始
-                  HTML、外部媒体、附件链接或不兼容图片必须先处理；生成后再次检查
+                  HTML
+                  按文本显示。外部媒体、附件链接和不兼容图片须先处理；生成后再次检查
                   XHTML、manifest、spine 和导航。
                 </p>
               </details>

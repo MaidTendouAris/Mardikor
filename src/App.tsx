@@ -54,7 +54,7 @@ export default function App() {
   const [generation, setGeneration] = useState(0);
   const [initialView, setInitialView] = useState<EditorTab>("source");
   const [initialFragment, setInitialFragment] = useState<string>();
-  const [mode, setMode] = useState("01");
+  const [mode, setMode] = useState("00");
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [preferences, setPreferences] = useState<Preferences>({
     autosave: true,

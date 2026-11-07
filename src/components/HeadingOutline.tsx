@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ListTree } from "lucide-react";
 import type { MarkdownHeading } from "../../shared/markdown";
 export function HeadingOutline({
@@ -6,13 +6,64 @@ export function HeadingOutline({
   active,
   onSelect,
   enabled,
+  follow,
+  emptyMessage,
 }: {
   headings: MarkdownHeading[];
   active: number;
   onSelect: (heading: MarkdownHeading) => void;
   enabled: boolean;
+  follow: boolean;
+  emptyMessage?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(0);
+  const [height, setHeight] = useState(0);
+  const rowHeight = 30;
+  const virtual = headings.length > 100;
+  const first = virtual
+    ? Math.max(
+        0,
+        Math.min(headings.length - 1, Math.floor(top / rowHeight) - 6),
+      )
+    : 0;
+  const end = virtual
+    ? Math.min(headings.length, first + Math.ceil(height / rowHeight) + 13)
+    : headings.length;
+  useEffect(() => {
+    const node = list.current;
+    if (!node) return;
+    const measure = () => setHeight(node.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [collapsed]);
+  useLayoutEffect(() => {
+    const node = list.current;
+    if (!follow || !node || active < 0) return;
+    if (virtual) {
+      const offset = active * rowHeight;
+      if (
+        offset < node.scrollTop ||
+        offset + rowHeight > node.scrollTop + node.clientHeight
+      ) {
+        node.scrollTop = Math.max(0, offset - node.clientHeight / 2);
+        setTop(node.scrollTop);
+      }
+    } else {
+      const row = node.children[active] as HTMLElement | undefined;
+      if (
+        row &&
+        (row.offsetTop < node.scrollTop ||
+          row.offsetTop + row.offsetHeight > node.scrollTop + node.clientHeight)
+      )
+        node.scrollTop =
+          row.offsetTop -
+          Math.max(0, (node.clientHeight - row.offsetHeight) / 2);
+    }
+  }, [active, follow, virtual, collapsed]);
   return (
     <section
       className={`heading-outline ${collapsed ? "collapsed" : ""}`}
@@ -31,15 +82,31 @@ export function HeadingOutline({
         <small>{headings.length}</small>
       </button>
       {!collapsed && (
-        <div className="heading-outline-list" role="tree" aria-label="文内标题">
-          {headings.map((heading) => (
+        <div
+          ref={list}
+          className="heading-outline-list"
+          role="tree"
+          aria-label="文内标题"
+          onScroll={(event) => {
+            if (virtual) setTop(event.currentTarget.scrollTop);
+          }}
+        >
+          {virtual && first > 0 && (
+            <div role="presentation" style={{ height: first * rowHeight }} />
+          )}
+          {headings.slice(first, end).map((heading) => (
             <button
               role="treeitem"
               aria-level={heading.depth + 1}
+              aria-setsize={headings.length}
+              aria-posinset={heading.index + 1}
               aria-selected={active === heading.index}
               className={active === heading.index ? "active" : ""}
               key={heading.index}
-              style={{ paddingLeft: 12 + heading.depth * 14 }}
+              style={{
+                paddingLeft: 12 + heading.depth * 14,
+                height: rowHeight,
+              }}
               onClick={() => onSelect(heading)}
               title={heading.title}
               data-heading-line={heading.line}
@@ -48,9 +115,18 @@ export function HeadingOutline({
               <span>{heading.title || "无标题"}</span>
             </button>
           ))}
+          {virtual && end < headings.length && (
+            <div
+              role="presentation"
+              style={{ height: (headings.length - end) * rowHeight }}
+            />
+          )}
           {!headings.length && (
             <p>
-              {enabled ? "当前文稿没有标题。" : "选择 Markdown 文稿查看标题。"}
+              {emptyMessage ??
+                (enabled
+                  ? "当前文稿没有标题。"
+                  : "选择 Markdown 文稿查看标题。")}
             </p>
           )}
         </div>

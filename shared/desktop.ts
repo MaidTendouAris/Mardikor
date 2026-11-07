@@ -29,6 +29,7 @@ export interface MdkCommands {
     path: string,
     configuration: PublicationConfiguration,
     revision: string,
+    format?: PublicationFormat,
   ) => PublicationInfo;
   planPublication: (
     path: string,
@@ -74,6 +75,7 @@ export interface MdkCommands {
   ) => MdkSummary;
   exportPlan: (path: string) => ExportPlan;
   saveSnapshot: (path: string, snapshot: SaveSnapshot) => MdkProject;
+  copyDraft: (path: string, output: string, snapshot: SaveSnapshot) => void;
   readingUnits: (path: string) => ReadingUnit[];
   validate: (path: string) => ValidationReport;
   readMode: (path: string) => string;
@@ -108,6 +110,8 @@ export interface Preferences {
   directorySyncThreshold: number;
   externalOpenView?: "preview" | "source" | "write";
   autoCheckUpdates?: boolean;
+  followOutline?: boolean;
+  readingTheme?: "light" | "dark" | "warm" | "system";
 }
 export type DialogKind =
   | "open-project"
@@ -156,6 +160,9 @@ export interface DesktopApi {
     value?: SaveSnapshot | null,
   ): Promise<SaveSnapshot | null>;
   onDocumentDrop(callback: (drop: NativeDocumentDrop) => void): () => void;
+  onProjectChanged(
+    callback: (file: string, revision: string | null) => void,
+  ): () => void;
 }
 
 declare global {

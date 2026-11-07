@@ -12,7 +12,12 @@ const defaults: Preferences = {
   directorySyncThreshold: 200,
   externalOpenView: "preview",
   autoCheckUpdates: true,
+  followOutline: true,
+  readingTheme: "light",
 };
+// A single 64 MiB Markdown entry can take twice its UTF-8 size in a
+// serialized UTF-16 draft. Leave room for the surrounding snapshot metadata.
+const recoveryLimit = 129 * 1024 * 1024;
 type WindowSize = { width: number; height: number; maximized: boolean };
 export class AppState {
   private file: string;
@@ -53,6 +58,14 @@ export class AppState {
         };
       if (typeof this.value.preferences.autoCheckUpdates !== "boolean")
         this.value.preferences.autoCheckUpdates = true;
+      if (typeof this.value.preferences.followOutline !== "boolean")
+        this.value.preferences.followOutline = true;
+      if (
+        !["light", "dark", "warm", "system"].includes(
+          this.value.preferences.readingTheme ?? "",
+        )
+      )
+        this.value.preferences.readingTheme = "light";
       if (
         Number.isFinite(saved.updateLastChecked) &&
         saved.updateLastChecked >= 0
@@ -136,7 +149,7 @@ export class AppState {
     }
     if (value === undefined) {
       if (!fs.existsSync(target)) return null;
-      if (fs.statSync(target).size > 16 * 1024 * 1024)
+      if (fs.statSync(target).size > recoveryLimit)
         throw new Error("恢复草稿超过实现支持范围。");
       return deserialize(fs.readFileSync(target));
     }
@@ -145,8 +158,8 @@ export class AppState {
       return null;
     }
     const data = serialize(value);
-    if (data.length > 16 * 1024 * 1024)
-      throw new Error("恢复草稿超过 16 MiB 实现支持范围。");
+    if (data.length > recoveryLimit)
+      throw new Error("恢复草稿超过 129 MiB 实现支持范围。");
     fs.mkdirSync(dir, { recursive: true });
     const temporary = target + "." + randomUUID() + ".tmp";
     try {
@@ -190,7 +203,11 @@ export class AppState {
         (value.externalOpenView !== undefined &&
           !["preview", "source", "write"].includes(value.externalOpenView)) ||
         (value.autoCheckUpdates !== undefined &&
-          typeof value.autoCheckUpdates !== "boolean")
+          typeof value.autoCheckUpdates !== "boolean") ||
+        (value.followOutline !== undefined &&
+          typeof value.followOutline !== "boolean") ||
+        (value.readingTheme !== undefined &&
+          !["light", "dark", "warm", "system"].includes(value.readingTheme))
       )
         throw new Error("偏好设置无效。");
       this.value.preferences = {

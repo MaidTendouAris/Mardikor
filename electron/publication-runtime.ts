@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  PDFArray,
   PDFDict,
   PDFDocument,
   PDFHexString,
@@ -145,8 +146,43 @@ async function renderPdf(prepared: PreparedPublication) {
       generateDocumentOutline: pdf.outline,
     };
     let raw = await window.webContents.printToPDF(options);
-    if (pdf.page_ranges) {
-      const complete = await PDFDocument.load(raw, { updateMetadata: false });
+    const complete =
+      pdf.include_toc || pdf.page_ranges
+        ? await PDFDocument.load(raw, { updateMetadata: false })
+        : undefined;
+    if (pdf.include_toc && complete) {
+      const pageNumber = new Map(
+        complete
+          .getPages()
+          .map((page, index) => [
+            page.ref.toString(),
+            pdf.first_page_number + index,
+          ]),
+      );
+      const destinations = complete.catalog.lookupMaybe(
+        PDFName.of("Dests"),
+        PDFDict,
+      );
+      const labels = Object.fromEntries(
+        (destinations?.entries() ?? []).flatMap(([name, value]) => {
+          const target = complete.context
+            .lookupMaybe(value, PDFArray)
+            ?.get(0)
+            ?.toString();
+          const label = target && pageNumber.get(target);
+          return label ? [[name.decodeText(), label]] : [];
+        }),
+      );
+      await window.webContents.executeJavaScript(`(() => {
+        const labels = ${JSON.stringify(labels)};
+        for (const node of document.querySelectorAll(".toc-page")) {
+          const page = labels[node.dataset.destination];
+          if (typeof page !== "number") throw new Error("无法确定 PDF 目录页码。");
+          node.textContent = String(page);
+        }
+      })()`);
+    }
+    if (pdf.page_ranges && complete) {
       const maximum = Math.max(
         ...pdf.page_ranges
           .split(",")
@@ -156,11 +192,12 @@ async function renderPdf(prepared: PreparedPublication) {
         throw new Error(
           "页码范围超过实际总页数 " + complete.getPageCount() + "，未导出。",
         );
+    }
+    if (pdf.include_toc || pdf.page_ranges)
       raw = await window.webContents.printToPDF({
         ...options,
-        pageRanges: pdf.page_ranges,
+        ...(pdf.page_ranges ? { pageRanges: pdf.page_ranges } : {}),
       });
-    }
     const document = await PDFDocument.load(raw, { updateMetadata: false });
     // Chromium can repeat the complete heading in a tagged PDF bookmark.
     // Only repair titles that exactly match two copies of a rendered heading.

@@ -943,10 +943,10 @@ kbd {
   max-width: 100%;
   min-height: 1015px;
   margin: 0 auto;
-  background: #fff !important;
+  background: var(--reading-background, var(--preview-bg, #fff));
   border: 1px solid #e0e4eb;
   box-shadow: 0 3px 12px #22324b09;
-  color: var(--preview-text, #24324b);
+  color: var(--reading-text, var(--preview-text, #24324b));
   font-family: var(--preview-font-family, "Segoe UI", sans-serif);
   font-size: var(--preview-font-size, 16px);
   line-height: var(--preview-line-height, 1.75);
@@ -1021,7 +1021,7 @@ kbd {
 .document-body blockquote,
 .preview-body blockquote {
   border-left: 3px solid #a5bee9;
-  color: var(--preview-quote, #74829a);
+  color: var(--reading-quote, var(--preview-quote, #74829a));
   padding-left: 18px;
   margin-left: 0;
 }
@@ -1032,8 +1032,8 @@ kbd {
 }
 .document-body pre,
 .preview-body pre {
-  background: #f3f6fc;
-  border: 1px solid #e6ebf6;
+  background: var(--reading-inset, #f3f6fc);
+  border: 1px solid var(--reading-border, #e6ebf6);
   border-radius: 7px;
   padding: 18px;
   overflow: auto;
@@ -1043,11 +1043,11 @@ kbd {
 .document-body code,
 .preview-body code {
   font-family: Consolas, "Cascadia Code", monospace;
-  background: #eff3fb;
+  background: var(--reading-inset, #eff3fb);
   border-radius: 4px;
   padding: 2px 4px;
   font-size: 0.85em;
-  color: #4470b5;
+  color: var(--reading-link, #4470b5);
 }
 .document-body pre code,
 .preview-body pre code {
@@ -1057,7 +1057,7 @@ kbd {
 }
 .document-body a,
 .preview-body a {
-  color: var(--preview-link, #2563eb);
+  color: var(--reading-link, var(--preview-link, #2563eb));
 }
 .document-body ul[data-type="taskList"] {
   list-style: none;
@@ -1093,7 +1093,7 @@ kbd {
 }
 .preview-body th,
 .preview-body td {
-  border: 1px solid #e2e8f3;
+  border: 1px solid var(--reading-border, #e2e8f3);
   padding: 7px 10px;
 }
 .preview-body th {
@@ -1992,8 +1992,34 @@ kbd {
   min-height: 100%;
   width: 100%;
 }
-.preview-body {
-  background: var(--preview-bg, #fff) !important;
+.preview-body .katex-block {
+  overflow: auto;
+  text-align: center;
+}
+[data-document-theme="warm"] {
+  --reading-background: #f8f2e5;
+  --reading-text: #443a2d;
+  --reading-quote: #675748;
+  --reading-link: #174a9f;
+  --reading-inset: #eee6d5;
+  --reading-border: #d6cbb8;
+}
+[data-document-theme="dark"] .document-paper {
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  [data-document-theme="system"] .document-paper {
+    color-scheme: dark;
+  }
+}
+:is([data-document-theme="dark"], [data-document-theme="system"])
+  .document-paper {
+  --reading-background: light-dark(var(--preview-bg, #fff), #1f2633);
+  --reading-text: light-dark(var(--preview-text, #24324b), #e8eef8);
+  --reading-quote: light-dark(var(--preview-quote, #74829a), #bcc9df);
+  --reading-link: light-dark(var(--preview-link, #2563eb), #9ec2ff);
+  --reading-inset: light-dark(#f3f6fc, #2a3446);
+  --reading-border: light-dark(#e6ebf6, #4d5c74);
 }
 .preview-toc {
   font:
@@ -2060,6 +2086,67 @@ kbd {
   height: 100%;
   padding: clamp(6px, 1.5vw, 24px);
   background: #eef1f6;
+}
+.paged-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: #edf0f5;
+}
+.paged-preview.paged-inline {
+  padding: 0;
+}
+.paged-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+  font-size: 12px;
+}
+.paged-preview-viewport {
+  container-type: inline-size;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+.disk-change-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  font-size: 12px;
+  background: #fff5da;
+  border-bottom: 1px solid #ebd7a6;
+}
+.disk-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.editor-dialog:has(.disk-compare) {
+  width: min(1120px, calc(100vw - 48px));
+}
+.disk-compare > p,
+.disk-diff {
+  grid-column: 1 / -1;
+}
+.disk-diff {
+  height: min(56vh, 580px);
+  min-width: 0;
+}
+.cli-project-info {
+  display: grid;
+  gap: 12px;
+}
+.mode-default .paged-preview-viewport .document-paper {
+  padding: 18px min(24px, 6cqi);
 }
 .reading-spread {
   display: flex;
@@ -2169,6 +2256,7 @@ kbd {
   color: #94a3b8;
 }
 .heading-outline-list {
+  position: relative;
   overflow: auto;
   min-height: 0;
   padding: 2px 0 8px;
@@ -2600,14 +2688,14 @@ kbd {
 .document-body th,
 .document-body td {
   position: relative;
-  border: 1px solid #cdd7e6;
+  border: 1px solid var(--reading-border, #cdd7e6);
   padding: 7px 10px;
   min-width: 48px;
   vertical-align: top;
 }
 .document-body th {
   font-weight: 600;
-  background: #f7f9fc;
+  background: var(--reading-inset, #f7f9fc);
 }
 .document-body td p,
 .document-body th p {

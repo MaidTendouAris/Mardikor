@@ -102,7 +102,8 @@ export interface PreparedPublication {
   width: number;
   height: number;
   fontText: string;
-  emojiFont?: { bytes: Buffer; text: string };
+  fontLicense?: Buffer;
+  emojiFont?: { bytes: Buffer; text: string; license: Buffer };
 }
 function applyConfiguration(
   project: MdkProject,
@@ -225,7 +226,9 @@ export function configurePublication(
   value: PublicationConfiguration,
   revision: string,
   runtime: PublicationRuntime,
+  format: PublicationFormat = "pdf",
 ) {
+  if (format !== "pdf" && format !== "epub") throw new Error("出版格式无效。");
   const source = snapshot(file, runtime);
   if (source.project.revision !== revision)
     throw new Error("工程已变化，请重新读取导出配置。");
@@ -244,14 +247,17 @@ export function configurePublication(
   if (isMarkdownFile(file)) runtime.localConfiguration(file, configuration);
   else {
     const assets = [];
-    if (configuration.appearance.font_family === "system") {
+    if (format === "pdf" && configuration.appearance.font_family === "system") {
       configuration.appearance = {
         ...configuration.appearance,
         font_family: bundledFontPath,
       };
       assets.push({ path: bundledFontPath, data: font });
     }
-    if (sha256(font) === bundledFontHash) {
+    if (
+      sha256(font) === bundledFontHash &&
+      configuration.appearance.font_family !== "system"
+    ) {
       assets.push({
         path: "resources/other/Mardikor-Noto-OFL.txt",
         data: fs.readFileSync(path.join(runtime.assetDirectory, "OFL.txt")),
@@ -268,6 +274,7 @@ export function configurePublication(
         extensions: { mardikor: { publication } },
       },
       assets,
+      revision,
     );
   }
   return publicationInfo(file, runtime);
@@ -391,23 +398,37 @@ export function preparePublication(
   const assets: PreparedPublication["assets"] = new Map(),
     resourceNames = new Map<string, string>();
   let font: Buffer = Buffer.alloc(0),
-    fontType = "font/otf";
+    fontType = "font/otf",
+    fontLicense: Buffer | undefined;
   try {
     font = fontBytes(source, runtime);
     fontType = detectMediaType(font)!;
     if (
+      format === "pdf" &&
+      !isMarkdownFile(file) &&
+      project.settings.appearance.font_family === "system"
+    )
+      issue("E_PDF_PORTABLE_FONT", "请保存 PDF 导出配置，将固定字体存入 MDK。");
+    if (
       format === "epub" &&
       (epub.embed_font || epub.layout === "pre-paginated") &&
-      sha256(font) === bundledFontHash &&
-      !source.files
-        .get("resources/other/Mardikor-Noto-OFL.txt")
-        ?.equals(fs.readFileSync(path.join(runtime.assetDirectory, "OFL.txt")))
-    )
-      issue(
-        "E_FONT_LICENSE",
-        "内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。",
-        "resources/other/Mardikor-Noto-OFL.txt",
+      sha256(font) === bundledFontHash
+    ) {
+      const bundledLicense = fs.readFileSync(
+        path.join(runtime.assetDirectory, "OFL.txt"),
       );
+      if (project.settings.appearance.font_family === "system")
+        fontLicense = bundledLicense;
+      else {
+        fontLicense = source.files.get("resources/other/Mardikor-Noto-OFL.txt");
+        if (!fontLicense?.equals(bundledLicense))
+          issue(
+            "E_FONT_LICENSE",
+            "内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。",
+            "resources/other/Mardikor-Noto-OFL.txt",
+          );
+      }
+    }
     if (pdf.font_sha256 !== sha256(font))
       issue(
         "E_FONT_CHANGED",
@@ -533,15 +554,20 @@ export function preparePublication(
         "正文含不能写入出版文档的控制字符。",
         unit.path,
       );
-    if (format === "epub")
+    if (format === "epub") {
+      let containsHtml = false;
       walk(rawParser.parse(markdown, {}), (token) => {
         if (token.type === "html_inline" || token.type === "html_block")
-          issue(
-            "E_EPUB_RAW_HTML",
-            "原始 HTML 不能保证无损转换；请改写为 Markdown 或在源码中明确处理。",
-            unit.path,
-          );
+          containsHtml = true;
       });
+      if (containsHtml)
+        issue(
+          "W_EPUB_HTML_TEXT",
+          "原始 HTML 将以文本显示，与 Markdown 预览一致。",
+          unit.path,
+          "warning",
+        );
+    }
     const tokens = parser.parse(markdown, {}),
       anchors = new Map<string, string>(),
       headings: PublicationChapter["headings"] = [];
@@ -799,7 +825,12 @@ export function preparePublication(
       const emoji = missing.filter(
         (char) => char.codePointAt(0)! >= 0x2000 && /\p{Emoji}/u.test(char),
       );
-      if (format === "pdf" && emoji.length) {
+      if (
+        (format === "pdf" ||
+          epub.embed_font ||
+          epub.layout === "pre-paginated") &&
+        emoji.length
+      ) {
         const bytes = fs.readFileSync(
           path.join(runtime.assetDirectory, emojiFontFile),
         );
@@ -812,7 +843,13 @@ export function preparePublication(
           ),
         );
         if (covered.size) {
-          emojiFont = { bytes, text: [...covered].join("") };
+          emojiFont = {
+            bytes,
+            text: [...covered].join(""),
+            license: fs.readFileSync(
+              path.join(runtime.assetDirectory, "NotoEmoji-OFL.txt"),
+            ),
+          };
           missing = missing.filter((char) => !covered.has(char));
         }
       }
@@ -879,6 +916,7 @@ export function preparePublication(
     width,
     height,
     fontText,
+    fontLicense,
     emojiFont,
   };
 }

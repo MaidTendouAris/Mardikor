@@ -4,6 +4,7 @@ import { chapterHeadingNumberer } from "../../shared/heading-numbering";
 
 import type { MdkSettings } from "./mdk";
 import Token from "markdown-it/lib/token.mjs";
+import type mathPlugin from "@vscode/markdown-it-katex";
 
 function createPreviewParser(containers: boolean, standalone = false) {
   const parser = createMarkdownParser(containers);
@@ -51,7 +52,41 @@ const md = createPreviewParser(true),
   standaloneParser = createPreviewParser(true, true),
   standalonePlain = createPreviewParser(false, true);
 
-export function renderPreview(
+export function mayContainMath(markdown: string) {
+  return /\$[^\s$]|\$\$/.test(markdown);
+}
+
+let mathEnabled = false;
+export function enablePreviewMath(
+  module: typeof mathPlugin | { default: typeof mathPlugin },
+) {
+  if (mathEnabled) return;
+  const plugin = typeof module === "function" ? module : module.default;
+  const options = {
+    output: "mathml",
+    trust: false,
+    strict: "ignore",
+    maxExpand: 100,
+    maxSize: 20,
+    throwOnError: false,
+  } as const;
+  for (const parser of [md, plain, standaloneParser, standalonePlain]) {
+    parser.use(plugin, options);
+    for (const rule of ["math_inline", "math_inline_block", "math_block"]) {
+      const render = parser.renderer.rules[rule]!;
+      parser.renderer.rules[rule] = (tokens, index, opts, env, renderer) => {
+        env.mathCount = (env.mathCount ?? 0) + 1;
+        const token = tokens[index];
+        if (env.mathCount <= 500 && token.content.length <= 4000)
+          return render(tokens, index, opts, env, renderer);
+        return `<code>${parser.utils.escapeHtml(token.content)}</code>`;
+      };
+    }
+  }
+  mathEnabled = true;
+}
+
+export function renderPreviewPages(
   markdown: string,
   settings?: MdkSettings,
   position = "",
@@ -60,6 +95,7 @@ export function renderPreview(
   sourcePath = "markdown/document.md",
   standalone = false,
   reservedSections?: ReadonlySet<string>,
+  bounded = true,
 ) {
   const parser = standalone
     ? settings?.preview.render_containers === false
@@ -74,7 +110,8 @@ export function renderPreview(
   const numberHeading = chapterHeadingNumberer(position, reservedSections);
   let removedTitle = false;
   let headingNumber = 0;
-  const fragments = new Set<string>();
+  const fragments = new Set<string>(),
+    counts = new Map<string, number>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.type !== "heading_open") continue;
@@ -89,8 +126,10 @@ export function renderPreview(
         .toLowerCase()
         .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
         .replace(/\s+/g, "-");
-      let fragment = base;
-      for (let n = 1; fragments.has(fragment); n++) fragment = `${base}-${n}`;
+      let n = counts.get(base) ?? 0;
+      let fragment = n ? `${base}-${n}` : base;
+      while (fragments.has(fragment)) fragment = `${base}-${++n}`;
+      counts.set(base, n + 1);
       fragments.add(fragment);
       token.attrSet("data-fragment", fragment);
     }
@@ -124,7 +163,9 @@ export function renderPreview(
   }
   const depth = mode === "01" ? (settings?.mode.book.toc_depth ?? 6) : 6;
   const toc =
-    settings?.preview.show_toc && headings.length
+    settings?.preview.show_toc &&
+    headings.length &&
+    (!bounded || headings.length <= 1000)
       ? `<nav class="preview-toc" aria-label="文稿目录"><strong>目录</strong>${headings
           .filter((h) => h.level <= depth)
           .map(
@@ -133,11 +174,11 @@ export function renderPreview(
           )
           .join("")}</nav>`
       : "";
-  if (tokens.length < 800)
-    return toc + parser.renderer.render(tokens, parser.options, env);
+  if (!bounded && tokens.length < 800)
+    return [toc + parser.renderer.render(tokens, parser.options, env)];
   // Split only between top-level blocks, after parsing the whole document.
   // References, lists, footnotes and heading anchors keep their original scope.
-  const sections: string[] = [toc];
+  const sections: string[] = [];
   let start = 0;
   for (let end = 0; end <= tokens.length; end++) {
     if (
@@ -146,16 +187,92 @@ export function renderPreview(
         tokens[end].level === 0 &&
         tokens[end].nesting !== -1)
     ) {
-      const html = parser.renderer.render(
-        tokens.slice(start, end),
-        parser.options,
-        env,
-      );
-      sections.push('<div class="preview-section">' + html + "</div>");
+      const part = tokens.slice(start, end);
+      if (bounded && part.some((token) => token.content.length > 65_536)) {
+        sections.push(
+          '<p class="source-warning">这一块内容较长，请切换到源码查看完整内容。</p>',
+        );
+      } else if (bounded && part.length > 1000) {
+        const table = part.findIndex((token) => token.type === "table_open");
+        const body = part.findIndex((token) => token.type === "tbody_open");
+        const close = part.findIndex((token) => token.type === "tbody_close");
+        if (
+          table >= 0 &&
+          part[table].level === 0 &&
+          body > table &&
+          close > body &&
+          part[close + 1]?.type === "table_close"
+        ) {
+          const startTable = part.slice(table, body + 1);
+          const endTable = part.slice(close, close + 2);
+          const prefix = table
+            ? parser.renderer.render(part.slice(0, table), parser.options, env)
+            : "";
+          let row = body + 1;
+          for (let cursor = row; cursor <= close; cursor++) {
+            if (
+              cursor === close ||
+              (cursor - row >= 420 && part[cursor].type === "tr_open")
+            ) {
+              sections.push(
+                (row === body + 1 ? prefix : "") +
+                  parser.renderer.render(
+                    [...startTable, ...part.slice(row, cursor), ...endTable],
+                    parser.options,
+                    env,
+                  ),
+              );
+              row = cursor;
+            }
+          }
+          if (close + 2 < part.length)
+            sections.push(
+              parser.renderer.render(
+                part.slice(close + 2),
+                parser.options,
+                env,
+              ),
+            );
+        } else {
+          sections.push(
+            '<p class="source-warning">这一块内容较长，请切换到源码查看完整内容。</p>',
+          );
+        }
+      } else {
+        const html = parser.renderer.render(part, parser.options, env);
+        sections.push(
+          bounded ? html : '<div class="preview-section">' + html + "</div>",
+        );
+      }
       start = end;
     }
   }
-  return sections.join("");
+  sections[0] = toc + (sections[0] ?? "");
+  return sections;
+}
+
+export function renderPreview(...args: Parameters<typeof renderPreviewPages>) {
+  const [
+    markdown,
+    settings,
+    position,
+    mode,
+    prefix,
+    sourcePath,
+    standalone,
+    reservedSections,
+  ] = args;
+  return renderPreviewPages(
+    markdown,
+    settings,
+    position,
+    mode,
+    prefix,
+    sourcePath,
+    standalone,
+    reservedSections,
+    false,
+  ).join("");
 }
 
 export function settingsToCss(settings: MdkSettings) {

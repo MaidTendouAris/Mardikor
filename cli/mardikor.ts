@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import * as mdk from "../electron/mdk";
 import { MAX_FILE } from "../electron/archive";
+import { watchProjectFile } from "../electron/project-watch";
 import { comparePosition } from "../shared/outline";
 import { moveOutline } from "../shared/tree";
 import { isTable } from "../shared/schema";
@@ -16,20 +17,23 @@ const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
   new <工程> [--mode default|book|comic]
   list <工程>
   read <工程> <文稿ID>
-  write <工程> <文稿ID> --if-revision <修订号> [--from <文件>]
-  edit <工程> <文稿ID> [--editor <可执行文件>]
+  write <工程> <文稿ID> --if-revision <修订号> [--from <文件>] [--encoding <编码>]
+  edit <工程> <文稿ID> [--editor <可执行文件>] [--editor-arg <参数>]
   add <工程> <文件名> --if-revision <修订号> [--after <文稿ID>]
   rename <工程> <文稿ID> <文件名> --if-revision <修订号>
   remove <工程> <文稿ID> --if-revision <修订号>
   move <工程> <文稿ID> <before|after|inside> <目标ID> --if-revision <修订号>
   read-file <工程> <内部路径>
-  write-file <工程> <内部路径> --if-revision <修订号> [--from <文件>]
+  write-file <工程> <内部路径> --if-revision <修订号> [--from <文件>] [--encoding <编码>]
   apply <工程> --if-revision <修订号> [--from <JSON文件>]
   import <工程> <image|video|audio|font|other> <资源文件> --if-revision <修订号>
   validate <工程>
+  watch <工程>
+  unlock <工程>
 
 使用 --json 获取结构化结果。write、write-file、apply 默认从标准输入读取。
 使用 --help 查看用法，--version 查看版本。
+退出码 0 为成功，1 为操作或校验失败，2 为参数错误（E_USAGE），3 为修订冲突或写入锁。
 `;
 
 const commands: Record<
@@ -39,21 +43,23 @@ const commands: Record<
   new: { args: 0, options: ["mode"] },
   list: { args: 0 },
   read: { args: 1 },
-  write: { args: 1, revision: true, options: ["from"] },
-  edit: { args: 1, options: ["editor"] },
+  write: { args: 1, revision: true, options: ["from", "encoding"] },
+  edit: { args: 1, options: ["editor", "editor-arg"] },
   add: { args: 1, revision: true, options: ["after"] },
   rename: { args: 2, revision: true },
   remove: { args: 1, revision: true },
   move: { args: 3, revision: true },
   "read-file": { args: 1 },
-  "write-file": { args: 1, revision: true, options: ["from"] },
+  "write-file": { args: 1, revision: true, options: ["from", "encoding"] },
   apply: { args: 0, revision: true, options: ["from"] },
   import: { args: 2, revision: true },
   validate: { args: 0 },
+  watch: { args: 0 },
+  unlock: { args: 0 },
 };
 class UsageError extends Error {}
 
-async function input(from?: string) {
+async function input(from?: string, encoding = "utf-8", preserveBom = false) {
   const chunks: Buffer[] = [];
   if (!from && process.stdin.isTTY)
     throw new UsageError("请通过标准输入或 --from 提供内容。");
@@ -63,15 +69,42 @@ async function input(from?: string) {
     if (bytes > MAX_FILE) throw new Error("输入超过 64 MiB。");
     chunks.push(chunk);
   }
-  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-    Buffer.concat(chunks),
-  );
+  if (!["utf-8", "gb18030", "auto"].includes(encoding))
+    throw new UsageError("--encoding 仅支持 utf-8、gb18030 或 auto。");
+  const bytesIn = Buffer.concat(chunks);
+  try {
+    return new TextDecoder(encoding === "auto" ? "utf-8" : encoding, {
+      fatal: true,
+      ignoreBOM: preserveBom,
+    }).decode(bytesIn);
+  } catch {
+    if (
+      encoding === "auto" &&
+      !bytesIn.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))
+    ) {
+      try {
+        return new TextDecoder("gb18030", { fatal: true }).decode(bytesIn);
+      } catch {
+        /* Report both supported encodings. */
+      }
+    }
+    throw new UsageError(
+      "输入编码无效。请使用 UTF-8，或用 --encoding gb18030 读取 GBK/GB18030 正文。",
+    );
+  }
 }
 
 function projectView(project: MdkProject) {
   return {
     revision: project.revision,
     mode: project.mode,
+    mode_name:
+      (
+        { "00": "default", "01": "book", "02": "comic" } as Record<
+          string,
+          string
+        >
+      )[project.mode] ?? "unknown",
     readonly: project.readonly,
     entries: [...project.contents.entries]
       .sort((a, b) => comparePosition(a.position, b.position))
@@ -96,7 +129,12 @@ function save(file: string, snapshot: SaveSnapshot) {
 }
 
 function apply(file: string, revision: string, text: string) {
-  const request: unknown = JSON.parse(text.replace(/^\uFEFF/, ""));
+  let request: unknown;
+  try {
+    request = JSON.parse(text);
+  } catch {
+    throw new UsageError("批量变更必须是有效的 JSON。");
+  }
   if (
     !isTable(request) ||
     Object.keys(request).some((key) => !["writes", "positions"].includes(key))
@@ -137,6 +175,10 @@ function apply(file: string, revision: string, text: string) {
         "每条 positions 变更需要唯一的 id 和字符串 position。",
       );
     ids.add(change.id);
+    if (!/^[1-9]\d*(?:\.[1-9]\d*){0,5}$/.test(change.position))
+      throw new UsageError(
+        "position 必须是 1、1.2、1.2.3 这样的点分编号，最多六层。",
+      );
     return { id: change.id, position: change.position };
   });
   return save(file, {
@@ -146,7 +188,12 @@ function apply(file: string, revision: string, text: string) {
   });
 }
 
-async function edit(file: string, id: string, executable?: string) {
+async function edit(
+  file: string,
+  id: string,
+  executable?: string,
+  args: string[] = [],
+) {
   const entry = mdk.readMdkEntry(file, id);
   const configured = executable || process.env.VISUAL || process.env.EDITOR;
   if (!configured && process.platform === "win32")
@@ -157,17 +204,12 @@ async function edit(file: string, id: string, executable?: string) {
   const draft = path.join(directory, path.posix.basename(entry.path));
   fs.writeFileSync(draft, entry.markdown, { mode: 0o600 });
   try {
-    const editor =
-      !executable && configured && process.platform !== "win32"
-        ? spawnSync(
-            "/bin/sh",
-            ["-c", configured + ' "$1"', "mardikor", draft],
-            { stdio: "inherit" },
-          )
-        : spawnSync(configured ?? "vi", [draft], { stdio: "inherit" });
+    const editor = spawnSync(configured ?? "vi", [...args, draft], {
+      stdio: "inherit",
+    });
     if (editor.error) throw editor.error;
     if (editor.status !== 0) throw new Error("编辑器未正常退出。");
-    const content = await input(draft);
+    const content = await input(draft, "utf-8", true);
     const changed = content !== entry.markdown;
     const result = changed
       ? save(file, {
@@ -209,6 +251,8 @@ async function run(args: string[]) {
           mode: { type: "string" },
           after: { type: "string" },
           editor: { type: "string" },
+          "editor-arg": { type: "string", multiple: true },
+          encoding: { type: "string" },
         },
       });
     } catch (error) {
@@ -218,6 +262,25 @@ async function run(args: string[]) {
     json = !!values.json;
     const [command, file, first, second, third] = positionals;
     if (values.help || command === "help" || (!command && !values.version)) {
+      const helpCommand = command === "help" ? file : command;
+      const line = usage
+        .split("\n")
+        .find((row) => row.startsWith("  " + helpCommand + " "));
+      if (line) {
+        process.stdout.write("用法：mardikor " + line.trim() + "\n");
+        if (["write", "write-file", "apply"].includes(helpCommand))
+          console.log(
+            "默认读取标准输入，--from 指定文件。write 和 write-file 支持 utf-8、gb18030、auto。",
+          );
+        if (helpCommand === "edit")
+          console.log(
+            "VISUAL / EDITOR 仅填写可执行文件路径，附加参数用 --editor-arg 重复传入。",
+          );
+        console.log(
+          "退出码：0 成功，1 操作或校验失败，2 E_USAGE，3 E_MDK_REVISION / E_MDK_LOCKED。",
+        );
+        return 0;
+      }
       process.stdout.write(usage);
       return 0;
     }
@@ -283,20 +346,20 @@ async function run(args: string[]) {
         break;
       }
       case "write": {
-        const content = await input(values.from);
+        const content = await input(values.from, values.encoding ?? "auto");
         const entry = mdk.readMdkEntry(file, first);
         if (entry.revision !== revision) throw new mdk.MdkRevisionError();
         output(save(file, { revision, text: { path: entry.path, content } }));
         break;
       }
       case "write-file": {
-        const content = await input(values.from);
+        const content = await input(values.from, values.encoding ?? "utf-8");
         output(save(file, { revision, text: { path: first, content } }));
         break;
       }
       case "edit": {
         if (json) throw new UsageError("交互式 edit 请直接在终端运行。");
-        output(await edit(file, first, values.editor));
+        output(await edit(file, first, values.editor, values["editor-arg"]));
         break;
       }
       case "apply":
@@ -350,6 +413,27 @@ async function run(args: string[]) {
         }
         return report.valid ? 0 : 1;
       }
+      case "watch": {
+        let previous: string | null = mdk.fileRevision(file);
+        const event = (revision: string | null) => {
+          if (json) output({ path: path.resolve(file), revision });
+          else console.log(revision ?? "文件暂不可读取");
+        };
+        event(previous);
+        watchProjectFile(
+          file,
+          (revision) => {
+            if (revision === previous) return;
+            previous = revision;
+            event(revision);
+          },
+          true,
+        );
+        break;
+      }
+      case "unlock":
+        output({ unlocked: mdk.unlockMdk(file) });
+        break;
     }
     return 0;
   } catch (error) {

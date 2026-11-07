@@ -90,7 +90,16 @@ export function publicationHtml(prepared: PreparedPublication) {
   if (prepared.coverFile)
     content += `<section class="cover front-page unit" data-unit="封面"><img src="${prepared.coverFile}" alt="${escapeXml(metadata.title)}" /></section>`;
   if (prepared.format === "pdf" ? pdf.include_toc : epub.toc_in_spine)
-    content += `<nav class="toc front-page ${fixed ? "unit" : ""}" data-unit="目录"><h1>${publicationLabels(metadata.language).toc}</h1>${rewrite(prepared.navigation, 0)}</nav>`;
+    content += `<nav class="toc front-page ${fixed ? "unit" : ""}" data-unit="目录"><h1>${publicationLabels(metadata.language).toc}</h1>${rewrite(
+      prepared.navigation,
+      0,
+    ).replace(
+      /<a href="#([^"]+)">([\s\S]*?)<\/a>/g,
+      (link, destination, title) =>
+        prepared.format === "pdf"
+          ? `<a class="toc-entry" href="#${destination}"><span>${title}</span><span class="toc-page" data-destination="${destination}"></span></a>`
+          : link,
+    )}</nav>`;
   if (pair) {
     for (let index = 0; index < chapters.length; index += 2)
       content += `<div class="spread" dir="${c.comic.reading_direction}">${chapters.slice(index, index + 2).join("")}</div>`;
@@ -129,6 +138,7 @@ export function publicationHtml(prepared: PreparedPublication) {
     publicationCss(prepared, fixed) +
     `
 @page{size:${width}px ${height}px;margin:${l.margin_top}px ${l.margin_right}px ${l.margin_bottom}px ${l.margin_left}px;${marginBoxes}}
+.toc-entry{display:grid;grid-template-columns:minmax(0,1fr) 7ch;gap:.45em}.toc-page{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 ${prepared.format === "pdf" && pdf.first_page_number !== 1 ? `@page:first{counter-increment:page ${pdf.first_page_number}}` : ""}
 body{width:${(width - l.margin_left - l.margin_right) / scale}px}.front-page{break-after:page;min-height:${(height - l.margin_top - l.margin_bottom) / scale}px}.cover{height:${(height - l.margin_top - l.margin_bottom) / scale}px}
 ${pair ? ".spread{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;break-after:page}.spread>.unit{direction:ltr}" : `.unit+.unit{break-before:${breaks === "none" ? "auto" : breaks}}`}

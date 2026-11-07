@@ -20,7 +20,13 @@ const groups: { title: string; note?: string; fields: Field[] }[] = [
       {
         path: "appearance.theme",
         label: "文稿主题",
-        choices: [["default", "默认"]],
+        choices: [
+          ["default", "应用默认"],
+          ["light", "浅色"],
+          ["dark", "深色"],
+          ["warm", "护眼"],
+          ["system", "跟随系统"],
+        ],
       },
       { path: "appearance.font_family", label: "字体" },
       {
