@@ -534,17 +534,21 @@ function registerIpc() {
         if (context.activeProject !== source) {
           context.stopWatching?.();
           context.activeProject = source;
+          let reportedRevision: string | null | undefined;
           context.stopWatching = watchProjectFile(source, (revision) => {
             if (
-              !context.window.isDestroyed() &&
-              context.activeProject === source &&
-              context.revisions.get(source) !== revision
+              context.window.isDestroyed() ||
+              context.activeProject !== source
             )
-              context.window.webContents.send(
-                "app:project-changed",
-                source,
-                revision,
-              );
+              return;
+            const changed = context.revisions.get(source) !== revision;
+            if (reportedRevision === (changed ? revision : undefined)) return;
+            reportedRevision = changed ? revision : undefined;
+            context.window.webContents.send(
+              "app:project-changed",
+              source,
+              revision,
+            );
           });
         }
         context.window.setTitle(`${path.basename(source)} - Mardikor`);

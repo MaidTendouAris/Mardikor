@@ -776,8 +776,8 @@ export const Workspace = forwardRef<
 
   async function flush(syncDirectory = true): Promise<boolean> {
     if (!project || !file || !dirty) return true;
-    if (diskChange && diskChange.revision !== project.revision)
-      throw new Error("磁盘工程已被其他进程修改；请在冲突提示中处理本地草稿。");
+    // The watcher is advisory. The atomic save verifies the current revision,
+    // even if the original bytes were restored after a conflict notification.
     const submitted = Object.values(buffersRef.current).filter(
       (b) => b.content !== b.saved,
     );
@@ -797,6 +797,9 @@ export const Workspace = forwardRef<
     if (settingsDirty) setSettingsDirty(false);
     setProject(loaded);
     setSettings(loaded.settings);
+    setDiskChange((previous) =>
+      previous === diskChange ? undefined : previous,
+    );
     for (const control of [
       directoryDirty && syncDirectory ? "contents.toml" : "",
       settingsDirty ? "settings.toml" : "",
