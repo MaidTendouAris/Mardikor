@@ -15,6 +15,7 @@ Windows 安装版自动关联 `.mdk`，可选择关联 `.md`；便携版无需�
 ## 文档
 
 - [使用指南](docs/USER_GUIDE.md)
+- [命令行指南](docs/CLI.md)
 - [开发指引](docs/DEVELOPMENT.md) · [构建与打包](docs/BUILDING.md)
 - [更新与发布](docs/UPDATING.md) · [许可证说明](docs/LICENSING.md)
 - [导出配置](docs/EXPORTING.md) · [出版字体](docs/EXPORT_FONT.md)

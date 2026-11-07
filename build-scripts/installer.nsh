@@ -60,6 +60,19 @@
 !macroend
 
 !macro customInstall
+  Push $OUTDIR
+  SetOutPath "$INSTDIR\bin"
+  File "${PROJECT_DIR}\build-output\cli\mardikor.exe"
+  File "${PROJECT_DIR}\build-output\cli\package\bin\mardikor.cjs"
+  Pop $2
+  SetOutPath "$2"
+  nsExec::ExecToStack '"$INSTDIR\bin\mardikor.exe" --register-path "$installMode"'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+    DetailPrint "CLI PATH registration failed: $1"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "无法注册 mardikor 命令。可在安装目录的 bin 文件夹直接运行 mardikor.exe。$\r$\n$1" /SD IDOK
+  ${EndIf}
   ${If} $MarkdownAssociation == 1
     ReadRegStr $0 SHELL_CONTEXT "Software\Classes\.md" ""
     ${If} $0 != "${MD_PROGID}"
@@ -75,6 +88,14 @@
 
 !macro customUnInstall
   ${IfNot} ${isUpdated}
+    ${If} ${FileExists} "$INSTDIR\bin\mardikor.exe"
+      nsExec::ExecToStack '"$INSTDIR\bin\mardikor.exe" --unregister-path "$installMode"'
+      Pop $0
+      Pop $1
+      ${If} $0 != "0"
+        DetailPrint "CLI PATH removal failed: $1"
+      ${EndIf}
+    ${EndIf}
     !insertmacro RemoveMarkdownAssociation
     DeleteRegKey SHELL_CONTEXT "${MD_ASSOC_KEY}"
     !insertmacro UPDATEFILEASSOC

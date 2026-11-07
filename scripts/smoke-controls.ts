@@ -90,7 +90,7 @@ try {
     await page.screenshot({ path: path.join(root, "custom-dropdown.png") });
   await page.keyboard.press("Escape");
   const about = page.getByRole("region", { name: "关于 Mardikor" });
-  await expect(about.locator("code")).toHaveText(
+  await expect(about.locator(".setting-row > code")).toHaveText(
     await app.evaluate(({ app }) => app.getVersion()),
   );
   await about.getByText("许可证（GPL-3.0-only）", { exact: true }).click();
@@ -99,6 +99,10 @@ try {
   expect((await license.textContent())?.replace(/\r\n/g, "\n")).toBe(
     (await fs.readFile("LICENSE", "utf8")).replace(/\r\n/g, "\n"),
   );
+  await about.getByText("命令行使用指南", { exact: true }).click();
+  const cliGuide = about.getByRole("region", { name: "命令行指南全文" });
+  await expect(cliGuide).toBeVisible();
+  await expect(cliGuide).toContainText("mardikor list");
   const opened: string[] = [];
   await app.evaluate(({ shell }) => {
     shell.openExternal = async (url) => {

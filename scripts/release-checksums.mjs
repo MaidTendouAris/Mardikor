@@ -28,5 +28,10 @@ for (const name of names) {
   const bytes = await fs.readFile(path.join(root, name));
   sums.push(`${createHash("sha256").update(bytes).digest("hex")}  ${name}`);
 }
+if (process.argv.includes("--with-cli")) {
+  const name = `mardikor-cli-${version}.tgz`;
+  const bytes = await fs.readFile(path.resolve("build-output/cli", name));
+  sums.push(`${createHash("sha256").update(bytes).digest("hex")}  ${name}`);
+}
 await fs.writeFile(path.join(root, "CHECKSUMS.sha256"), sums.join("\n") + "\n");
 console.log("Verified update feed and wrote release checksums.");

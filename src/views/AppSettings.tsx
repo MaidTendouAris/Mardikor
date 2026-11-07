@@ -2,12 +2,16 @@ import { useState } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { version } from "../../package.json";
 import license from "../../LICENSE?raw";
+import cliGuide from "../../docs/CLI.md?raw";
 import type { Preferences } from "../../shared/desktop";
 import type { Notify } from "../App";
 import { desktop } from "../services/desktop";
 import { Select } from "../components/Select";
 import { UpdateControls } from "../components/AppUpdate";
 import { repositoryUrl, type UpdateStatus } from "../../shared/updates";
+import { renderPreview } from "../services/preview";
+
+const cliGuideHtml = renderPreview(cliGuide);
 
 export function AppSettings({
   value,
@@ -165,6 +169,16 @@ export function AppSettings({
           <pre tabIndex={0} aria-label="GPLv3 许可证全文">
             {license}
           </pre>
+        </details>
+        <details className="app-license">
+          <summary>命令行使用指南</summary>
+          <div
+            className="preview-body cli-guide"
+            role="region"
+            tabIndex={0}
+            aria-label="命令行指南全文"
+            dangerouslySetInnerHTML={{ __html: cliGuideHtml }}
+          />
         </details>
         <div className="button-row">
           {[

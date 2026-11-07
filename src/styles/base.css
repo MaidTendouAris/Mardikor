@@ -1353,6 +1353,14 @@ kbd {
 .app-license pre {
   max-height: 320px;
 }
+.app-license .cli-guide {
+  max-height: 480px;
+  overflow: auto;
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
 .app-information a.button {
   text-decoration: none;
 }

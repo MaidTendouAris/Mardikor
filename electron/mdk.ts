@@ -71,17 +71,32 @@ const hasControl = (value: string) =>
   [...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 export const fileRevision = (file: string) =>
   createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-function load(file: string): Document {
+export class MdkRevisionError extends Error {
+  readonly code = "E_MDK_REVISION";
+  constructor() {
+    super("磁盘工程已被其他进程修改；保存冲突，请重新打开或另存副本。");
+  }
+}
+export class MdkLockedError extends Error {
+  readonly code = "E_MDK_LOCKED";
+  constructor(lock: string) {
+    super("工程正在写入，请稍后重试：" + lock);
+  }
+}
+function load(file: string, expectedRevision?: string): Document {
   const size = fs.statSync(file).size;
   if (size < 2) throw new Error("MDK 文件头不完整。");
   if (size > MAX_TOTAL) throw new Error("超出实现支持范围：容器超过 256 MiB。");
   const data = fs.readFileSync(file),
-    mode = normalizeMode(data.subarray(0, 2).toString("latin1"));
+    mode = normalizeMode(data.subarray(0, 2).toString("latin1")),
+    revision = createHash("sha256").update(data).digest("hex");
+  if (expectedRevision !== undefined && expectedRevision !== revision)
+    throw new MdkRevisionError();
   return {
     mode,
     zip: readArchive(data.subarray(2)),
     source: path.resolve(file),
-    revision: createHash("sha256").update(data).digest("hex"),
+    revision,
   };
 }
 function assertEditable(doc: Document) {
@@ -233,7 +248,7 @@ function commit(
   fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(temporary, output, { flag: "wx" });
+    fs.writeFileSync(temporary, output, { flag: "wx", mode: 0o600 });
     const fd = fs.openSync(temporary, "r+");
     try {
       fs.fsyncSync(fd);
@@ -249,31 +264,51 @@ function commit(
       if (errors.length)
         throw new Error(errors.map((issue) => issue.message).join("\n"));
     }
-    if (
-      doc.source === path.resolve(file) &&
-      doc.revision &&
-      fileRevision(file) !== doc.revision
-    )
-      throw new Error(
-        "磁盘工程已被其他进程修改；保存冲突，请重新打开或另存副本。",
-      );
-    if (options.overwrite === false) {
-      try {
-        fs.linkSync(temporary, file);
-        fs.unlinkSync(temporary);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "EEXIST")
+    const lock = path.resolve(file) + ".mardikor-lock";
+    let lockFd: number;
+    try {
+      lockFd = fs.openSync(lock, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new MdkLockedError(lock);
+      throw error;
+    }
+    try {
+      fs.writeFileSync(lockFd, process.pid + "\n");
+      if (
+        doc.source === path.resolve(file) &&
+        doc.revision &&
+        fileRevision(file) !== doc.revision
+      )
+        throw new MdkRevisionError();
+      if (options.overwrite === false) {
+        try {
+          fs.linkSync(temporary, file);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST")
+            throw new Error(
+              "目标文件已存在，未覆盖。请选择其他名称或显式启用覆盖偏好。",
+            );
           throw new Error(
-            "目标文件已存在，未覆盖。请选择其他名称或显式启用覆盖偏好。",
+            "当前文件系统无法提供原子无覆盖发布，源工程保持不变：" +
+              String(error),
           );
-        throw new Error(
-          "当前文件系统无法提供原子无覆盖发布，源工程保持不变：" +
-            String(error),
-        );
+        }
+      } else {
+        if (process.platform !== "win32") {
+          const previous = fs.statSync(file, { throwIfNoEntry: false });
+          if (previous) fs.chmodSync(temporary, previous.mode & 0o777);
+        }
+        fs.renameSync(temporary, file);
       }
-    } else fs.renameSync(temporary, file);
-    if (doc.source === path.resolve(file)) doc.revision = fileRevision(file);
+      doc.revision = verified.revision;
+    } finally {
+      try {
+        fs.closeSync(lockFd);
+      } finally {
+        fs.unlinkSync(lock);
+      }
+    }
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
@@ -312,7 +347,7 @@ function uniqueName(
   return candidate;
 }
 
-export function createMdkProject(file: string, mode: string) {
+export function createMdkProject(file: string, mode: string, overwrite = true) {
   const doc = {
     mode: normalizeMode(mode),
     zip: new AdmZip(undefined, { noSort: true }),
@@ -323,7 +358,7 @@ export function createMdkProject(file: string, mode: string) {
     entries: [{ id: randomUUID(), path: "markdown/001.md", position: "1" }],
   });
   put(doc, "settings.toml", stringify(defaultSettings() as unknown as Table));
-  commit(file, doc);
+  commit(file, doc, { overwrite });
   return openMdkProject(file);
 }
 
@@ -382,6 +417,7 @@ export function readMdkEntry(file: string, id: string) {
   const doc = load(file),
     entry = entryById(doc, id);
   return {
+    revision: doc.revision!,
     entry_id: id,
     path: entry.path,
     markdown: readText(doc, entry.path),
@@ -395,8 +431,13 @@ export function saveMdkEntry(file: string, id: string, markdown: string) {
   commit(file, doc);
   return { entry_id: id, path: entry.path, markdown };
 }
-export function addMdkEntry(file: string, filename: string, afterId?: string) {
-  const doc = load(file),
+export function addMdkEntry(
+  file: string,
+  filename: string,
+  afterId?: string,
+  revision?: string,
+) {
+  const doc = load(file, revision),
     control = contents(doc);
   control.entries.sort((a, b) => comparePosition(a.position, b.position));
   if (!filename) {
@@ -416,6 +457,8 @@ export function addMdkEntry(file: string, filename: string, afterId?: string) {
     }, 0n) + 1n;
   const added = { id: randomUUID(), path: name, position: String(next) };
   const sibling = control.entries.find((entry) => entry.id === afterId);
+  if (revision !== undefined && afterId !== undefined && !sibling)
+    throw new Error("目录项不存在：" + afterId);
   control.entries.push(added);
   if (sibling)
     control.entries = moveOutline(
@@ -430,8 +473,8 @@ export function addMdkEntry(file: string, filename: string, afterId?: string) {
   commit(file, doc);
   return project(doc);
 }
-export function deleteMdkEntry(file: string, id: string) {
-  const doc = load(file),
+export function deleteMdkEntry(file: string, id: string, revision?: string) {
+  const doc = load(file, revision),
     control = contents(doc),
     entry = entryById(doc, id);
   control.entries = removeOutline(control.entries, id);
@@ -442,8 +485,13 @@ export function deleteMdkEntry(file: string, id: string) {
   commit(file, doc);
   return project(doc);
 }
-export function renameMdkEntry(file: string, id: string, filename: string) {
-  const doc = load(file),
+export function renameMdkEntry(
+  file: string,
+  id: string,
+  filename: string,
+  revision?: string,
+) {
+  const doc = load(file, revision),
     control = contents(doc),
     entry = control.entries.find((e) => e.id === id);
   if (!entry) throw new Error("目录项不存在。");
@@ -453,6 +501,11 @@ export function renameMdkEntry(file: string, id: string, filename: string) {
     filename.endsWith(".md") ? filename : `${filename}.md`,
     entry.path,
   );
+  const beforeIssues = new Set(
+    referenceIssues(doc)
+      .filter((i) => i.code === "E_RESOURCE_MISSING")
+      .map((i) => i.path + "|" + i.message),
+  );
   if (name !== entry.path) {
     put(doc, name, readText(doc, entry.path));
     const previous = entry.path;
@@ -461,11 +514,6 @@ export function renameMdkEntry(file: string, id: string, filename: string) {
     doc.zip.deleteFile(previous);
   }
   putContents(doc, control);
-  const beforeIssues = new Set(
-    referenceIssues(load(file))
-      .filter((i) => i.code === "E_RESOURCE_MISSING")
-      .map((i) => i.path + "|" + i.message),
-  );
   if (
     referenceIssues(doc).some(
       (i) =>
@@ -550,6 +598,7 @@ export function importMdkResource(
   file: string,
   source: string,
   kind: ResourceKind,
+  revision?: string,
 ) {
   if (!["image", "video", "audio", "font", "other"].includes(kind))
     throw new Error("资源类型无效。");
@@ -558,7 +607,7 @@ export function importMdkResource(
   if (fs.statSync(source).size > MAX_FILE)
     throw new Error("超出实现支持范围：资源超过 64 MiB。");
   const bytes = fs.readFileSync(source),
-    doc = load(file);
+    doc = load(file, revision);
   checkMedia(source, bytes);
   const detected = detectMediaType(bytes);
   if (kind !== "other" && detected && !detected.startsWith(`${kind}/`))
@@ -567,10 +616,15 @@ export function importMdkResource(
   put(doc, name, bytes);
   assertEditable(doc);
   commit(file, doc);
-  return { path: name, kind, bytes: bytes.length };
+  return { path: name, kind, bytes: bytes.length, revision: doc.revision! };
 }
 export function readMdkTextFile(file: string, internalPath: string) {
-  return { path: internalPath, content: readText(load(file), internalPath) };
+  const doc = load(file);
+  return {
+    path: internalPath,
+    content: readText(doc, internalPath),
+    revision: doc.revision!,
+  };
 }
 export function saveMdkTextFile(
   file: string,
@@ -1148,9 +1202,7 @@ export function exportMdk(
 }
 function applySnapshot(doc: Document, snapshot: SaveSnapshot) {
   if (!isTable(snapshot) || snapshot.revision !== doc.revision)
-    throw new Error(
-      "磁盘工程已被其他进程修改；保存冲突，缓冲区保留，请重新打开或另存副本。",
-    );
+    throw new MdkRevisionError();
   assertEditable(doc);
   const texts = [
     ...(snapshot.text ? [snapshot.text] : []),
@@ -1160,6 +1212,12 @@ function applySnapshot(doc: Document, snapshot: SaveSnapshot) {
     throw new Error("同一文件不能在一次快照中重复提交。");
   for (const { path: internalPath, content } of texts) {
     validatePath(internalPath);
+    if (
+      typeof content !== "string" ||
+      /[\uD800-\uDFFF]/u.test(content) ||
+      !isTextData(Buffer.from(content), internalPath)
+    )
+      throw new Error("只能写入有效的 UTF-8 文本：" + internalPath);
     validateSourceText(internalPath, content);
     if (internalPath === "settings.toml" && settingsInfo(doc).readonly)
       throw new Error("未知版本 settings 不可降写。");
