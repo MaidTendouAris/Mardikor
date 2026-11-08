@@ -69,7 +69,8 @@ const containerRule: RuleBlock = (state, start, end, silent) => {
   return true;
 };
 const frontMatter: RuleBlock = (state, start, end, silent) => {
-  if (start !== 0 || state.parentType !== "root") return false;
+  if (start !== 0 || state.parentType !== "root" || state.env.continuedPage)
+    return false;
   const line = (index: number) =>
     state.src.slice(state.bMarks[index], state.eMarks[index]).trim();
   if (line(0) !== "---") return false;

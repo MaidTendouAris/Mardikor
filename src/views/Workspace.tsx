@@ -13,6 +13,7 @@ import {
   FilePlus2,
   FolderPlus,
   FolderOpen,
+  FolderSearch,
   GripVertical,
   ImagePlus,
   Minus,
@@ -49,6 +50,8 @@ import {
 import { defaultSettings } from "../../shared/defaults";
 import { isManuscript } from "../../shared/workspace";
 import {
+  editorFileKind,
+  editorView,
   newEditorGroup,
   textSnapshot,
   type EditorGroupState,
@@ -61,13 +64,14 @@ import type {
   MdkSettings,
   ResourceKind,
 } from "../../shared/mdk";
-import type { Preferences } from "../../shared/desktop";
-import type { Ask, Notify } from "../App";
 import {
-  canRenderPreview,
-  isLargeDocument,
-  previewTextLimit,
-} from "../services/document-size";
+  defaultPageLength,
+  type Preferences,
+  type ResolvedAppTheme,
+} from "../../shared/desktop";
+import type { Ask, Notify } from "../App";
+import { previewTextLimit } from "../services/document-size";
+import { replacePage } from "../services/document-pages";
 import { useMarkdownHeadings } from "../services/markdown-tasks";
 
 export interface WorkspaceHandle {
@@ -89,6 +93,7 @@ export const Workspace = forwardRef<
     initialView?: Tab;
     initialFragment?: string;
     preferences: Preferences;
+    theme: ResolvedAppTheme;
     ask: Ask;
     notify: Notify;
     onDirty: (dirty: boolean) => void;
@@ -101,6 +106,7 @@ export const Workspace = forwardRef<
     initialView = "source",
     initialFragment,
     preferences,
+    theme,
     ask,
     notify,
     onDirty,
@@ -160,6 +166,7 @@ export const Workspace = forwardRef<
     [modelPool],
   );
   const [sidebarRatio, setSidebarRatio] = useState(0.5);
+  const pageLength = preferences.pageLength ?? defaultPageLength;
   const sidebarSections = useRef<HTMLDivElement>(null);
   const [groupRatio, setGroupRatio] = useState(0.5);
   const groupContainer = useRef<HTMLDivElement>(null);
@@ -397,8 +404,7 @@ export const Workspace = forwardRef<
       project.readonly ||
       drop.document !== current.path ||
       drop.target !== target.tab ||
-      !isManuscript(project, current.path) ||
-      (target.tab === "write" && sourceOnly(current.content))
+      !isManuscript(project, current.path)
     ) {
       notify("当前文稿不可插入资源，请在可编辑的 Markdown 正文中重试。", true);
       return;
@@ -505,13 +511,20 @@ export const Workspace = forwardRef<
   ) {
     const item = loaded.files.find((f) => f.path === path);
     if (item?.kind === "directory") return;
+    const kind = editorFileKind(loaded, path);
     let current: Buffer | undefined = buffersRef.current[path];
-    if (item?.is_text || (path === "settings.toml" && !item)) {
+    if (kind === "markdown" || kind === "text") {
       if (!current || current.content === current.saved) {
         const content = item
           ? (await desktop().invoke("readText", file, path)).content
           : stringify(loaded.settings);
-        current = { path, content, saved: item ? content : "" };
+        current = {
+          path,
+          content,
+          saved: item ? content : "",
+          pagination:
+            current?.content === content ? current.pagination : undefined,
+        };
         putBuffer(current);
       }
     } else if (current) {
@@ -521,17 +534,21 @@ export const Workspace = forwardRef<
       setBuffers(next);
       current = undefined;
     }
+    const tab = editorView(
+      kind,
+      view,
+      current?.content,
+      loaded.format === "markdown",
+    );
     patchGroup(groupId, (g) => ({
       path,
-      tab: current
-        ? (view === "write" &&
-            (!isManuscript(loaded, path) ||
-              isLargeDocument(current.content) ||
-              sourceOnly(current.content))) ||
-          (view === "preview" && !canRenderPreview(current.content))
+      tab:
+        tab === "write" &&
+        current &&
+        current.content.length <= pageLength &&
+        sourceOnly(current.content)
           ? "source"
-          : view
-        : "source",
+          : tab,
       activeHeading: -1,
       outlinePath: undefined,
       revision: g.revision + 1,
@@ -934,8 +951,13 @@ export const Workspace = forwardRef<
       throw new Error("单 Markdown 工程没有 settings.toml。");
     if (!(await flush(false))) return;
     const target = groupsRef.current.find((g) => g.id === groupId)!;
-    if (next === "write" && !isManuscript(project, target.path))
-      throw new Error("请选择 Markdown 文稿。");
+    const targetBuffer = buffersRef.current[target.path];
+    next = editorView(
+      editorFileKind(project, target.path),
+      next,
+      targetBuffer?.content,
+      standalone,
+    );
     patchGroup(groupId, (g) => ({
       tab: next,
       outlinePath: undefined,
@@ -945,7 +967,7 @@ export const Workspace = forwardRef<
   function updateContent(path: string, content: string) {
     const current = buffersRef.current[path];
     if (current && current.content !== content)
-      putBuffer({ ...current, content });
+      putBuffer({ ...current, content, pagination: undefined });
   }
   async function revert() {
     if (
@@ -959,7 +981,7 @@ export const Workspace = forwardRef<
       }))
     )
       return;
-    setBuffer({ ...buffer, content: buffer.saved });
+    setBuffer({ ...buffer, content: buffer.saved, pagination: undefined });
     setRevision((value) => value + 1);
   }
   async function applyOutline(entries: MdkEntry[]) {
@@ -1509,6 +1531,19 @@ export const Workspace = forwardRef<
             </span>
           </div>
           <div className="button-row">
+            <button
+              className="icon-button"
+              aria-label="打开文件所在位置"
+              title={standalone ? "打开文件所在位置" : "打开工程文件所在位置"}
+              disabled={!project}
+              onClick={() =>
+                void desktop()
+                  .revealFile(activePath)
+                  .catch((error) => notify(String(error), true))
+              }
+            >
+              <FolderSearch size={17} />
+            </button>
             {project && !standalone && (
               <button className="button small" onClick={() => setCliInfo(true)}>
                 CLI 信息
@@ -1620,12 +1655,9 @@ export const Workspace = forwardRef<
                 }
                 active={activeGroup.id === group.id}
                 followOutline={followOutline}
-                readingTheme={preferences.readingTheme}
-                headings={
-                  outlinePath === group.path && activeGroup.id === group.id
-                    ? headings
-                    : undefined
-                }
+                theme={theme}
+                pageLength={pageLength}
+                headings={outlinePath === group.path ? headings : undefined}
                 split={groups.length === 2}
                 label={index === 0 ? "左栏" : "右栏"}
                 busy={busy}
@@ -1636,6 +1668,36 @@ export const Workspace = forwardRef<
                 openFile={(path) => openFile(path, group.id)}
                 changeTab={(tab) => changeTab(tab, group.id)}
                 updateContent={(content) => updateContent(group.path, content)}
+                setPagination={(content, pagination) => {
+                  const current = buffersRef.current[group.path];
+                  if (
+                    current?.content === content &&
+                    current.pagination?.length !== pagination.length
+                  )
+                    putBuffer({ ...current, pagination });
+                }}
+                updatePage={(page, text) => {
+                  const current = buffersRef.current[group.path];
+                  if (
+                    !current?.pagination?.pages[page] ||
+                    current.pagination.pages[page].readOnly
+                  )
+                    return;
+                  const next = replacePage(
+                    current.content,
+                    current.pagination,
+                    page,
+                    text,
+                  );
+                  if (next.content !== current.content)
+                    putBuffer({
+                      ...current,
+                      content: next.content,
+                      pagination:
+                        text.length > pageLength * 3 ? undefined : next.layout,
+                    });
+                  return next.pageText;
+                }}
                 importResources={() => insertFromPicker(group.id)}
                 pasteImage={(image) => pasteImage(group.id, image)}
                 revert={revert}
@@ -1700,6 +1762,7 @@ export const Workspace = forwardRef<
             {comparison.truncated && <p>长文稿仅对比前 20 万字符。</p>}
             <Suspense fallback={<p role="status">正在加载差异…</p>}>
               <ConflictDiff
+                theme={theme}
                 path={comparison.path}
                 disk={comparison.disk}
                 local={comparison.local}

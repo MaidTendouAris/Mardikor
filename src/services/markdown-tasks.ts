@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { markdownHeadings, type MarkdownHeading } from "../../shared/markdown";
 import { previewTextLimit } from "./document-size";
-import { mayContainMath, type renderPreviewPages } from "./preview";
+import { mayContainMath, type renderPreview } from "./preview";
 
 export type MarkdownTask =
   | { kind: "headings"; text: string }
-  | { kind: "preview"; args: Parameters<typeof renderPreviewPages> };
+  | { kind: "pages"; text: string; length: number }
+  | { kind: "preview"; args: Parameters<typeof renderPreview> };
 
 export function markdownTask<T>(
   task: MarkdownTask,
@@ -49,7 +50,7 @@ export function useMarkdownHeadings(path: string, text: string) {
     headings: MarkdownHeading[];
   }>();
   useEffect(() => {
-    if (text.length <= 32_000) {
+    if (text.length <= 4_000) {
       setValue({ path, headings: text ? markdownHeadings(text) : empty });
       return;
     }

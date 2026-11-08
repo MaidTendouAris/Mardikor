@@ -39,6 +39,7 @@ type Qa = {
   checks: number;
   downloads: number;
   installs: number;
+  installOptions?: [boolean | undefined, boolean | undefined];
   finish?: () => void;
   dialogs: string[];
 };
@@ -95,8 +96,9 @@ try {
       });
       return [];
     };
-    client.quitAndInstall = () => {
+    client.quitAndInstall = (silent, restart) => {
       scope.updateQa.installs++;
+      scope.updateQa.installOptions = [silent, restart];
     };
     dialog.showMessageBox = async (_parent, options) => {
       scope.updateQa.dialogs.push(options.message);
@@ -202,6 +204,7 @@ try {
       .getByRole("button", { name: "安装并重启", exact: true })
       .click();
     await expect.poll(async () => (await counts()).installs).toBe(1);
+    expect((await counts()).installOptions).toEqual([true, true]);
     expect(await fs.readFile(firstFile, "utf8")).toContain(
       "第一窗口更新前的更改",
     );

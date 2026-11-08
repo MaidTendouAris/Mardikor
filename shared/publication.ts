@@ -2,6 +2,14 @@ import type { MdkSettings, ValidationReport } from "./mdk";
 import { defaultSettings } from "./defaults";
 
 export type PublicationFormat = "pdf" | "epub";
+export type PublicationStage =
+  | "prepare"
+  | "validate-layout"
+  | "print-pdf"
+  | "pdf-toc"
+  | "finalize-pdf"
+  | "build-epub"
+  | "write";
 export interface PublicationSettings {
   version: number;
   metadata: {

@@ -7,6 +7,7 @@ const publicationSources = [
   "electron/publication.ts",
   "electron/publication-render.ts",
   "electron/publication-runtime.ts",
+  "electron/publication-worker.ts",
   "electron/pdf-text.ts",
   "electron/epub.ts",
   "electron/mdk.ts",
@@ -25,7 +26,11 @@ const publicationSources = [
 ];
 
 export const options = {
-  entryPoints: ["electron/main.ts", "electron/preload.ts"],
+  entryPoints: [
+    "electron/main.ts",
+    "electron/preload.ts",
+    "electron/publication-worker.ts",
+  ],
   outdir: "dist-electron",
   outExtension: { ".js": ".cjs" },
   bundle: true,

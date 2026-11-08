@@ -100,7 +100,7 @@ function read(file: string) {
   if (content.includes("\0")) throw new Error(invalidEncoding);
   return { content, encoding, revision: digest(bytes) };
 }
-function localFile(file: string, relative: string) {
+export function resolveLocalMarkdownPath(file: string, relative: string) {
   validatePath(relative);
   const root = fs.realpathSync(path.dirname(path.resolve(file)));
   const target = path.join(root, ...relative.split("/"));
@@ -175,7 +175,9 @@ export function openMarkdownFile(file: string): MdkProject {
         ) {
           seen.add(target.path);
           try {
-            const info = fs.statSync(localFile(file, target.path));
+            const info = fs.statSync(
+              resolveLocalMarkdownPath(file, target.path),
+            );
             if (info.isFile())
               files.push({
                 path: target.path,
@@ -263,7 +265,7 @@ export function copyMarkdownDraft(
   write(output, texts[0].content);
 }
 export function readMarkdownResource(file: string, relative: string) {
-  const target = localFile(file, relative),
+  const target = resolveLocalMarkdownPath(file, relative),
     info = fs.statSync(target);
   if (!info.isFile() || info.size > limit)
     throw new Error("资源无效或超过 64 MiB。");
@@ -316,13 +318,13 @@ export function insertMarkdownResources(
       let relative = directory + "/" + asset.name,
         n = 2;
       while (
-        fs.existsSync(localFile(file, relative)) ||
+        fs.existsSync(resolveLocalMarkdownPath(file, relative)) ||
         resources.some((r) => r.path === relative)
       )
         relative = directory + "/" + stem + "-" + n++ + suffix;
-      const target = localFile(file, relative);
+      const target = resolveLocalMarkdownPath(file, relative);
       for (const part of ["resources", directory]) {
-        const folder = localFile(file, part);
+        const folder = resolveLocalMarkdownPath(file, part);
         if (!fs.existsSync(folder)) {
           fs.mkdirSync(folder);
           directories.push(folder);

@@ -16,11 +16,23 @@ await fs.mkdir(root, { recursive: true });
 const run = await fs.mkdtemp(path.join(root, "run-")),
   profile = path.join(run, "profile"),
   markdown = path.join(run, "直接打开.MD"),
+  largeMarkdown = path.join(run, "分页布局.md"),
   archive = path.join(run, "直接打开.mdk");
 await fs.writeFile(
   markdown,
   "# Markdown 预览\n\n## 文档标题\n\n直接打开文件进入预览。\n",
   "utf8",
+);
+const heading = "# 大文档性能测试\n";
+const section =
+  "\n## 测试章节\n\n这是用于验证长文稿分页、滚动和界面布局的正文。 Markdown document sample 123456789.\n\n- 项目一\n- 项目二\n";
+const tail = "\n\n## 末页标记\n";
+const size = 2_814_973 - heading.length - tail.length;
+await fs.writeFile(
+  largeMarkdown,
+  heading +
+    section.repeat(Math.ceil(size / section.length)).slice(0, size) +
+    tail,
 );
 createMdkProject(archive, "01");
 saveMdkTextFile(
@@ -165,6 +177,63 @@ try {
   app = await launch(archive);
   await prepare();
   await preview("markdown/001.md", "MDK 预览");
+  await chooseView("write");
+  await secondInstance(largeMarkdown);
+  const left = page!.getByRole("region", { name: "左栏编辑组" });
+  const header = left.locator(".document-tabs");
+  const pager = header.getByRole("navigation", { name: "翻页" });
+  const pageNumber = pager.getByRole("spinbutton", { name: "页码" });
+  await expect(left.getByRole("tab", { name: "可视化" })).toBeDisabled();
+  await expect(left.getByRole("tab", { name: "预览" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(left.locator(".paged-preview-viewport h1")).toHaveText(
+    "大文档性能测试",
+  );
+  await expect(
+    left.locator(".rich-toolbar-container,.source-warning"),
+  ).toHaveCount(0);
+  const headerBox = (await header.boundingBox())!;
+  const pagerBox = (await pager.boundingBox())!;
+  const previewBox = (await left
+    .locator(".paged-preview-viewport")
+    .boundingBox())!;
+  expect(pagerBox.x).toBeGreaterThan(headerBox.x + headerBox.width / 2);
+  expect(
+    Math.abs(previewBox.y - (headerBox.y + headerBox.height)),
+  ).toBeLessThanOrEqual(1);
+  const count = Number(await pageNumber.getAttribute("max"));
+  expect(count).toBeGreaterThan(300);
+  await pageNumber.fill(String(count));
+  await pageNumber.press("Enter");
+  await expect(left.locator(".paged-preview-viewport")).toContainText(
+    "末页标记",
+  );
+  await left.getByRole("tab", { name: "源码" }).click();
+  await expect(pager).toBeVisible();
+  await expect(pageNumber).toBeDisabled();
+  await expect(left.locator(".source-warning")).toHaveCount(0);
+  await left.getByRole("button", { name: "切换源码与预览分栏" }).click();
+  await expect(pageNumber).toBeEnabled();
+  await page!.getByRole("button", { name: "向右拆分编辑器" }).click();
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().forEach((window) =>
+      window.setSize(1024, 900),
+    ),
+  );
+  await page!
+    .getByRole("separator", { name: "调整左右编辑组宽度" })
+    .press("Home");
+  await expect(pager).toBeVisible();
+  const narrow = (await header.boundingBox())!;
+  const narrowPager = (await pager.boundingBox())!;
+  expect(narrowPager.x + narrowPager.width).toBeLessThanOrEqual(
+    narrow.x + narrow.width,
+  );
+  expect(
+    await header.evaluate((node) => node.scrollWidth - node.clientWidth),
+  ).toBeLessThanOrEqual(1);
   expect(
     await Promise.all(
       [markdown, archive].map(async (file) =>
@@ -176,7 +245,7 @@ try {
   ).toEqual(hashes);
   expect(errors).toEqual([]);
   console.log(
-    "Markdown/MDK external opens honor preview/source/visual preferences, including restart; in-app editing and original bytes remain intact.",
+    "External open preferences, large-document fallback, and fixed pagination in preview/source and narrow splits passed.",
   );
 } catch (error) {
   if (page && !executablePath)

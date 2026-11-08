@@ -8,6 +8,26 @@
 !endif
 
 !macro customInit
+  ${If} ${isUpdated}
+    # Older app versions pass --updated without /S.
+    SetSilent silent
+    !ifndef INSTALL_MODE_PER_ALL_USERS
+      !ifndef ONE_CLICK
+        ${If} $hasPerUserInstallation == "1"
+        ${AndIf} $hasPerMachineInstallation == "1"
+          ReadEnvStr $0 "MARDIKOR_UPDATE_INSTALL_DIR"
+          ${If} $0 == $perMachineInstallationFolder
+          ${OrIf} ${UAC_IsInnerInstance}
+            !insertmacro setInstallModePerAllUsers
+          ${Else}
+            # Keep the per-user selection made by initMultiUser. Otherwise the
+            # assisted installer promotes any silent update to machine scope.
+            StrCpy $hasPerMachineInstallation "0"
+          ${EndIf}
+        ${EndIf}
+      !endif
+    !endif
+  ${EndIf}
   ReadRegDWORD $MarkdownAssociation SHELL_CONTEXT "${MD_ASSOC_KEY}" "Markdown"
   ${If} $MarkdownAssociation != 1
     StrCpy $MarkdownAssociation 0

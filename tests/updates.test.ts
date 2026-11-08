@@ -15,6 +15,7 @@ class Updater extends EventEmitter {
   checks = 0;
   downloads = 0;
   installs = 0;
+  installOptions?: [boolean | undefined, boolean | undefined];
   nextVersion = "0.2.0";
   networkError = false;
   async checkForUpdates() {
@@ -33,8 +34,9 @@ class Updater extends EventEmitter {
     this.emit("update-downloaded", {});
     return [];
   }
-  quitAndInstall() {
+  quitAndInstall(silent?: boolean, restart?: boolean) {
     this.installs++;
+    this.installOptions = [silent, restart];
   }
 }
 function fixture(canInstall = true) {
@@ -118,6 +120,7 @@ test("downloads and installation require separate actions; cancelled preparation
   assert.equal(f.service.status().phase, "downloaded");
   await f.service.install(async () => true);
   assert.equal(f.client.installs, 1);
+  assert.deepEqual(f.client.installOptions, [true, true]);
 });
 test("a newer release needs a new explicit download and portable builds use the release page", async () => {
   const f = fixture();

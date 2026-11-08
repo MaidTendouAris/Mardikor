@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import { Select } from "./Select";
 import { ProjectSettings } from "./ProjectSettings";
 import { ReadingPreview } from "./ReadingPreview";
 import { PagedPreview, type PagedPreviewHandle } from "./PagedPreview";
+import { PageNavigation } from "./PageNavigation";
 import { MediaPreview } from "./MediaPreview";
 import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
 import { desktop } from "../services/desktop";
@@ -33,17 +35,25 @@ import {
   requiresSourceMode,
   type MarkdownHeading,
 } from "../../shared/markdown";
-import { canRenderPreview, isLargeDocument } from "../services/document-size";
+import { canEditVisually, isLargeDocument } from "../services/document-size";
+import {
+  pageAtLine,
+  replacePage,
+  type DocumentPages,
+} from "../services/document-pages";
+import { markdownTask } from "../services/markdown-tasks";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import type { MdkProject, MdkSettings } from "../../shared/mdk";
 import type { InsertionDraft } from "../../shared/resources";
-import type {
-  EditorGroupState,
-  EditorTab,
-  TextBuffer,
+import {
+  editorFileKind,
+  editorView,
+  type EditorGroupState,
+  type EditorTab,
+  type TextBuffer,
 } from "../services/editor-groups";
 import type { Notify } from "../App";
-import type { Preferences } from "../../shared/desktop";
+import type { ResolvedAppTheme } from "../../shared/desktop";
 
 const SourceEditor = lazy(async () => {
   // Monaco translates action labels when its modules are first evaluated.
@@ -69,7 +79,8 @@ interface Props {
   modelPool: SourceModelPool;
   active: boolean;
   followOutline: boolean;
-  readingTheme: Preferences["readingTheme"];
+  theme: ResolvedAppTheme;
+  pageLength: number;
   headings?: MarkdownHeading[];
   split: boolean;
   label: string;
@@ -81,6 +92,8 @@ interface Props {
   openFile: (path: string) => Promise<void>;
   changeTab: (tab: EditorTab) => Promise<void>;
   updateContent: (content: string) => void;
+  setPagination: (content: string, layout: DocumentPages) => void;
+  updatePage: (page: number, text: string) => string | void;
   importResources: () => Promise<void>;
   pasteImage: (image: File) => Promise<void>;
   revert: () => Promise<void>;
@@ -106,7 +119,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       modelPool,
       active,
       followOutline,
-      readingTheme,
+      theme,
+      pageLength,
       headings,
       split,
       label,
@@ -118,6 +132,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       openFile,
       changeTab,
       updateContent,
+      setPagination,
+      updatePage,
       importResources,
       pasteImage,
       revert,
@@ -134,11 +150,20 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
   ) {
     const {
       path: activePath,
-      tab,
+      tab: selectedTab,
       revision,
       reveal: headingReveal,
       heading: previewHeading,
     } = group;
+    const isMarkdown = !!buffer && isManuscript(project, buffer.path);
+    const fileKind = editorFileKind(project, activePath);
+    const markdown = isMarkdown ? buffer.content : "";
+    const visualAvailable = isMarkdown && canEditVisually(markdown);
+    const standalone = project?.format === "markdown";
+    const tab = editorView(fileKind, selectedTab, markdown, standalone);
+    useEffect(() => {
+      if (tab !== selectedTab) patch({ tab, outlinePath: undefined });
+    }, [selectedTab, tab]);
     const [splitPreview, setSplitPreview] = useState(false);
     const [richEditor, setRichEditorInstance] = useState<Editor | null>(null);
     const setRichEditor = useCallback(
@@ -155,6 +180,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const pagedPreview = useRef<PagedPreviewHandle>(null);
     const outlineFrame = useRef(0);
     const sourceCursorMoved = useRef(0);
+    const lastSourceLine = useRef<{ path: string; line: number } | undefined>(
+      undefined,
+    );
     const expectedSourceScroll = useRef<number | null>(null);
     const expectedScroll = useRef(new WeakMap<HTMLElement, number>());
     function scrollTo(ratio: number, origin?: HTMLElement | "source") {
@@ -211,16 +239,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     }
     const codeBuffer = buffer;
     const contentDirty = !!buffer && buffer.content !== buffer.saved;
-    const standalone = project?.format === "markdown";
-    const isMarkdown = !!buffer && isManuscript(project, buffer.path);
-    const markdown = isMarkdown ? buffer.content : "";
     const large = isMarkdown && isLargeDocument(markdown);
-    const canPreview = !isMarkdown || canRenderPreview(markdown);
-    const unsupported = useMemo(
-      () =>
-        tab === "write" && !large && requiresSourceMode(buffer?.saved ?? ""),
-      [tab, large, buffer?.saved],
-    );
     const projectPreviewLarge = useMemo(
       () =>
         project?.mode !== "00" &&
@@ -245,11 +264,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     useEffect(() => {
       let live = true;
       setResourceData("");
-      if (
-        !buffer &&
-        activeFile?.kind !== "directory" &&
-        activePath.startsWith("resources/")
-      ) {
+      if (fileKind === "media") {
         void desktop()
           .invoke("readResource", file, activePath)
           .then((data) => {
@@ -262,7 +277,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       return () => {
         live = false;
       };
-    }, [file, activePath, !!buffer]);
+    }, [file, activePath, fileKind]);
     const resolveResource = useCallback(
       async (source: string) => {
         const target = resolveReference(activePath, source, true);
@@ -277,8 +292,102 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       : isMarkdown
         ? buffer.saved
         : "";
+    const paged =
+      isMarkdown &&
+      (markdown.length > pageLength ||
+        !!buffer?.pagination ||
+        (tab === "preview" && projectPreviewLarge)) &&
+      (tab === "write" ||
+        tab === "preview" ||
+        (tab === "source" && splitPreview));
+    const layoutText = tab === "write" ? markdown : previewMarkdown;
+    const [pageIndex, setPageIndex] = useState(0);
+    const [cancelled, setCancelled] = useState(false);
+    const [savedLayout, setSavedLayout] = useState<{
+      text: string;
+      layout: DocumentPages;
+    }>();
+    const storedLayout =
+      layoutText === markdown
+        ? buffer?.pagination
+        : savedLayout?.text === layoutText
+          ? savedLayout.layout
+          : undefined;
+    const layout =
+      storedLayout?.length === pageLength ? storedLayout : undefined;
+    const page = Math.min(
+      pageIndex,
+      Math.max(0, (layout?.pages.length ?? 1) - 1),
+    );
+    const currentPage = paged ? layout?.pages[page] : undefined;
+    const pageText = currentPage
+      ? layoutText.slice(currentPage.start, layout?.pages[page + 1]?.start)
+      : "";
+    const layoutHeadings = sourceHeadings?.length
+      ? sourceHeadings
+      : layout?.headings;
+    const offset = useMemo(() => {
+      if (!currentPage) return 0;
+      const index =
+        layoutHeadings?.findIndex(
+          (heading) => heading.line >= currentPage.line,
+        ) ?? -1;
+      return index < 0 ? (layoutHeadings?.length ?? 0) : index;
+    }, [layoutHeadings, currentPage]);
+    const priorHeadingLevels = useMemo(
+      () => layoutHeadings?.slice(0, offset).map(({ level }) => level),
+      [layoutHeadings, offset],
+    );
+    const unsupported = useMemo(
+      () =>
+        tab === "write" &&
+        (paged
+          ? !!currentPage?.readOnly
+          : requiresSourceMode(buffer?.saved ?? "")),
+      [tab, paged, currentPage?.readOnly, buffer?.saved],
+    );
+    const layoutReady = useRef(setPagination);
+    layoutReady.current = setPagination;
+    useEffect(() => {
+      setCancelled(false);
+      setPageIndex(0);
+    }, [activePath]);
+    useEffect(() => {
+      if (!paged || layout || cancelled) return;
+      const timer = setTimeout(
+        () => {
+          stop = markdownTask<DocumentPages>(
+            { kind: "pages", text: layoutText, length: pageLength },
+            (result) => {
+              if (layoutText === markdown)
+                layoutReady.current(layoutText, result);
+              else setSavedLayout({ text: layoutText, layout: result });
+            },
+            (error) => {
+              setCancelled(true);
+              notify(error, true);
+            },
+          );
+        },
+        tab === "source" ? 140 : 0,
+      );
+      let stop: (() => void) | undefined;
+      return () => {
+        clearTimeout(timer);
+        stop?.();
+      };
+    }, [
+      paged,
+      layout,
+      cancelled,
+      layoutText,
+      pageLength,
+      activePath,
+      tab,
+      layoutText === markdown,
+    ]);
     const previewMath = usePreviewMath(
-      !large &&
+      !paged &&
         ((tab === "source" && splitPreview) ||
           (tab === "write" && unsupported)) &&
         mayContainMath(previewMarkdown),
@@ -300,7 +409,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const previewHtml = useMemo(() => {
       if (
         !isMarkdown ||
-        large ||
+        paged ||
         !((tab === "source" && splitPreview) || unsupported)
       )
         return "";
@@ -318,7 +427,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       tab,
       splitPreview,
       isMarkdown,
-      large,
+      paged,
       unsupported,
       previewMath,
       previewMarkdown,
@@ -378,7 +487,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           row.closest<HTMLElement>("[data-source-path]")?.dataset.sourcePath ??
           path;
         const numbered = /mdk-heading-(\d+)$/.exec(row.id);
-        index = numbered ? Number(numbered[1]) - 1 : Math.max(0, lo - 1);
+        index = numbered
+          ? Number(numbered[1]) - 1
+          : offset + Math.max(0, lo - 1);
       }
       if (
         index !== group.activeHeading ||
@@ -399,7 +510,11 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     useEffect(() => {
       if (!active || !followOutline) return;
       if (tab === "source")
-        follow(sourceEditor.current?.firstVisibleLine() ?? group.cursor.line);
+        follow(
+          lastSourceLine.current?.path === activePath
+            ? lastSourceLine.current.line
+            : (sourceEditor.current?.firstVisibleLine() ?? group.cursor.line),
+        );
       if (tab === "preview") {
         const viewport = host.current?.querySelector<HTMLElement>(
           ".reading-preview,.paged-preview-viewport",
@@ -422,7 +537,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             lo = mid + 1;
           else hi = mid;
         }
-        const index = lo - 1;
+        const index = offset + lo - 1;
         if (index !== group.activeHeading)
           patch({ activeHeading: index, outlinePath: activePath });
       };
@@ -437,35 +552,58 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       tab,
       activePath,
       group.activeHeading,
+      offset,
     ]);
     useEffect(() => {
       if (previewHeading && previewHeading.path === activePath)
         pagedPreview.current?.jump("mdk-heading-" + (previewHeading.index + 1));
     }, [previewHeading, activePath]);
+    const queuedRichHeading = useRef<MarkdownHeading | null>(null);
+    function selectRichHeading(editor: Editor, index: number) {
+      let current = 0,
+        position = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === "heading" && current++ === index)
+          position = pos + 1;
+      });
+      if (position >= 0)
+        editor
+          .chain()
+          .focus()
+          .setTextSelection(position)
+          .scrollIntoView()
+          .run();
+    }
+    useLayoutEffect(() => {
+      if (!richEditor || !queuedRichHeading.current) return;
+      const heading = queuedRichHeading.current;
+      queuedRichHeading.current = null;
+      selectRichHeading(richEditor, heading.index - offset);
+    }, [richEditor]);
     useImperativeHandle(
       ref,
       () => ({
         scrollTo,
         jumpHeading(heading) {
+          if (tab === "write" && layout && paged) {
+            const target = pageAtLine(layout.pages, heading.line);
+            if (layout.pages[target].readOnly) {
+              pagedPreview.current?.jump("mdk-heading-" + (heading.index + 1));
+              return;
+            }
+            if (page !== target || !richEditor) {
+              queuedRichHeading.current = heading;
+              pagedPreview.current?.showPage(target);
+              return;
+            }
+          }
           if (!richEditor) {
             previewRef.current
               ?.querySelector(`[id$="mdk-heading-${heading.index + 1}"]`)
               ?.scrollIntoView({ block: "start" });
             return;
           }
-          let index = 0,
-            position = -1;
-          richEditor.state.doc.descendants((node, pos) => {
-            if (node.type.name === "heading" && index++ === heading.index)
-              position = pos + 1;
-          });
-          if (position >= 0)
-            richEditor
-              .chain()
-              .focus()
-              .setTextSelection(position)
-              .scrollIntoView()
-              .run();
+          selectRichHeading(richEditor, heading.index - offset);
         },
         dropDraft(x, y, marker) {
           const draft =
@@ -473,9 +611,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               ? richDropDraft(richEditor, x, y, marker)
               : sourceEditor.current?.dropDraft(x, y, marker);
           if (!draft) throw new Error("编辑器尚未就绪。");
-          return draft;
+          return tab === "write" && paged && layout
+            ? {
+                ...draft,
+                content: replacePage(markdown, layout, page, draft.content)
+                  .content,
+              }
+            : draft;
         },
         applyValue(content) {
+          if (tab === "write" && paged) return;
           if (tab === "write" && richEditor)
             richEditor.commands.setContent(content, {
               contentType: "markdown",
@@ -489,7 +634,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           else host.current?.focus();
         },
       }),
-      [richEditor, tab],
+      [richEditor, tab, layout, page, offset, paged, markdown],
     );
     const setCursor = (cursor: { line: number; column: number }) =>
       patch({ cursor });
@@ -504,7 +649,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       projectTheme,
     )
       ? projectTheme
-      : (readingTheme ?? "light");
+      : undefined;
     const choices = [
       ...new Set([
         activePath,
@@ -514,6 +659,43 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         "settings.toml",
       ]),
     ].filter(Boolean);
+    const renderRich = (text: string, paginated: boolean) => (
+      <div
+        className="document-paper"
+        style={style}
+        data-document-drop-zone="write"
+        data-document-path={activePath}
+        onClick={(event) => {
+          if (standalone && (event.ctrlKey || event.metaKey))
+            followPreviewLink(
+              event,
+              activePath,
+              true,
+              () => {},
+              (error) => notify(error, true),
+            );
+        }}
+      >
+        <RichEditor
+          key={activePath + (paginated ? ":" + page : "")}
+          content={text}
+          chapterPosition={
+            project?.mode === "01" && settings.mode.book.chapter_numbering
+              ? activeEntry?.position
+              : undefined
+          }
+          priorHeadingLevels={paginated ? priorHeadingLevels : undefined}
+          reservedSections={reserved.get(activeEntry?.position ?? "")}
+          revision={revision}
+          editable={!busy && !project?.readonly}
+          onChange={
+            paginated ? (value) => updatePage(page, value) : updateContent
+          }
+          onReady={setRichEditor}
+          resolveResource={resolveResource}
+        />
+      </div>
+    );
     return (
       <section
         ref={host}
@@ -580,33 +762,50 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             </button>
           </header>
         )}
-        <div className="document-tabs" role="tablist" aria-label="编辑模式">
-          {[
-            { id: "source", name: "源码", icon: Braces },
-            { id: "write", name: "可视化", icon: Pencil },
-            { id: "preview", name: "预览", icon: Eye },
-            { id: "settings", name: "工程设置", icon: Settings2 },
-          ].map((item) => (
-            <button
-              role="tab"
-              key={item.id}
-              aria-selected={tab === item.id}
-              className={tab === item.id ? "active" : ""}
-              disabled={
-                busy ||
-                !project ||
-                (item.id === "write" && (!isMarkdown || large)) ||
-                (item.id === "preview" && !canPreview) ||
-                (item.id === "settings" && standalone)
-              }
-              onClick={() =>
-                void execute(() => changeTab(item.id as EditorTab))
-              }
-            >
-              <item.icon size={15} />
-              {item.name}
-            </button>
-          ))}
+        <div className="document-tabs">
+          <div
+            className="document-mode-tabs"
+            role="tablist"
+            aria-label="编辑模式"
+          >
+            {[
+              { id: "source", name: "源码", icon: Braces },
+              { id: "write", name: "可视化", icon: Pencil },
+              { id: "preview", name: "预览", icon: Eye },
+              { id: "settings", name: "工程设置", icon: Settings2 },
+            ].map((item) => (
+              <button
+                role="tab"
+                key={item.id}
+                aria-label={item.name}
+                aria-selected={tab === item.id}
+                title={
+                  item.id === "write" && isMarkdown && !visualAvailable
+                    ? "此文稿可使用源码编辑或分页预览"
+                    : undefined
+                }
+                className={tab === item.id ? "active" : ""}
+                disabled={
+                  busy ||
+                  !project ||
+                  !fileKind ||
+                  (item.id === "write" && !visualAvailable) ||
+                  editorView(
+                    fileKind,
+                    item.id as EditorTab,
+                    markdown,
+                    standalone,
+                  ) !== item.id
+                }
+                onClick={() =>
+                  void execute(() => changeTab(item.id as EditorTab))
+                }
+              >
+                <item.icon size={15} />
+                <span>{item.name}</span>
+              </button>
+            ))}
+          </div>
           <div className="document-view-actions">
             {tab === "source" && isMarkdown && (
               <button
@@ -626,6 +825,30 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 撤销文件更改
               </button>
             )}
+            {tab === "write" && unsupported && (
+              <button
+                className="text-button"
+                onClick={() => void execute(() => changeTab("source"))}
+              >
+                切换到源码
+              </button>
+            )}
+            <PageNavigation
+              key={activePath}
+              page={paged ? page : 0}
+              count={
+                paged
+                  ? (layout?.pages.length ?? 0)
+                  : isMarkdown &&
+                      (tab === "write" ||
+                        tab === "preview" ||
+                        (tab === "source" && splitPreview))
+                    ? 1
+                    : 0
+              }
+              disabled={busy || !paged}
+              onPage={(index) => pagedPreview.current?.showPage(index)}
+            />
           </div>
         </div>
         {project && !["00", "01", "02"].includes(project.mode) && (
@@ -655,21 +878,26 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 ))}
             </details>
           )}
-        {tab === "write" && !large && (
+        {tab === "write" && richEditor && !unsupported && (
           <RichToolbar
             editor={richEditor}
-            disabled={busy || unsupported || !!project?.readonly}
+            disabled={busy || !!project?.readonly}
             sourceEditable={!busy && !project?.readonly}
-            sourceText={markdown}
+            sourceText={paged ? pageText : markdown}
             notify={notify}
             sourcePath={activePath}
             files={project?.files ?? []}
             onImport={importResources}
             onSourceInsert={async (text) => {
+              const content =
+                paged && layout
+                  ? replacePage(markdown, layout, page, text).content
+                  : text;
               await execute(async () => {
                 await changeTab("source");
-                if (sourceEditor.current) sourceEditor.current.applyValue(text);
-                else updateContent(text);
+                if (sourceEditor.current)
+                  sourceEditor.current.applyValue(content);
+                else updateContent(content);
               });
               requestAnimationFrame(() => sourceEditor.current?.focus());
             }}
@@ -679,6 +907,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           className={`document-canvas ${tab === "source" ? "source-canvas" : ""}`}
           onPasteCapture={(event) => {
             if (!isMarkdown || !["source", "write"].includes(tab)) return;
+            if (tab === "write" && !richEditor) return;
             const image = Array.from(event.clipboardData.files).find((file) =>
               file.type.startsWith("image/"),
             );
@@ -693,7 +922,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           {codeBuffer &&
             (tab === "source" || (!large && sourceEditor.current)) && (
               <div
-                className={`source-workspace ${splitPreview && isMarkdown && canPreview ? "split-preview" : ""}`}
+                className={`source-workspace ${splitPreview && isMarkdown ? "split-preview" : ""}`}
                 hidden={tab !== "source" || !buffer}
               >
                 <section
@@ -733,13 +962,6 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                       保存源码
                     </button>
                   </div>
-                  {large && (
-                    <p className="source-warning">
-                      {canPreview
-                        ? "长文稿使用源码编辑和分页预览。"
-                        : "文稿超过排版上限，已使用源码模式。拆分文稿后可预览。"}
-                    </p>
-                  )}
                   {project?.encoding === "GB18030" && (
                     <p className="source-warning">修改后保存时将转为 UTF-8。</p>
                   )}
@@ -756,6 +978,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     }
                   >
                     <SourceEditor
+                      theme={theme}
                       ref={sourceEditor}
                       modelPool={modelPool}
                       onViewportReady={viewportReady}
@@ -772,8 +995,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                               if (
                                 !programmatic &&
                                 Date.now() - sourceCursorMoved.current > 150
-                              )
+                              ) {
+                                lastSourceLine.current = {
+                                  path: activePath,
+                                  line,
+                                };
                                 follow(line);
+                              }
                             }
                           : undefined
                       }
@@ -801,6 +1029,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                       onPosition={(line, column) => {
                         if (tab !== "source") return;
                         sourceCursorMoved.current = Date.now();
+                        lastSourceLine.current = { path: activePath, line };
                         setCursor({ line, column });
                         follow(line);
                       }}
@@ -829,16 +1058,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               }
               onSource={() => void execute(() => openFile("settings.toml"))}
             />
-          ) : isMarkdown &&
-            canPreview &&
-            ((tab === "preview" && (large || projectPreviewLarge)) ||
-              (tab === "source" && splitPreview && large)) ? (
+          ) : paged ? (
             <PagedPreview
               key={activePath}
               ref={pagedPreview}
               className={tab === "source" ? "inline-preview paged-inline" : ""}
               args={[
-                previewMarkdown,
+                layoutText,
                 previewSettings,
                 activeEntry?.position,
                 project?.mode,
@@ -847,6 +1073,19 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 standalone,
                 reserved.get(activeEntry?.position ?? ""),
               ]}
+              layout={layout}
+              page={page}
+              onPage={setPageIndex}
+              headings={sourceHeadings ?? []}
+              headingOffset={offset}
+              priorHeadingLevels={priorHeadingLevels}
+              preparing={!cancelled}
+              onTogglePreparing={() => setCancelled(!cancelled)}
+              editor={
+                tab === "write" && currentPage && !unsupported
+                  ? renderRich(pageText, true)
+                  : undefined
+              }
               initialFragment={initialFragment}
               style={style}
               resolveResource={resolveResource}
@@ -857,17 +1096,19 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 followViewport(viewport);
               }}
             />
-          ) : ((tab === "preview" || tab === "write") && !canPreview) ||
-            (tab === "write" && large) ? (
-            <div className="workspace-empty">
-              <p>此文稿较大，使用源码模式编辑。</p>
-              <button
-                className="button"
-                onClick={() => void execute(() => changeTab("source"))}
-              >
-                切换到源码
-              </button>
-            </div>
+          ) : tab === "preview" &&
+            fileKind === "media" &&
+            activeFile &&
+            project ? (
+            <MediaPreview
+              file={file}
+              current={activeFile}
+              data={resourceData}
+              files={project.files}
+              settings={settings}
+              mode={project.mode}
+              onSelect={(path) => void execute(() => openFile(path))}
+            />
           ) : tab === "preview" && project ? (
             <ReadingPreview
               onLayout={viewportReady}
@@ -889,17 +1130,6 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             <>
               {tab === "write" && (
                 <div className="paper-wrapper">
-                  {unsupported && (
-                    <div className="source-warning">
-                      此文稿含可视化编辑不支持的语法。
-                      <button
-                        className="button small"
-                        onClick={() => void execute(() => changeTab("source"))}
-                      >
-                        切换到源码
-                      </button>
-                    </div>
-                  )}
                   {unsupported ? (
                     <article
                       className="document-paper preview-body"
@@ -917,52 +1147,11 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                       dangerouslySetInnerHTML={{ __html: previewHtml }}
                     />
                   ) : (
-                    <div
-                      className="document-paper"
-                      style={style}
-                      data-document-drop-zone={
-                        tab === "write" && isMarkdown ? "write" : undefined
-                      }
-                      data-document-path={buffer.path}
-                      onClick={(event) => {
-                        if (standalone && (event.ctrlKey || event.metaKey))
-                          followPreviewLink(
-                            event,
-                            activePath,
-                            true,
-                            () => {},
-                            (error) => notify(error, true),
-                          );
-                      }}
-                    >
-                      <RichEditor
-                        key={activePath}
-                        content={buffer.content}
-                        chapterPosition={
-                          project?.mode === "01" &&
-                          settings.mode.book.chapter_numbering
-                            ? activeEntry?.position
-                            : undefined
-                        }
-                        reservedSections={reserved.get(
-                          activeEntry?.position ?? "",
-                        )}
-                        revision={revision}
-                        editable={
-                          !busy &&
-                          !project?.readonly &&
-                          !unsupported &&
-                          tab === "write"
-                        }
-                        onChange={updateContent}
-                        onReady={setRichEditor}
-                        resolveResource={resolveResource}
-                      />
-                    </div>
+                    renderRich(buffer.content, false)
                   )}
                 </div>
               )}
-              {tab === "source" && splitPreview && isMarkdown && canPreview && (
+              {tab === "source" && splitPreview && isMarkdown && (
                 <div
                   className={
                     tab === "source" ? "inline-preview" : "paper-wrapper"
@@ -986,16 +1175,6 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 </div>
               )}
             </>
-          ) : activeFile && project ? (
-            <MediaPreview
-              file={file}
-              current={activeFile}
-              data={resourceData}
-              files={project.files}
-              settings={settings}
-              mode={project.mode}
-              onSelect={(path) => void execute(() => openFile(path))}
-            />
           ) : (
             <div className="workspace-empty">
               <p>

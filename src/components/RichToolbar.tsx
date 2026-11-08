@@ -83,9 +83,7 @@ export function RichToolbar({
     selector: ({ editor }) =>
       editor
         ? [
-            editor.state.selection.from,
-            editor.state.selection.to,
-            editor.state.doc.content.size,
+            editor.state.selection.empty,
             ...[
               "bold",
               "italic",

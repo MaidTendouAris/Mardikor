@@ -14,6 +14,7 @@ import {
 } from "../shared/markdown-editing";
 import math from "@vscode/markdown-it-katex";
 import { enablePreviewMath, renderPreview } from "../src/services/preview";
+import { paginateMarkdown, replacePage } from "../src/services/document-pages";
 
 const window = new Window();
 Object.assign(globalThis, {
@@ -141,4 +142,64 @@ test("math preview renders inline and block MathML without enabling external con
   assert.match(html, /<math[^>]+display="block".*<mfrac>/s);
   assert.match(html, /<code>\$a\+b\$<\/code>/);
   assert.doesNotMatch(html, /<img\b|href="https:\/\/example\.com/);
+});
+
+test("visual pagination preserves adjacent Markdown, CRLF, and links across page boundaries", () => {
+  const intro = "链接 [阅读][guide] 和注释[^one]。\r\n\r\n";
+  const source =
+    intro +
+    Array.from(
+      { length: 42 },
+      (_, i) => `## ${i + 1}\r\n\r\n${"正文。".repeat(80)}\r\n\r\n`,
+    ).join("") +
+    "[guide]: https://example.org/guide\r\n\r\n[^one]: 脚注正文。\r\n";
+  const layout = paginateMarkdown(source, 2000);
+  assert.ok(layout.pages.length >= 4);
+  const start = layout.pages[1].start;
+  const end = layout.pages[2].start;
+  const changed = replacePage(source, layout, 1, "## 修改后的标题\n\n新正文");
+  assert.equal(changed.content.slice(0, start), source.slice(0, start));
+  assert.equal(
+    changed.content.slice(changed.layout.pages[2].start),
+    source.slice(end),
+  );
+  assert.equal(
+    changed.content.slice(start, changed.layout.pages[2].start),
+    "## 修改后的标题\r\n\r\n新正文\r\n\r\n",
+  );
+  const html = renderPreview(
+    intro,
+    undefined,
+    "",
+    "00",
+    "",
+    undefined,
+    true,
+    undefined,
+    {
+      headingOffset: 0,
+      priorHeadingLevels: [],
+      references: layout.references,
+      notes: layout.notes,
+    },
+  );
+  assert.match(html, /data-mdk-link="https:\/\/example\.org\/guide"/);
+  assert.match(html, /脚注正文/);
+});
+
+test("very large lines and tables get bounded preview pages without editable fragments", () => {
+  const huge = "🙂".repeat(1_050_000);
+  const layout = paginateMarkdown(huge, 2001);
+  assert.ok(layout.pages.length > 1000);
+  assert.ok(
+    layout.pages.every(
+      ({ start, literal, readOnly }) => start % 2 === 0 && literal && readOnly,
+    ),
+  );
+  const table =
+    "| 项目 | 值 |\n| --- | --- |\n" + "| 表格数据 | 示例 |\n".repeat(3000);
+  const paged = paginateMarkdown(table, 8000);
+  assert.ok(paged.pages.length > 2);
+  assert.ok(paged.pages.every(({ readOnly }) => readOnly));
+  assert.match(paged.pages[1].tableHeader ?? "", /^\| 项目 \| 值 \|/);
 });

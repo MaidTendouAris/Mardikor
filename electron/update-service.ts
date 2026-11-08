@@ -85,7 +85,7 @@ export class UpdateService {
       this.set({
         phase: "downloaded",
         percent: 100,
-        message: "更新已下载。点击安装并重启后才会安装，退出应用不会自动安装。",
+        message: "更新已下载。点击安装并重启后，将沿用当前安装设置并自动重启。",
       });
     });
     client.on("error", (error) => this.fail(error));
@@ -183,7 +183,7 @@ export class UpdateService {
         });
         return this.status();
       }
-      this.client.quitAndInstall(false, true);
+      this.client.quitAndInstall(true, true);
     } catch (error) {
       this.set({
         phase: "downloaded",

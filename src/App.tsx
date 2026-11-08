@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   BookOpen,
   Check,
@@ -68,6 +74,24 @@ export default function App() {
     preferencesRef.current = value;
     setPreferences(value);
   }, []);
+  const [systemDark, setSystemDark] = useState(
+    () => matchMedia("(prefers-color-scheme: dark)").matches,
+  );
+  const theme =
+    preferences.appTheme === "system"
+      ? systemDark
+        ? "dark"
+        : "light"
+      : (preferences.appTheme ?? "light");
+  useEffect(() => {
+    const scheme = matchMedia("(prefers-color-scheme: dark)");
+    const updateScheme = () => setSystemDark(scheme.matches);
+    scheme.addEventListener("change", updateScheme);
+    return () => scheme.removeEventListener("change", updateScheme);
+  }, []);
+  useLayoutEffect(() => {
+    document.documentElement.dataset.appTheme = theme;
+  }, [theme]);
   const [request, setRequest] = useState<ModalRequest | null>(null);
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(
     null,
@@ -124,6 +148,7 @@ export default function App() {
   );
   useEffect(() => {
     if (!window.mardikor) return;
+    const unsubscribe = desktop().onPreferencesChanged(receivePreferences);
     preferencesReady.current = Promise.all([
       desktop().recent(),
       desktop().preferences(),
@@ -133,6 +158,7 @@ export default function App() {
         receivePreferences(p);
       })
       .catch((error) => notify(String(error), true));
+    return unsubscribe;
   }, [notify, receivePreferences]);
   useEffect(() => {
     window.mardikor?.setDirty(isDirty);
@@ -464,6 +490,7 @@ export default function App() {
               initialView={initialView}
               initialFragment={initialFragment}
               preferences={preferences}
+              theme={theme}
               ask={ask}
               notify={notify}
               onDirty={setIsDirty}

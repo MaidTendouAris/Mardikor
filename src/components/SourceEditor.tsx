@@ -25,6 +25,7 @@ import { stringify } from "smol-toml";
 import { defaultSettings } from "../../shared/defaults";
 import { validateSourceText } from "../../shared/schema";
 import type { ProjectFile } from "../../shared/mdk";
+import type { ResolvedAppTheme } from "../../shared/desktop";
 
 (
   globalThis as typeof globalThis & { MonacoEnvironment: monaco.Environment }
@@ -42,6 +43,30 @@ monaco.editor.defineTheme("mdk-light", {
   ],
   colors: {
     "editor.background": "#ffffff",
+    "editorCursor.foreground": "#2563eb",
+    "editor.selectionBackground": "#dbeafe",
+  },
+});
+monaco.editor.defineTheme("mdk-dark", {
+  base: "vs-dark",
+  inherit: true,
+  rules: [{ token: "comment", foreground: "a6a6a6" }],
+  colors: {
+    "editor.background": "#141414",
+    "editor.foreground": "#d4d4d4",
+    "editorCursor.foreground": "#d4d4d4",
+    "editor.selectionBackground": "#383838",
+    "editor.inactiveSelectionBackground": "#2a2a2a",
+    "editor.lineHighlightBorder": "#2b2b2b",
+  },
+});
+monaco.editor.defineTheme("mdk-warm", {
+  base: "vs",
+  inherit: true,
+  rules: [{ token: "comment", foreground: "675748" }],
+  colors: {
+    "editor.background": "#f8f2e5",
+    "editor.foreground": "#443a2d",
     "editorCursor.foreground": "#2563eb",
     "editor.selectionBackground": "#dbeafe",
   },
@@ -122,17 +147,18 @@ export function ConflictDiff({
   path,
   disk,
   local,
+  theme,
 }: {
   path: string;
   disk: string;
   local: string;
+  theme: ResolvedAppTheme;
 }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const original = monaco.editor.createModel(disk, language(path));
     const modified = monaco.editor.createModel(local, language(path));
     const editor = monaco.editor.createDiffEditor(host.current!, {
-      theme: "mdk-light",
       readOnly: true,
       originalEditable: false,
       automaticLayout: true,
@@ -148,6 +174,9 @@ export function ConflictDiff({
       modified.dispose();
     };
   }, [path, disk, local]);
+  useEffect(() => {
+    monaco.editor.setTheme(`mdk-${theme}`);
+  }, [theme]);
   return <div className="disk-diff" ref={host} />;
 }
 export interface SourceModelPool {
@@ -176,6 +205,7 @@ export const SourceEditor = forwardRef<
     value: string;
     files: ProjectFile[];
     readOnly: boolean;
+    theme: ResolvedAppTheme;
     zoom: number;
     largeDocument?: boolean;
     onChange: (value: string) => void;
@@ -192,6 +222,7 @@ export const SourceEditor = forwardRef<
     value,
     files,
     readOnly,
+    theme,
     zoom,
     largeDocument,
     onChange,
@@ -423,7 +454,6 @@ export const SourceEditor = forwardRef<
   useEffect(() => {
     const editor = monaco.editor.create(element.current!, {
       model: null,
-      theme: "mdk-light",
       automaticLayout: true,
       fontSize: Math.round((14 * zoom) / 100),
       fontFamily: 'Consolas, "Cascadia Code", monospace',
@@ -514,6 +544,9 @@ export const SourceEditor = forwardRef<
       }
     };
   }, []);
+  useEffect(() => {
+    monaco.editor.setTheme(`mdk-${theme}`);
+  }, [theme]);
   useEffect(() => {
     const editor = instance.current;
     if (!editor || !path) return;

@@ -177,7 +177,17 @@ try {
   await app.evaluate(({ dialog }, file) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
   }, pdfA);
+  await page.evaluate(() => {
+    const scope = window as Window & { publicationStages?: string[] };
+    const stages = (scope.publicationStages = []);
+    window.mardikor!.onPublicationProgress((_file, stage) =>
+      stages.push(stage),
+    );
+  });
   await section.getByRole("button", { name: "导出 PDF", exact: true }).click();
+  await expect(
+    section.getByRole("progressbar", { name: "出版任务进度" }),
+  ).toBeVisible();
   await expect
     .poll(
       () =>
@@ -188,6 +198,20 @@ try {
       { timeout: 60000 },
     )
     .toBe(true);
+  const stages = await page.evaluate(
+    () =>
+      (window as Window & { publicationStages?: string[] }).publicationStages,
+  );
+  expect(stages).toEqual(
+    expect.arrayContaining([
+      "prepare",
+      "validate-layout",
+      "print-pdf",
+      "pdf-toc",
+      "finalize-pdf",
+      "write",
+    ]),
+  );
   const firstBytes = await fs.readFile(pdfA),
     firstDocument = await PDFDocument.load(firstBytes);
   const first = {

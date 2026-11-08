@@ -26,6 +26,7 @@ import {
   type PublicationInfo,
   type PublicationPlan,
   type PublicationResult,
+  type PublicationStage,
 } from "../shared/publication";
 import type { MdkProject, ReadingUnit, ValidationIssue } from "../shared/mdk";
 import { assertPassiveSvg, checkMedia, detectMediaType } from "./media";
@@ -34,11 +35,7 @@ import {
   readMarkdownFile,
   readMarkdownResource,
 } from "./markdown-file";
-import {
-  configureMdkPublication,
-  fileRevision,
-  readMdkPublication,
-} from "./mdk";
+import { configureMdkPublication, readMdkPublication } from "./mdk";
 import { pdfCjkAliases } from "./pdf-text";
 
 export const sha256 = (data: string | Buffer) =>
@@ -59,6 +56,11 @@ export const escapeXml = (text: string) =>
       })[char]!,
   );
 export interface PublicationRuntime {
+  progress?: (stage: PublicationStage) => void;
+  prepare?: (
+    file: string,
+    format: PublicationFormat,
+  ) => Promise<PreparedPublication>;
   outputRevision: (file: string) => string | null;
   engine: string;
   assetDirectory: string;
@@ -88,7 +90,8 @@ export interface PublicationChapter {
 }
 export interface PreparedPublication {
   format: PublicationFormat;
-  snapshot: Snapshot;
+  snapshot: Pick<Snapshot, "project">;
+  renderedHtml?: string;
   configuration: PublicationConfiguration;
   chapters: PublicationChapter[];
   assets: Map<string, { source: string; data: Buffer; mediaType: string }>;
@@ -119,7 +122,10 @@ function applyConfiguration(
   });
   project.settings = resolveSettings(settings);
 }
-function snapshot(file: string, runtime: PublicationRuntime): Snapshot {
+function snapshot(
+  file: string,
+  runtime: Pick<PublicationRuntime, "localConfiguration">,
+): Snapshot {
   if (!isMarkdownFile(file)) return readMdkPublication(file);
   const project = openMarkdownFile(file);
   const configuration = runtime.localConfiguration(file);
@@ -136,7 +142,10 @@ function snapshot(file: string, runtime: PublicationRuntime): Snapshot {
     files: new Map(),
   };
 }
-function fontBytes(source: Snapshot, runtime: PublicationRuntime) {
+function fontBytes(
+  source: Snapshot,
+  runtime: Pick<PublicationRuntime, "assetDirectory">,
+) {
   const name = source.project.settings.appearance.font_family;
   if (name === "system") {
     const bytes = fs.readFileSync(
@@ -302,7 +311,10 @@ function validXmlText(text: string) {
 export function preparePublication(
   file: string,
   format: PublicationFormat,
-  runtime: PublicationRuntime,
+  runtime: Pick<
+    PublicationRuntime,
+    "engine" | "assetDirectory" | "localConfiguration" | "verifyImages"
+  >,
 ): PreparedPublication {
   if (!["pdf", "epub"].includes(format)) throw new Error("不支持的出版格式。");
   const source = snapshot(file, runtime),
@@ -902,7 +914,7 @@ export function preparePublication(
   );
   return {
     format,
-    snapshot: source,
+    snapshot: { project },
     configuration,
     chapters,
     assets,
@@ -925,9 +937,12 @@ export async function planPublication(
   format: PublicationFormat,
   runtime: PublicationRuntime,
 ): Promise<PublicationPlan> {
-  const prepared = preparePublication(file, format, runtime);
+  runtime.progress?.("prepare");
+  const prepared = await (runtime.prepare?.(file, format) ??
+    preparePublication(file, format, runtime));
   if (!prepared.issues.some((i) => i.severity === "error")) {
     try {
+      runtime.progress?.("validate-layout");
       await runtime.verifyLayout(prepared);
     } catch (error) {
       prepared.issues.push({
@@ -969,9 +984,11 @@ export async function exportPublication(
   )
     throw new Error("请选择对应格式的新输出路径，不能覆盖源工程。");
   const previous = runtime.outputRevision(output);
-  if ((fs.existsSync(output) ? fileRevision(output) : null) !== previous)
+  if ((await publicationRevision(output, true)) !== previous)
     throw new Error("输出路径在确认后发生变化，请重新选择文件，未覆盖。");
-  const prepared = preparePublication(file, format, runtime);
+  runtime.progress?.("prepare");
+  const prepared = await (runtime.prepare?.(file, format) ??
+    preparePublication(file, format, runtime));
   if (prepared.fingerprint !== fingerprint)
     throw new Error("工程、资源或配置在预检后已变化，请重新严格校验。");
   if (prepared.issues.some((i) => i.severity === "error"))
@@ -981,39 +998,43 @@ export async function exportPublication(
         .map((i) => i.message)
         .join("\n"),
     );
+  runtime.progress?.("validate-layout");
   await runtime.verifyLayout(prepared);
+  runtime.progress?.(format === "pdf" ? "print-pdf" : "build-epub");
   const result =
     format === "pdf"
       ? await runtime.pdf(prepared)
       : { bytes: await runtime.epub(prepared), pages: undefined };
   if (result.bytes.length > 256 * 1024 * 1024)
     throw new Error("导出结果超过 256 MiB，未写入文件。");
-  if (fileRevision(file) !== prepared.snapshot.project.revision)
-    throw new Error("生成期间源工程已改变，未发布过期导出文件。");
+  runtime.progress?.("write");
   const temporary = output + "." + randomUUID() + ".tmp";
   if (previous) {
-    const stat = fs.lstatSync(output);
+    const stat = await fs.promises.lstat(output);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1)
       throw new Error("输出路径不能是链接或特殊文件。");
   }
+  const fd = await fs.promises.open(temporary, "wx");
   try {
-    const fd = fs.openSync(temporary, "wx");
     try {
-      fs.writeFileSync(fd, result.bytes);
-      fs.fsyncSync(fd);
+      await fd.writeFile(result.bytes);
+      await fd.sync();
     } finally {
-      fs.closeSync(fd);
+      await fd.close();
     }
+    if (
+      (await publicationRevision(file)) !== prepared.snapshot.project.revision
+    )
+      throw new Error("生成期间源工程已改变，未发布过期导出文件。");
     if (previous) {
-      if (fileRevision(output) !== previous)
+      if ((await publicationRevision(output)) !== previous)
         throw new Error("输出文件已被外部修改，未覆盖。");
-      fs.renameSync(temporary, output);
+      await fs.promises.rename(temporary, output);
     } else {
-      fs.linkSync(temporary, output);
-      fs.unlinkSync(temporary);
+      await fs.promises.link(temporary, output);
     }
   } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    await fs.promises.rm(temporary, { force: true });
   }
   return {
     path: output,
@@ -1021,4 +1042,16 @@ export async function exportPublication(
     sha256: sha256(result.bytes),
     pages: result.pages,
   };
+}
+
+async function publicationRevision(file: string, missing = false) {
+  const hash = createHash("sha256");
+  try {
+    for await (const bytes of fs.createReadStream(file)) hash.update(bytes);
+    return hash.digest("hex");
+  } catch (error) {
+    if (missing && (error as NodeJS.ErrnoException).code === "ENOENT")
+      return null;
+    throw error;
+  }
 }

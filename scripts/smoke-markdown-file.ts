@@ -102,6 +102,28 @@ try {
   await expect(
     page!.getByRole("tab", { name: "预览", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
+  await app.evaluate(({ shell }) => {
+    shell.showItemInFolder = (file) => {
+      (
+        globalThis as typeof globalThis & { revealedFile?: string }
+      ).revealedFile = file;
+    };
+  });
+  const reveal = async (file: string) => {
+    await page!
+      .getByRole("button", { name: "打开文件所在位置", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () =>
+            (globalThis as typeof globalThis & { revealedFile?: string })
+              .revealedFile,
+        ),
+      )
+      .toBe(file);
+  };
+  await reveal(file);
   await disabledMdk();
   await append("手动保存内容");
   await save();
@@ -144,6 +166,15 @@ try {
   ).toHaveAttribute("src", /^data:image\/png/);
   expect(await fs.readFile(file, "utf8")).toContain("resources/image/");
   await fs.access(path.join(run, "resources/image/插入图片.png"));
+  await page!.getByRole("tab", { name: "整体目录", exact: true }).click();
+  await page!
+    .locator('.project-tree-row[data-path="resources/image/插入图片.png"]')
+    .click();
+  await expect(
+    page!.getByRole("tab", { name: "预览", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await reveal(path.join(run, "resources/image/插入图片.png"));
+  await page!.locator('.project-tree-row[data-path="独立文稿.MD"]').click();
   await page!.getByRole("tab", { name: "源码", exact: true }).click();
   await page!
     .getByRole("button", { name: "向右拆分编辑器", exact: true })

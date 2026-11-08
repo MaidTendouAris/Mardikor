@@ -111,16 +111,36 @@ const api: DesktopApi = {
     ipcRenderer.on("app:project-changed", listener);
     return () => ipcRenderer.removeListener("app:project-changed", listener);
   },
+  onPublicationProgress: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      file: string,
+      stage: import("../shared/publication").PublicationStage,
+    ) => callback(file, stage);
+    ipcRenderer.on("app:publication-progress", listener);
+    return () =>
+      ipcRenderer.removeListener("app:publication-progress", listener);
+  },
   invoke: (command, ...args) => ipcRenderer.invoke("mdk:invoke", command, args),
   dialog: (kind, defaultPath) =>
     ipcRenderer.invoke("app:dialog", kind, defaultPath),
   recent: () => ipcRenderer.invoke("app:recent"),
   preferences: (value) => ipcRenderer.invoke("app:preferences", value),
+  onPreferencesChanged: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      value: Parameters<typeof callback>[0],
+    ) => callback(value);
+    ipcRenderer.on("app:preferences-changed", listener);
+    return () =>
+      ipcRenderer.removeListener("app:preferences-changed", listener);
+  },
   window: (action) => ipcRenderer.invoke("app:window", action),
   setDirty: (dirty) => ipcRenderer.send("app:dirty", dirty),
   openExternal: (url) => ipcRenderer.invoke("app:open-url", url),
   openMarkdownLink: (href) =>
     ipcRenderer.invoke("app:open-markdown-link", href),
+  revealFile: (path) => ipcRenderer.invoke("app:reveal-file", path),
   onWindowMaximized: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, maximized: boolean) =>
       callback(maximized);

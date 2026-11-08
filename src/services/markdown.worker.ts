@@ -1,5 +1,6 @@
 import { markdownHeadings } from "../../shared/markdown";
-import { renderPreviewPages } from "./preview";
+import { renderPreview } from "./preview";
+import { paginateMarkdown } from "./document-pages";
 import type { MarkdownTask } from "./markdown-tasks";
 
 self.onmessage = ({ data }: MessageEvent<MarkdownTask>) => {
@@ -7,7 +8,9 @@ self.onmessage = ({ data }: MessageEvent<MarkdownTask>) => {
     const result =
       data.kind === "headings"
         ? markdownHeadings(data.text)
-        : renderPreviewPages(...data.args);
+        : data.kind === "pages"
+          ? paginateMarkdown(data.text, data.length)
+          : renderPreview(...data.args);
     self.postMessage({ result });
   } catch (error) {
     self.postMessage({

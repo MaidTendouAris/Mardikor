@@ -16,6 +16,7 @@ export function scrollToFragment(root: ParentNode, fragment: string) {
       node.id.endsWith(`-${id}`),
   );
   target?.scrollIntoView({ block: "start" });
+  return !!target;
 }
 
 export function followPreviewLink(

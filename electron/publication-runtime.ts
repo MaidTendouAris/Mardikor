@@ -2,24 +2,47 @@ import { app, BrowserWindow, nativeImage, session } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  PDFArray,
-  PDFDict,
-  PDFDocument,
-  PDFHexString,
-  PDFName,
-  PDFString,
-} from "pdf-lib";
+import { Worker } from "node:worker_threads";
+import { deserialize, serialize } from "node:v8";
 import type { AppState } from "./state";
 import { publicationFontFamily, publicationHtml } from "./publication-render";
-import { buildEpub } from "./epub";
 import {
   emojiFontFile,
   type PreparedPublication,
   type PublicationRuntime,
 } from "./publication";
-import { pdfCjkAliases, restorePdfSourceCharacters } from "./pdf-text";
 import { publicationRasterSize } from "./media";
+import type { PublicationWork } from "./publication-worker";
+import type { PublicationStage } from "../shared/publication";
+
+const publicationTimeout = 300_000;
+function runWorker<T>(work: PublicationWork): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, "publication-worker.cjs"), {
+      workerData: serialize(work),
+    });
+    const timer = setTimeout(() => {
+      reject(new Error("后台出版任务超过 5 分钟，已终止。"));
+      void worker.terminate();
+    }, publicationTimeout);
+    worker.once("message", (bytes: Uint8Array) => {
+      clearTimeout(timer);
+      try {
+        resolve(deserialize(bytes) as T);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    worker.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    worker.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error("出版任务意外结束：" + code));
+    });
+  });
+}
 
 const scheme = "mardikor-export";
 async function withRenderer<T>(
@@ -32,7 +55,7 @@ async function withRenderer<T>(
     [
       "/index.html",
       {
-        data: Buffer.from(publicationHtml(prepared)),
+        data: Buffer.from(prepared.renderedHtml ?? publicationHtml(prepared)),
         type: "text/html; charset=utf-8",
       },
     ],
@@ -118,11 +141,8 @@ async function withRenderer<T>(
       })(),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () =>
-            reject(
-              new Error("出版渲染超过 60 秒支持范围，已终止，未发布文件。"),
-            ),
-          60000,
+          () => reject(new Error("出版渲染超过 5 分钟，已终止，未发布文件。")),
+          publicationTimeout,
         );
       }),
     ]);
@@ -134,9 +154,12 @@ async function withRenderer<T>(
     await ses.clearStorageData();
   }
 }
-async function renderPdf(prepared: PreparedPublication) {
+async function renderPdf(
+  prepared: PreparedPublication,
+  progress?: (stage: PublicationStage) => void,
+) {
   return withRenderer(prepared, async (window) => {
-    const { pdf, metadata } = prepared.configuration.publication;
+    const { pdf } = prepared.configuration.publication;
     const options: Electron.PrintToPDFOptions = {
       printBackground: pdf.print_background,
       preferCSSPageSize: true,
@@ -146,33 +169,17 @@ async function renderPdf(prepared: PreparedPublication) {
       generateDocumentOutline: pdf.outline,
     };
     let raw = await window.webContents.printToPDF(options);
+    if (pdf.include_toc) progress?.("pdf-toc");
     const complete =
       pdf.include_toc || pdf.page_ranges
-        ? await PDFDocument.load(raw, { updateMetadata: false })
+        ? await runWorker<{ labels: Record<string, number>; count: number }>({
+            kind: "pdf-pages",
+            bytes: raw,
+            first: pdf.first_page_number,
+          })
         : undefined;
     if (pdf.include_toc && complete) {
-      const pageNumber = new Map(
-        complete
-          .getPages()
-          .map((page, index) => [
-            page.ref.toString(),
-            pdf.first_page_number + index,
-          ]),
-      );
-      const destinations = complete.catalog.lookupMaybe(
-        PDFName.of("Dests"),
-        PDFDict,
-      );
-      const labels = Object.fromEntries(
-        (destinations?.entries() ?? []).flatMap(([name, value]) => {
-          const target = complete.context
-            .lookupMaybe(value, PDFArray)
-            ?.get(0)
-            ?.toString();
-          const label = target && pageNumber.get(target);
-          return label ? [[name.decodeText(), label]] : [];
-        }),
-      );
+      const { labels } = complete;
       await window.webContents.executeJavaScript(`(() => {
         const labels = ${JSON.stringify(labels)};
         for (const node of document.querySelectorAll(".toc-page")) {
@@ -188,72 +195,38 @@ async function renderPdf(prepared: PreparedPublication) {
           .split(",")
           .flatMap((group) => group.trim().split("-").map(Number)),
       );
-      if (maximum > complete.getPageCount())
+      if (maximum > complete.count)
         throw new Error(
-          "页码范围超过实际总页数 " + complete.getPageCount() + "，未导出。",
+          "页码范围超过实际总页数 " + complete.count + "，未导出。",
         );
     }
-    if (pdf.include_toc || pdf.page_ranges)
+    if (pdf.include_toc || pdf.page_ranges) {
+      progress?.("print-pdf");
       raw = await window.webContents.printToPDF({
         ...options,
         ...(pdf.page_ranges ? { pageRanges: pdf.page_ranges } : {}),
       });
-    const document = await PDFDocument.load(raw, { updateMetadata: false });
-    // Chromium can repeat the complete heading in a tagged PDF bookmark.
-    // Only repair titles that exactly match two copies of a rendered heading.
-    const headings = new Set(
-      prepared.chapters.flatMap((chapter) =>
-        chapter.headings.map((heading) => heading.title),
-      ),
-    );
-    const repeated = new Map(
-      [...headings].map((title) => [title + title, title]),
-    );
-    const titleKey = PDFName.of("Title");
-    const firstKey = PDFName.of("First");
-    const nextKey = PDFName.of("Next");
-    const root = document.catalog.lookupMaybe(PDFName.of("Outlines"), PDFDict);
-    const stack = [root?.lookupMaybe(firstKey, PDFDict)];
-    while (stack.length) {
-      const bookmark = stack.pop();
-      if (!bookmark) continue;
-      const text = bookmark
-        .lookupMaybe(titleKey, PDFString, PDFHexString)
-        ?.decodeText();
-      const title =
-        text && !headings.has(text) ? repeated.get(text) : undefined;
-      if (title) bookmark.set(titleKey, PDFHexString.fromText(title));
-      stack.push(
-        bookmark.lookupMaybe(nextKey, PDFDict),
-        bookmark.lookupMaybe(firstKey, PDFDict),
-      );
     }
-    restorePdfSourceCharacters(
-      document,
-      pdfCjkAliases(prepared.font, prepared.fontText),
-    );
-    const pages = document.getPages();
-    document.setTitle(metadata.title);
-    document.setAuthor(metadata.author);
-    document.setSubject(metadata.description);
-    document.setLanguage(metadata.language);
-    document.setCreator("Mardikor publication renderer 1");
-    document.setProducer(prepared.configuration.publication.pdf.engine);
-    document.setCreationDate(new Date(metadata.modified));
-    document.setModificationDate(new Date(metadata.modified));
-    const id = PDFHexString.of(prepared.fingerprint.slice(0, 32));
-    document.context.trailerInfo.ID = document.context.obj([id, id]);
-    return {
-      bytes: Buffer.from(
-        await document.save({ useObjectStreams: true, addDefaultPage: false }),
-      ),
-      pages: pages.length,
-    };
+    progress?.("finalize-pdf");
+    return runWorker<{ bytes: Buffer; pages: number }>({
+      kind: "pdf-finish",
+      bytes: raw,
+      details: {
+        configuration: prepared.configuration,
+        font: prepared.font,
+        fontText: prepared.fontText,
+        fingerprint: prepared.fingerprint,
+        headings: prepared.chapters.flatMap((chapter) =>
+          chapter.headings.map(({ title }) => title),
+        ),
+      },
+    });
   });
 }
 export function publicationRuntime(
   state: AppState,
   outputRevision: (file: string) => string | null,
+  progress?: (stage: PublicationStage) => void,
 ): PublicationRuntime {
   const assets = path.join(app.getAppPath(), "assets/export");
   const manifest = JSON.parse(
@@ -261,9 +234,20 @@ export function publicationRuntime(
   );
   if (manifest.version !== 1 || !/^[0-9a-f]{64}$/.test(manifest.sha256))
     throw new Error("出版渲染器版本清单损坏，请重新安装应用。");
+  const engine = `mardikor-pdf-1/${manifest.sha256}/electron-${process.versions.electron}/chromium-${process.versions.chrome}/${process.platform}-${process.arch}`;
   return {
     outputRevision,
-    engine: `mardikor-pdf-1/${manifest.sha256}/electron-${process.versions.electron}/chromium-${process.versions.chrome}/${process.platform}-${process.arch}`,
+    engine,
+    progress,
+    prepare: (file, format) =>
+      runWorker<PreparedPublication>({
+        kind: "prepare",
+        file,
+        format,
+        engine,
+        assetDirectory: assets,
+        configuration: state.publication(file),
+      }),
     assetDirectory: assets,
     localConfiguration: (file, value) => state.publication(file, value),
     verifyImages: (images) => {
@@ -280,7 +264,11 @@ export function publicationRuntime(
       }
     },
     verifyLayout: (prepared) => withRenderer(prepared, async () => {}),
-    pdf: renderPdf,
-    epub: buildEpub,
+    pdf: (prepared) => renderPdf(prepared, progress),
+    epub: (prepared) =>
+      runWorker<Buffer>({
+        kind: "epub",
+        prepared: { ...prepared, renderedHtml: undefined },
+      }),
   };
 }

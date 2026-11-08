@@ -6,25 +6,38 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
-import { markdownTask } from "../services/markdown-tasks";
+import type { MarkdownHeading } from "../../shared/markdown";
+import { pageAtLine, type DocumentPages } from "../services/document-pages";
 import {
   followPreviewLink,
   scrollToFragment,
 } from "../services/document-links";
-import type { renderPreviewPages } from "../services/preview";
+import { markdownTask } from "../services/markdown-tasks";
+import type { renderPreview } from "../services/preview";
 
 export interface PagedPreviewHandle {
   scrollTo: (ratio: number) => void;
   jump: (fragment: string) => void;
+  showPage: (page: number) => void;
 }
 
 export const PagedPreview = forwardRef<
   PagedPreviewHandle,
   {
-    args: Parameters<typeof renderPreviewPages>;
+    args: Parameters<typeof renderPreview>;
+    layout?: DocumentPages;
+    page: number;
+    onPage: (page: number) => void;
+    headings: MarkdownHeading[];
+    headingOffset: number;
+    priorHeadingLevels?: number[];
     style: CSSProperties;
     className?: string;
+    editor?: ReactNode;
+    preparing: boolean;
+    onTogglePreparing: () => void;
     onOpen: (path: string) => void;
     onError: (message: string) => void;
     resolveResource: (source: string) => Promise<string>;
@@ -38,13 +51,22 @@ export const PagedPreview = forwardRef<
 >(function PagedPreview(
   {
     args,
+    layout,
+    page,
+    onPage,
+    headings,
+    headingOffset,
+    priorHeadingLevels,
     style,
     className = "",
+    editor,
+    preparing,
+    onTogglePreparing,
     onOpen,
     onError,
-    onScroll,
     resolveResource,
     initialFragment,
+    onScroll,
   },
   ref,
 ) {
@@ -58,26 +80,33 @@ export const PagedPreview = forwardRef<
     standalone,
     reserved,
   ] = args;
-  const [pages, setPages] = useState<string[]>([]);
-  const [page, setPage] = useState(0);
-  const [cancelled, setCancelled] = useState(false);
-  const [error, setError] = useState("");
+  const count = layout?.pages.length ?? 0;
+  const current = layout?.pages[page];
+  const [output, setOutput] = useState<{
+    page: number;
+    html?: string;
+    error?: string;
+  }>();
   const viewport = useRef<HTMLDivElement>(null);
   const article = useRef<HTMLElement>(null);
   const pending = useRef<number | string | null>(null);
-  const ignore = useRef<number | null>(null);
+  const ignored = useRef<number | null>(null);
   const queuedFragment = useRef(initialFragment);
   const queuedRatio = useRef<number | null>(null);
+  const pageText = current
+    ? text.slice(current.start, layout?.pages[page + 1]?.start)
+    : "";
+  const html = output?.page === page ? output.html : undefined;
+
   useEffect(() => {
-    if (cancelled) return;
-    setError("");
+    if (!current || editor) return;
     let stop: (() => void) | undefined;
-    const delay = setTimeout(() => {
-      stop = markdownTask<string[]>(
+    const timer = setTimeout(() => {
+      stop = markdownTask<string>(
         {
           kind: "preview",
           args: [
-            text,
+            (current.tableHeader ?? "") + pageText,
             settings,
             position,
             mode,
@@ -85,21 +114,26 @@ export const PagedPreview = forwardRef<
             path,
             standalone,
             reserved,
+            {
+              headingOffset,
+              priorHeadingLevels: priorHeadingLevels ?? [],
+              continuedPage: page > 0,
+              literal: current.literal,
+              references: layout?.references,
+              notes: layout?.notes,
+            },
           ],
         },
-        (next) => {
-          setPages(next);
-          setPage((previous) => Math.min(previous, next.length - 1));
-        },
-        setError,
+        (html) => setOutput({ page, html }),
+        (error) => setOutput({ page, error }),
       );
-    }, 150);
+    }, 100);
     return () => {
-      clearTimeout(delay);
+      clearTimeout(timer);
       stop?.();
     };
   }, [
-    text,
+    pageText,
     settings,
     position,
     mode,
@@ -107,7 +141,13 @@ export const PagedPreview = forwardRef<
     path,
     standalone,
     reserved,
-    cancelled,
+    page,
+    current,
+    !!editor,
+    headingOffset,
+    priorHeadingLevels,
+    layout?.references,
+    layout?.notes,
   ]);
   useEffect(() => {
     let live = true;
@@ -126,38 +166,37 @@ export const PagedPreview = forwardRef<
     return () => {
       live = false;
     };
-  }, [pages, page, resolveResource]);
+  }, [html, page, resolveResource]);
 
+  function ratio(node: HTMLElement) {
+    const range = node.scrollHeight - node.clientHeight;
+    return (
+      (page + (range > 0 ? Math.min(0.999, node.scrollTop / range) : 0)) / count
+    );
+  }
   function place() {
     const node = viewport.current;
-    if (!node || pending.current === null) return;
+    if (!node || pending.current === null || (!editor && html === undefined))
+      return;
     const target = pending.current;
     pending.current = null;
-    if (typeof target === "string") {
-      scrollToFragment(node, target);
-    } else {
+    if (typeof target === "string") scrollToFragment(node, target);
+    else
       node.scrollTop =
         target * Math.max(0, node.scrollHeight - node.clientHeight);
-      ignore.current = node.scrollTop;
-    }
-    if (pages.length) {
-      const range = node.scrollHeight - node.clientHeight;
-      onScroll(
-        (page + (range > 0 ? node.scrollTop / range : 0)) / pages.length,
-        node,
-        true,
-      );
-    }
+    ignored.current = node.scrollTop;
+    if (count) onScroll(ratio(node), node, true);
   }
   function go(index: number, target: number | string, report = false) {
+    if (!count) return;
     pending.current = target;
     if (index === page) place();
-    else setPage(index);
+    else onPage(index);
     if (report && viewport.current)
-      onScroll(index / pages.length, viewport.current, false);
+      onScroll(index / count, viewport.current, false);
   }
   function jump(fragment: string) {
-    if (!pages.length) {
+    if (!layout) {
       queuedFragment.current = fragment;
       return;
     }
@@ -167,111 +206,118 @@ export const PagedPreview = forwardRef<
     } catch {
       /* Literal fragment. */
     }
-    const index = pages.findIndex(
-      (html) =>
-        html.includes(`id="${decoded}"`) ||
-        html.includes(`id="${namespace}${decoded}"`) ||
-        html.includes(`data-fragment="${decoded}"`),
-    );
-    if (index >= 0) go(index, decoded);
+    const numbered = /mdk-heading-(\d+)$/.exec(decoded);
+    const counts = new Map<string, number>();
+    const heading = numbered
+      ? headings[Number(numbered[1]) - 1]
+      : headings.find(({ title }) => {
+          const slug = title
+            .trim()
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
+            .replace(/\s+/g, "-");
+          const count = counts.get(slug) ?? 0;
+          counts.set(slug, count + 1);
+          return decoded === (count ? slug + "-" + count : slug);
+        });
+    if (heading)
+      go(
+        pageAtLine(layout.pages, heading.line),
+        "mdk-heading-" + (heading.index + 1),
+        true,
+      );
+    else if (
+      !(viewport.current && scrollToFragment(viewport.current, fragment)) &&
+      (!headings.length || html === undefined)
+    )
+      queuedFragment.current = fragment;
   }
-  function scrollTo(ratio: number) {
-    if (!pages.length) {
-      queuedRatio.current = ratio;
+  function scrollTo(progress: number) {
+    if (!count) {
+      queuedRatio.current = progress;
       return;
     }
-    const index = Math.min(pages.length - 1, Math.floor(ratio * pages.length));
-    go(index, ratio * pages.length - index);
+    const position = progress * count;
+    const index = Math.min(count - 1, Math.floor(position + 1e-8));
+    go(index, Math.max(0, position - index));
   }
-  useImperativeHandle(ref, () => ({ jump, scrollTo }));
-  useLayoutEffect(place, [page, pages]);
+  useImperativeHandle(ref, () => ({
+    jump,
+    scrollTo,
+    showPage: (index) => go(index, 0, true),
+  }));
+  useLayoutEffect(place, [page, html, !!editor]);
   useLayoutEffect(() => {
-    if (pages.length && queuedFragment.current) {
-      const fragment = queuedFragment.current;
-      queuedFragment.current = undefined;
-      jump(fragment);
-    } else if (pages.length && queuedRatio.current !== null) {
-      const ratio = queuedRatio.current;
+    if (layout && queuedRatio.current !== null) {
+      const progress = queuedRatio.current;
       queuedRatio.current = null;
-      scrollTo(ratio);
+      scrollTo(progress);
     }
-  }, [pages]);
+  }, [layout]);
+  useLayoutEffect(() => {
+    if (
+      !layout ||
+      !queuedFragment.current ||
+      (!headings.length && html === undefined)
+    )
+      return;
+    const fragment = queuedFragment.current;
+    queuedFragment.current = undefined;
+    jump(fragment);
+  }, [layout, headings, html]);
+
   return (
     <div className={"paged-preview " + className}>
-      <div className="paged-preview-bar">
-        <button
-          className="button small"
-          disabled={page <= 0}
-          onClick={() => go(page - 1, 0, true)}
-        >
-          上一页
-        </button>
-        <span>
-          {pages.length ? `${page + 1} / ${pages.length}` : "分页预览"}
-        </span>
-        <button
-          className="button small"
-          disabled={page + 1 >= pages.length}
-          onClick={() => go(page + 1, 0, true)}
-        >
-          下一页
-        </button>
-        {!error && (!pages.length || cancelled) && (
-          <button
-            className="button small"
-            onClick={() => setCancelled(!cancelled)}
-          >
-            {cancelled ? "重新排版" : "取消排版"}
-          </button>
-        )}
-      </div>
       <div
         className="paged-preview-viewport"
         ref={viewport}
         onScroll={(event) => {
           const node = event.currentTarget;
-          if (!pages.length) return;
-          const programmatic = ignore.current === node.scrollTop;
-          ignore.current = null;
-          const range = node.scrollHeight - node.clientHeight;
-          onScroll(
-            (page + (range > 0 ? node.scrollTop / range : 0)) / pages.length,
-            node,
-            programmatic,
-          );
+          if (!count) return;
+          const programmatic = ignored.current === node.scrollTop;
+          ignored.current = null;
+          onScroll(ratio(node), node, programmatic);
         }}
       >
-        {error ? (
-          <p role="alert">{error}</p>
-        ) : !pages.length ? (
-          <p className="editor-loading" role="status">
-            {cancelled ? "已取消排版。" : "正在分页排版…"}
-          </p>
-        ) : (
-          <article
-            ref={article}
-            className="document-paper preview-body"
-            style={style}
-            data-source-path={path}
-            onClick={(event) => {
-              const anchor = (event.target as Element).closest("a");
-              const href =
-                anchor?.dataset.mdkLink || anchor?.getAttribute("href");
-              if (href?.startsWith("#") && href.length > 1) {
-                event.preventDefault();
-                jump(href.slice(1));
-              } else
-                followPreviewLink(
-                  event,
-                  path ?? "",
-                  !!standalone,
-                  onOpen,
-                  onError,
-                );
-            }}
-            dangerouslySetInnerHTML={{ __html: pages[page] ?? "" }}
-          />
-        )}
+        {editor ||
+          (output?.page === page && output.error ? (
+            <p role="alert">{output.error}</p>
+          ) : html === undefined ? (
+            <div className="editor-loading">
+              <p role="status">
+                {preparing ? "正在分页排版…" : "已取消排版。"}
+              </p>
+              {!count && (
+                <button className="button small" onClick={onTogglePreparing}>
+                  {preparing ? "取消排版" : "重新排版"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <article
+              ref={article}
+              className="document-paper preview-body"
+              style={style}
+              data-source-path={path}
+              onClick={(event) => {
+                const anchor = (event.target as Element).closest("a");
+                const href =
+                  anchor?.dataset.mdkLink || anchor?.getAttribute("href");
+                if (href?.startsWith("#") && href.length > 1) {
+                  event.preventDefault();
+                  jump(href.slice(1));
+                } else
+                  followPreviewLink(
+                    event,
+                    path ?? "",
+                    !!standalone,
+                    onOpen,
+                    onError,
+                  );
+              }}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          ))}
       </div>
     </div>
   );

@@ -1,10 +1,34 @@
-import type { SaveSnapshot } from "../../shared/mdk";
+import type { MdkProject, SaveSnapshot } from "../../shared/mdk";
+import { isManuscript } from "../../shared/workspace";
+import { canEditVisually } from "./document-size";
+import type { DocumentPages } from "./document-pages";
 
 export type EditorTab = "source" | "write" | "preview" | "settings";
+export function editorFileKind(project: MdkProject | null, path: string) {
+  const file = project?.files.find((item) => item.path === path);
+  if (file?.kind === "directory") return;
+  if (file && (/\.svg$/i.test(path) || !file.is_text)) return "media";
+  if (file?.is_text) return isManuscript(project, path) ? "markdown" : "text";
+  if (project && project.format !== "markdown" && path === "settings.toml")
+    return "text";
+}
+export function editorView(
+  kind: ReturnType<typeof editorFileKind>,
+  requested: EditorTab,
+  text = "",
+  standalone = false,
+): EditorTab {
+  if (kind === "media") return "preview";
+  if (kind !== "markdown") return "source";
+  if (requested === "write" && !canEditVisually(text)) return "preview";
+  if (requested === "settings" && standalone) return "source";
+  return requested;
+}
 export interface TextBuffer {
   path: string;
   content: string;
   saved: string;
+  pagination?: DocumentPages;
 }
 export interface EditorGroupState {
   id: string;

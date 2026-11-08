@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
@@ -15,15 +15,17 @@ export function RichEditor({
   onReady,
   resolveResource,
   chapterPosition,
+  priorHeadingLevels,
   reservedSections,
 }: {
   content: string;
   revision: number;
   editable: boolean;
-  onChange: (value: string) => void;
+  onChange: (value: string) => string | void;
   onReady: (editor: Editor | null) => void;
   resolveResource: (src: string) => Promise<string>;
   chapterPosition?: string;
+  priorHeadingLevels?: number[];
   reservedSections?: ReadonlySet<string>;
 }) {
   const changeRef = useRef(onChange);
@@ -31,8 +33,12 @@ export function RichEditor({
   changeRef.current = onChange;
   const resolveRef = useRef(resolveResource);
   resolveRef.current = resolveResource;
+  const [extensions] = useState(() =>
+    editorExtensions((src) => resolveRef.current(src)),
+  );
   const editor = useEditor({
-    extensions: editorExtensions((src) => resolveRef.current(src)),
+    extensions,
+    shouldRerenderOnTransaction: false,
     content: "",
     contentType: "markdown",
     editable,
@@ -44,8 +50,8 @@ export function RichEditor({
       },
     },
     onUpdate: ({ editor }) => {
-      editorText.current = editor.getMarkdown();
-      changeRef.current(editorText.current);
+      const markdown = editor.getMarkdown();
+      editorText.current = changeRef.current(markdown) ?? markdown;
     },
   });
   useEffect(() => {
@@ -63,6 +69,7 @@ export function RichEditor({
                 chapterPosition,
                 reservedSections,
               );
+              for (const level of priorHeadingLevels ?? []) number(level);
               const headings: Decoration[] = [];
               doc.descendants((node, position) => {
                 if (node.type.name === "heading")
@@ -77,7 +84,7 @@ export function RichEditor({
           : undefined,
       },
     });
-  }, [editor, chapterPosition, reservedSections]);
+  }, [editor, chapterPosition, reservedSections, priorHeadingLevels]);
   useEffect(() => {
     if (editor) {
       editor.setEditable(editable, false);

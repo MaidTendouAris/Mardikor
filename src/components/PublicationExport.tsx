@@ -14,7 +14,18 @@ import type {
   PublicationFormat,
   PublicationInfo,
   PublicationPlan,
+  PublicationStage,
 } from "../../shared/publication";
+
+const progressLabels: Record<PublicationStage, string> = {
+  prepare: "正在读取工程并校验文稿、字体和资源…",
+  "validate-layout": "正在排版并检查页面、字体和图片…",
+  "print-pdf": "正在生成 PDF 页面…",
+  "pdf-toc": "正在计算 PDF 目录页码…",
+  "finalize-pdf": "正在整理 PDF 书签和文档信息…",
+  "build-epub": "正在构建 EPUB 并校验文件…",
+  write: "正在校验修订并写入导出文件…",
+};
 
 export function PublicationExport({
   file,
@@ -32,10 +43,18 @@ export function PublicationExport({
     [format, setFormat] = useState<PublicationFormat>("pdf"),
     [changed, setChanged] = useState(false),
     [busy, setBusy] = useState(false),
+    [progress, setProgress] = useState(""),
     [error, setError] = useState(""),
     [plan, setPlan] = useState<PublicationPlan | null>(null);
   const flushRef = useRef(flush);
   flushRef.current = flush;
+  useEffect(
+    () =>
+      window.mardikor?.onPublicationProgress((source, stage) => {
+        if (source === file) setProgress(progressLabels[stage]);
+      }),
+    [file],
+  );
   useEffect(() => {
     let active = true;
     setInfo(null);
@@ -148,6 +167,7 @@ export function PublicationExport({
     if (!info || !draft) return;
     setBusy(true);
     setError("");
+    setProgress("正在保存文稿与导出配置…");
     try {
       if (!(await flush())) return;
       if (needsSave) await persistConfiguration();
@@ -158,6 +178,7 @@ export function PublicationExport({
         draft.publication.metadata.title.replace(/[\\/:<>"|?*]/g, "_") +
         "." +
         format;
+      setProgress("请选择导出位置。");
       const output = await desktop().dialog(
         format === "pdf" ? "save-pdf" : "save-epub",
         name,
@@ -176,6 +197,7 @@ export function PublicationExport({
     } catch (error) {
       setError(String(error));
     } finally {
+      setProgress("");
       setBusy(false);
     }
   }
@@ -282,6 +304,12 @@ export function PublicationExport({
   if (!file) return null;
   return (
     <section className="publication-export" aria-label="PDF 与 EPUB 导出">
+      {busy && progress && (
+        <div className="publication-progress" role="status">
+          <span>{progress}</span>
+          <progress aria-label="出版任务进度" />
+        </div>
+      )}
       <div className="section-heading">
         <h2>出版导出</h2>
         <button

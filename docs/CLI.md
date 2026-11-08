@@ -8,7 +8,7 @@
 - **Linux** 需要 Node.js 22.12 或更新版本。将示例中的版本号换成实际归档的版本号。
 
 ```sh
-npm install -g ./mardikor-cli-0.2.1.tgz
+npm install -g ./mardikor-cli-0.2.2.tgz
 mardikor --version
 ```
 

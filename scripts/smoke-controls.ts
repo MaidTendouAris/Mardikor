@@ -23,6 +23,18 @@ new AppState(profile).preferences({
 const project = mdk.createMdkProject(file, "00");
 project.settings.appearance.font_family = "Custom Existing Font";
 mdk.updateMdkSettings(file, project.settings);
+mdk.createTextFile(file, "meta/annotations.json", '{"note":"source only"}');
+const png = mdk.importMdkResource(
+  file,
+  path.resolve("assets/icon.png"),
+  "image",
+);
+const svgPath = "resources/image/sample.svg";
+mdk.createTextFile(
+  file,
+  svgPath,
+  '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+);
 const env = {
   ...process.env,
   MARDIKOR_USER_DATA: profile,
@@ -53,6 +65,15 @@ try {
   await expect(page.locator(".document-title")).toContainText(
     "markdown/001.md",
   );
+  await expect(page.locator(".project-caption")).toHaveCSS(
+    "user-select",
+    "none",
+  );
+  await expect(page.locator(".preview-body")).toHaveCSS("user-select", "text");
+  await expect(page.locator(".document-paper")).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
   const preference = page.getByRole("combobox", {
     name: "双击文件时打开的视图",
@@ -76,7 +97,18 @@ try {
   await page.keyboard.press("Escape");
   await expect(preference).toHaveAttribute("data-value", "source");
   await expect(preference).toBeFocused();
+  const theme = page.getByRole("combobox", { name: "软件主题", exact: true });
+  await selectOption(page, theme, "dark");
   await page.getByRole("button", { name: "保存偏好", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-app-theme", "dark");
+  await expect(page.locator(".navigation")).toHaveCSS(
+    "background-color",
+    "rgb(25, 25, 25)",
+  );
+  await expect(page.locator(".titlebar")).toHaveCSS(
+    "background-color",
+    "rgb(20, 20, 20)",
+  );
   await expect
     .poll(() =>
       page!.evaluate(
@@ -105,6 +137,11 @@ try {
   await expect(cliGuide).toContainText("mardikor list");
   const opened: string[] = [];
   await app.evaluate(({ shell }) => {
+    shell.showItemInFolder = (file) => {
+      (
+        globalThis as typeof globalThis & { revealedFile?: string }
+      ).revealedFile = file;
+    };
     shell.openExternal = async (url) => {
       (
         globalThis as typeof globalThis & { openedAboutUrls?: string[] }
@@ -134,6 +171,16 @@ try {
     )
     .toEqual(opened);
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
+  await expect(page.locator(".document-paper")).toHaveCSS(
+    "background-color",
+    "rgb(20, 20, 20)",
+  );
+  await page.getByRole("tab", { name: "可视化", exact: true }).click();
+  await expect(page.locator(".document-body")).toHaveCSS("user-select", "text");
+  await expect(page.locator(".document-paper")).toHaveCSS(
+    "background-color",
+    "rgb(20, 20, 20)",
+  );
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   const font = page.getByRole("combobox", { name: "字体", exact: true });
   await expect(font).toHaveValue("Custom Existing Font");
@@ -175,6 +222,61 @@ try {
   expect(mdk.openMdkProject(file).settings.mode.comic.reading_direction).toBe(
     "rtl",
   );
+  const tab = (name: string) => page!.getByRole("tab", { name, exact: true });
+  await page
+    .getByRole("button", { name: "settings.toml", exact: true })
+    .click();
+  await expect(tab("源码")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".monaco-source .monaco-editor")).toHaveClass(
+    /vs-dark/,
+  );
+  await expect(
+    page.locator(".monaco-source .monaco-editor-background").first(),
+  ).toHaveCSS("background-color", "rgb(20, 20, 20)");
+  for (const name of ["可视化", "预览", "工程设置"])
+    await expect(tab(name)).toBeDisabled();
+  await tab("整体目录").click();
+  const openEntry = (entry: string) =>
+    page!.locator(`.project-tree-row[data-path="${entry}"]`).click();
+  await openEntry("meta/annotations.json");
+  await expect(page.locator(".document-title")).toContainText(
+    "meta/annotations.json",
+  );
+  await expect(page.locator(".monaco-source .view-lines")).toContainText(
+    "source only",
+  );
+  for (const name of ["可视化", "预览", "工程设置"])
+    await expect(tab(name)).toBeDisabled();
+  for (const asset of [png.path, svgPath]) {
+    await openEntry(asset);
+    await expect(tab("预览")).toHaveAttribute("aria-selected", "true");
+    for (const name of ["源码", "可视化", "工程设置"])
+      await expect(tab(name)).toBeDisabled();
+    await expect(
+      page.getByRole("img", { name: asset, exact: true }),
+    ).toHaveAttribute("src", /^data:image\//);
+  }
+  await page
+    .getByRole("button", { name: "打开文件所在位置", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      app.evaluate(
+        () =>
+          (globalThis as typeof globalThis & { revealedFile?: string })
+            .revealedFile,
+      ),
+    )
+    .toBe(file);
+  await page.getByRole("button", { name: "应用设置", exact: true }).click();
+  await expect(theme).toHaveAttribute("data-value", "dark");
+  await selectOption(page, theme, "system");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.getByRole("button", { name: "保存偏好", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-app-theme", "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-app-theme", "dark");
+  await page.getByRole("button", { name: "编辑器", exact: true }).click();
   const toggle = page.getByRole("button", {
     name: "收起或展开导航",
     exact: true,

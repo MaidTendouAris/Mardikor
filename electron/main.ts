@@ -124,15 +124,28 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
 }
 function createHandlers(context: DocumentWindow): MdkCommands {
   const { droppedFiles, publicationOutputs } = context;
-  const exportRuntime = () =>
-    publicationRuntime(state, (file) => {
-      const key = path.resolve(file),
-        approval = publicationOutputs.get(key);
-      publicationOutputs.delete(key);
-      if (!approval || approval.expires < Date.now())
-        throw new Error("请选择 PDF / EPUB 输出文件并确认覆盖。");
-      return approval.revision;
-    });
+  const exportRuntime = (source?: string) =>
+    publicationRuntime(
+      state,
+      (file) => {
+        const key = path.resolve(file),
+          approval = publicationOutputs.get(key);
+        publicationOutputs.delete(key);
+        if (!approval || approval.expires < Date.now())
+          throw new Error("请选择 PDF / EPUB 输出文件并确认覆盖。");
+        return approval.revision;
+      },
+      source
+        ? (stage) => {
+            if (!context.window.isDestroyed())
+              context.window.webContents.send(
+                "app:publication-progress",
+                source,
+                stage,
+              );
+          }
+        : undefined,
+    );
   const handlers: MdkCommands = {
     publicationInfo: (file) =>
       publication.publicationInfo(file, exportRuntime()),
@@ -145,14 +158,14 @@ function createHandlers(context: DocumentWindow): MdkCommands {
         format,
       ),
     planPublication: (file, format) =>
-      publication.planPublication(file, format, exportRuntime()),
+      publication.planPublication(file, format, exportRuntime(file)),
     exportPublication: (file, output, format, fingerprint) =>
       publication.exportPublication(
         file,
         output,
         format,
         fingerprint,
-        exportRuntime(),
+        exportRuntime(file),
       ),
     create: mdk.createMdkProject,
     open: mdk.openMdkProject,
@@ -426,6 +439,20 @@ function registerIpc() {
       if (error) throw new Error(`无法用默认应用打开文件：${error}`);
     }
   });
+  ipcMain.handle("app:reveal-file", (event, entry: unknown) => {
+    const { activeProject } = verifySender(event);
+    if (!activeProject || typeof entry !== "string")
+      throw new Error("当前文件无效。");
+    const target =
+      isMarkdownFile(activeProject) &&
+      entry &&
+      entry !== path.basename(activeProject)
+        ? markdownFile.resolveLocalMarkdownPath(activeProject, entry)
+        : activeProject;
+    if (!fs.statSync(target, { throwIfNoEntry: false })?.isFile())
+      throw new Error("当前文件不存在。");
+    shell.showItemInFolder(target);
+  });
   ipcMain.handle(
     "mdk:invoke",
     (event, command: keyof MdkCommands, args: unknown[]) => {
@@ -652,8 +679,13 @@ function registerIpc() {
   ipcMain.handle("app:preferences", (event, value?: Preferences) => {
     verifySender(event);
     const result = state.preferences(value);
-    if (value && app.isPackaged && !process.env.MARDIKOR_HEADLESS)
-      void updates.automatic();
+    if (value) {
+      for (const { window } of windows.values())
+        if (!window.isDestroyed() && window.webContents.id !== event.sender.id)
+          window.webContents.send("app:preferences-changed", result);
+      if (app.isPackaged && !process.env.MARDIKOR_HEADLESS)
+        void updates.automatic();
+    }
     return result;
   });
   ipcMain.handle("app:window", (event, action: string) => {
@@ -853,6 +885,14 @@ else {
       state = new AppState(
         process.env.MARDIKOR_USER_DATA ?? app.getPath("userData"),
       );
+      const canInstallUpdate =
+        app.isPackaged &&
+        process.platform === "win32" &&
+        !process.env.PORTABLE_EXECUTABLE_FILE;
+      if (canInstallUpdate)
+        process.env.MARDIKOR_UPDATE_INSTALL_DIR = path.dirname(
+          app.getPath("exe"),
+        );
       updates = new UpdateService(
         autoUpdater,
         {
@@ -863,9 +903,7 @@ else {
           },
         },
         app.getVersion(),
-        app.isPackaged &&
-          process.platform === "win32" &&
-          !process.env.PORTABLE_EXECUTABLE_FILE,
+        canInstallUpdate,
         (status) => {
           for (const context of windows.values())
             context.window.webContents.send("app:update-status", status);

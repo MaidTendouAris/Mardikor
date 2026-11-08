@@ -3,7 +3,12 @@ import { Check, ExternalLink } from "lucide-react";
 import { version } from "../../package.json";
 import license from "../../LICENSE?raw";
 import cliGuide from "../../docs/CLI.md?raw";
-import type { Preferences } from "../../shared/desktop";
+import {
+  defaultPageLength,
+  minPageLength,
+  maxPageLength,
+  type Preferences,
+} from "../../shared/desktop";
 import type { Notify } from "../App";
 import { desktop } from "../services/desktop";
 import { Select } from "../components/Select";
@@ -46,19 +51,41 @@ export function AppSettings({
         </div>
         <label className="setting-row">
           <span>
-            <strong>默认文稿配色</strong>
+            <strong>每页目标字符数</strong>
             <small>
-              用于预览和可视化编辑。工程可单独选择配色，出版仍使用导出配置。
+              可视化编辑和预览共用此设置。实际页长会按 Markdown 块边界调整。
             </small>
           </span>
-          <Select
-            aria-label="默认文稿配色"
+          <input
+            aria-label="每页目标字符数"
             className="short-input"
-            value={draft.readingTheme ?? "light"}
+            type="number"
+            min={minPageLength}
+            max={maxPageLength}
+            step={1}
+            value={
+              Number.isNaN(draft.pageLength)
+                ? ""
+                : (draft.pageLength ?? defaultPageLength)
+            }
+            onChange={(event) =>
+              setDraft({ ...draft, pageLength: event.target.valueAsNumber })
+            }
+          />
+        </label>
+        <label className="setting-row">
+          <span>
+            <strong>软件主题</strong>
+            <small>应用于窗口、侧栏和编辑器。工程可单独设置文稿配色。</small>
+          </span>
+          <Select
+            aria-label="软件主题"
+            className="short-input"
+            value={draft.appTheme ?? "light"}
             onValueChange={(value) =>
               setDraft({
                 ...draft,
-                readingTheme: value as Preferences["readingTheme"],
+                appTheme: value as Preferences["appTheme"],
               })
             }
           >

@@ -4,6 +4,12 @@ import { randomUUID, createHash } from "node:crypto";
 import { serialize, deserialize } from "node:v8";
 import type { SaveSnapshot } from "../shared/mdk";
 import type { Preferences, RecentProject } from "../shared/desktop";
+import {
+  appThemes,
+  defaultPageLength,
+  minPageLength,
+  maxPageLength,
+} from "../shared/desktop";
 import type { PublicationConfiguration } from "../shared/publication";
 
 const defaults: Preferences = {
@@ -13,11 +19,20 @@ const defaults: Preferences = {
   externalOpenView: "preview",
   autoCheckUpdates: true,
   followOutline: true,
-  readingTheme: "light",
+  appTheme: "light",
+  pageLength: defaultPageLength,
 };
 // A single 64 MiB Markdown entry can take twice its UTF-8 size in a
 // serialized UTF-16 draft. Leave room for the surrounding snapshot metadata.
 const recoveryLimit = 129 * 1024 * 1024;
+function validPageLength(value: number | undefined) {
+  return (
+    value !== undefined &&
+    Number.isInteger(value) &&
+    value >= minPageLength &&
+    value <= maxPageLength
+  );
+}
 type WindowSize = { width: number; height: number; maximized: boolean };
 export class AppState {
   private file: string;
@@ -42,7 +57,13 @@ export class AppState {
             typeof r.path === "string" && typeof r.title === "string",
         )
         .slice(0, 20);
-      this.value.preferences = { ...defaults, ...saved.preferences };
+      const { readingTheme, ...preferences } = saved.preferences ?? {};
+      const appTheme = preferences.appTheme ?? readingTheme;
+      this.value.preferences = {
+        ...defaults,
+        ...preferences,
+        appTheme: appThemes.includes(appTheme) ? appTheme : "light",
+      };
       const size = saved.windowSize;
       if (
         size &&
@@ -60,12 +81,8 @@ export class AppState {
         this.value.preferences.autoCheckUpdates = true;
       if (typeof this.value.preferences.followOutline !== "boolean")
         this.value.preferences.followOutline = true;
-      if (
-        !["light", "dark", "warm", "system"].includes(
-          this.value.preferences.readingTheme ?? "",
-        )
-      )
-        this.value.preferences.readingTheme = "light";
+      if (!validPageLength(this.value.preferences.pageLength))
+        this.value.preferences.pageLength = defaultPageLength;
       if (
         Number.isFinite(saved.updateLastChecked) &&
         saved.updateLastChecked >= 0
@@ -206,8 +223,9 @@ export class AppState {
           typeof value.autoCheckUpdates !== "boolean") ||
         (value.followOutline !== undefined &&
           typeof value.followOutline !== "boolean") ||
-        (value.readingTheme !== undefined &&
-          !["light", "dark", "warm", "system"].includes(value.readingTheme))
+        (value.pageLength !== undefined &&
+          !validPageLength(value.pageLength)) ||
+        (value.appTheme !== undefined && !appThemes.includes(value.appTheme))
       )
         throw new Error("偏好设置无效。");
       this.value.preferences = {

@@ -104,6 +104,10 @@ export interface RecentProject {
   mode: string;
   updatedAt: string;
 }
+export const appThemes = ["light", "dark", "warm", "system"] as const;
+export type AppTheme = (typeof appThemes)[number];
+export type ResolvedAppTheme = Exclude<AppTheme, "system">;
+
 export interface Preferences {
   autosave: boolean;
   autosaveInterval: number;
@@ -111,8 +115,12 @@ export interface Preferences {
   externalOpenView?: "preview" | "source" | "write";
   autoCheckUpdates?: boolean;
   followOutline?: boolean;
-  readingTheme?: "light" | "dark" | "warm" | "system";
+  appTheme?: AppTheme;
+  pageLength?: number;
 }
+export const defaultPageLength = 8000;
+export const minPageLength = 2000;
+export const maxPageLength = 24000;
 export type DialogKind =
   | "open-project"
   | "save-project"
@@ -144,6 +152,9 @@ export interface DesktopApi {
   dialog(kind: DialogKind, defaultPath?: string): Promise<string | null>;
   recent(): Promise<RecentProject[]>;
   preferences(value?: Preferences): Promise<Preferences>;
+  onPreferencesChanged(
+    callback: (preferences: Preferences) => void,
+  ): () => void;
   window(
     action: "minimize" | "maximize" | "close" | "isMaximized",
   ): Promise<boolean>;
@@ -155,6 +166,7 @@ export interface DesktopApi {
   onSaveBeforeClose(callback: () => Promise<boolean>): () => void;
   openExternal(url: string): Promise<void>;
   openMarkdownLink(href: string): Promise<void>;
+  revealFile(path: string): Promise<void>;
   recovery(
     path: string,
     value?: SaveSnapshot | null,
@@ -162,6 +174,12 @@ export interface DesktopApi {
   onDocumentDrop(callback: (drop: NativeDocumentDrop) => void): () => void;
   onProjectChanged(
     callback: (file: string, revision: string | null) => void,
+  ): () => void;
+  onPublicationProgress(
+    callback: (
+      file: string,
+      stage: import("./publication").PublicationStage,
+    ) => void,
   ): () => void;
 }
 
