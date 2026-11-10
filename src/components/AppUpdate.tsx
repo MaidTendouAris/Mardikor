@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { appLocale, t } from "../../shared/i18n";
+import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, RefreshCw, X } from "lucide-react";
 import type { UpdateAction, UpdateStatus } from "../../shared/updates";
 import { desktop } from "../services/desktop";
+import { renderReleaseNotes } from "../services/release-notes";
 import type { Notify } from "../App";
 
 export function useAppUpdate() {
@@ -25,6 +27,12 @@ export function UpdateControls({
   notify: Notify;
 }) {
   const [pending, setPending] = useState(false);
+  const notes = status?.releaseNotes;
+  const releaseUrl = status?.releaseUrl;
+  const notesHtml = useMemo(
+    () => (notes && releaseUrl ? renderReleaseNotes(notes, releaseUrl) : ""),
+    [notes, releaseUrl],
+  );
   async function perform(action: UpdateAction) {
     setPending(true);
     try {
@@ -42,19 +50,25 @@ export function UpdateControls({
   return (
     <>
       <p>
-        当前版本：{status?.currentVersion ?? "—"}
-        {status?.latestVersion ? ` · 新版本：${status.latestVersion}` : ""}
+        {t("当前版本：")}
+        {status?.currentVersion ?? "—"}
+        {status?.latestVersion ? t(" · 新版本：{0}", status.latestVersion) : ""}
       </p>
-      <p role="status" aria-label="更新状态">
-        {status?.message ?? "正在读取更新状态…"}
+      <p role="status" aria-label={t("更新状态")}>
+        {status?.message ?? t("正在读取更新状态…")}
       </p>
       {status?.lastChecked ? (
         <p className="muted">
-          上次检查：{new Date(status.lastChecked).toLocaleString()}
+          {t("上次检查：")}
+          {new Date(status.lastChecked).toLocaleString(appLocale())}
         </p>
       ) : null}
       {status?.phase === "downloading" && (
-        <progress aria-label="更新下载进度" max={100} value={status.percent} />
+        <progress
+          aria-label={t("更新下载进度")}
+          max={100}
+          value={status.percent}
+        />
       )}
       <div className="update-actions">
         <button
@@ -63,7 +77,7 @@ export function UpdateControls({
           onClick={() => void perform("check")}
         >
           <RefreshCw size={15} />
-          立即检查更新
+          {t("立即检查更新")}
         </button>
         {status?.canInstall &&
           status.latestVersion &&
@@ -74,7 +88,7 @@ export function UpdateControls({
               onClick={() => void perform("download")}
             >
               <Download size={15} />
-              下载更新
+              {t("下载更新")}
             </button>
           )}
         {status?.phase === "downloaded" && (
@@ -83,7 +97,7 @@ export function UpdateControls({
             disabled={busy}
             onClick={() => void perform("install")}
           >
-            安装并重启
+            {t("安装并重启")}
           </button>
         )}
         <button
@@ -98,16 +112,30 @@ export function UpdateControls({
           }
         >
           <ExternalLink size={15} />
-          查看发布页
+          {t("查看发布页")}
         </button>
       </div>
       {status && !status.canInstall && (
-        <p className="muted">便携版及当前运行环境请在发布页下载对应版本。</p>
+        <p className="muted">
+          {t("便携版及当前运行环境请在发布页下载对应版本。")}
+        </p>
       )}
-      {status?.releaseNotes && (
+      {notesHtml && (
         <details className="update-notes">
-          <summary>版本说明</summary>
-          <pre>{status.releaseNotes}</pre>
+          <summary>{t("版本说明")}</summary>
+          <div
+            className="update-notes-content"
+            dangerouslySetInnerHTML={{ __html: notesHtml }}
+            onClick={(event) => {
+              const href = (event.target as Element).closest<HTMLAnchorElement>(
+                "a[href]",
+              )?.href;
+              if (!href) return;
+              event.preventDefault();
+              void desktop().openExternal(href)
+                .catch((error) => notify(String(error), true));
+            }}
+          />
         </details>
       )}
     </>
@@ -128,28 +156,32 @@ export function UpdateNotice({
   )
     return null;
   return (
-    <aside className="update-notice" role="status" aria-label="发现应用更新">
+    <aside
+      className="update-notice"
+      role="status"
+      aria-label={t("发现应用更新")}
+    >
       <button
         className="icon-button update-dismiss"
-        aria-label="暂不处理更新"
+        aria-label={t("暂不处理更新")}
         onClick={() => setDismissed(`${status.latestVersion}:${status.phase}`)}
       >
         <X size={16} />
       </button>
       <strong>
         {status.phase === "downloaded"
-          ? "更新已准备好"
-          : `发现新版本 ${status.latestVersion}`}
+          ? t("更新已准备好")
+          : t("发现新版本 {0}", status.latestVersion)}
       </strong>
       <p>
         {status.phase === "downloading"
-          ? `正在下载 ${Math.round(status.percent)}%`
+          ? t("正在下载 {0}%", Math.round(status.percent))
           : status.phase === "downloaded"
-            ? "请手动安装并重启，退出时不会自动安装。"
-            : "可在应用设置中查看并手动下载更新。"}
+            ? t("请手动安装并重启，退出时不会自动安装。")
+            : t("可在应用设置中查看并手动下载更新。")}
       </p>
       <button className="button" onClick={onOpen}>
-        查看更新
+        {t("查看更新")}
       </button>
     </aside>
   );

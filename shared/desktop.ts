@@ -56,6 +56,35 @@ export interface MdkCommands {
     source: string,
     kind: ResourceKind,
   ) => ResourceFile;
+  createResourceFolder: (
+    file: string,
+    parent: string,
+    name: string,
+    revision: string,
+  ) => MdkProject;
+  renameResource: (
+    file: string,
+    source: string,
+    name: string,
+    revision: string,
+  ) => MdkProject;
+  deleteResource: (
+    file: string,
+    source: string,
+    revision: string,
+  ) => MdkProject;
+  importResourcesTo: (
+    file: string,
+    folder: string,
+    mode: "files" | "folders",
+    revision: string,
+  ) => Promise<{ project: MdkProject; count: number } | null>;
+  extractResources: (
+    file: string,
+    paths: string[],
+    revision: string,
+  ) => Promise<{ path: string; count: number } | null>;
+  extractProjectFiles: MdkCommands["extractResources"];
   insertResources: (
     path: string,
     token: string,
@@ -81,18 +110,6 @@ export interface MdkCommands {
   readMode: (path: string) => string;
   readResource: (path: string, internalPath: string) => string;
   setMode: (path: string, mode: string) => MdkProject;
-  createText: (
-    path: string,
-    internalPath: string,
-    content: string,
-  ) => MdkProject;
-  createDirectory: (path: string, internalPath: string) => MdkProject;
-  renameFile: (
-    path: string,
-    internalPath: string,
-    newPath: string,
-  ) => MdkProject;
-  deleteFile: (path: string, internalPath: string) => MdkProject;
   checkPackDirectory: (directory: string) => void;
   pack: (directory: string, output: string, mode: string) => MdkSummary;
   unpack: (path: string, directory: string) => MdkSummary;
@@ -117,6 +134,9 @@ export interface Preferences {
   followOutline?: boolean;
   appTheme?: AppTheme;
   pageLength?: number;
+  showPageMarkers?: boolean;
+  shortcuts?: import("./shortcuts").ShortcutOverrides;
+  language?: import("./i18n").LanguagePreference;
 }
 export const defaultPageLength = 8000;
 export const minPageLength = 2000;
@@ -151,6 +171,7 @@ export interface DesktopApi {
   ): Promise<Awaited<ReturnType<MdkCommands[K]>>>;
   dialog(kind: DialogKind, defaultPath?: string): Promise<string | null>;
   recent(): Promise<RecentProject[]>;
+  locale(): Promise<import("./i18n").AppLocale>;
   preferences(value?: Preferences): Promise<Preferences>;
   onPreferencesChanged(
     callback: (preferences: Preferences) => void,
@@ -167,6 +188,7 @@ export interface DesktopApi {
   openExternal(url: string): Promise<void>;
   openMarkdownLink(href: string): Promise<void>;
   revealFile(path: string): Promise<void>;
+  renameArchive(name: string, revision: string, mode: string): Promise<string>;
   recovery(
     path: string,
     value?: SaveSnapshot | null,

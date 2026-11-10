@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { AppState } from "../electron/state";
 import { selectOption } from "./select-option.mjs";
-import { createMdkProject, saveMdkTextFile } from "../electron/mdk";
+import { createMdkProject, readMdkTextFile, saveMdkTextFile } from "../electron/mdk";
 
 const executablePath = process.env.MARDIKOR_TEST_EXECUTABLE;
 const root = path.resolve(
@@ -164,12 +164,7 @@ try {
     });
   }, archive);
   await page!.getByRole("button", { name: "打开工程", exact: true }).click();
-  await expect(page!.locator(".document-title")).toContainText(
-    "markdown/001.md",
-  );
-  await expect(
-    page!.getByRole("tab", { name: "源码", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
+  await preview("markdown/001.md", "MDK 预览");
   await secondInstance(markdown);
   await preview(path.basename(markdown), "Markdown 预览");
   await page!.evaluate(() => window.mardikor!.setDirty(false));
@@ -177,6 +172,8 @@ try {
   app = await launch(archive);
   await prepare();
   await preview("markdown/001.md", "MDK 预览");
+  await expect(page!.locator(".preview-toc, .outline-help")).toHaveCount(0);
+  await expect(page!.locator(".heading-outline")).toContainText("MDK 预览");
   await chooseView("write");
   await secondInstance(largeMarkdown);
   const left = page!.getByRole("region", { name: "左栏编辑组" });
@@ -243,6 +240,41 @@ try {
       ),
     ),
   ).toEqual(hashes);
+  await app.evaluate(({ BrowserWindow }, title) => {
+    BrowserWindow.getAllWindows().find((window) => window.title === title)?.close();
+  }, `${path.basename(archive)} - Mardikor`);
+  await expect.poll(() => app.windows().length).toBe(1);
+  await page!.locator(".nav-projects").getByTitle(archive, { exact: true }).click();
+  await preview("markdown/001.md", "MDK 预览");
+  const visual = page!.getByRole("tab", { name: "可视化", exact: true });
+  await visual.click();
+  const renamed = path.join(run, "改名后的工程.mdk");
+  const save = page!.locator(".document-topbar").getByRole("button", {
+    name: "保存",
+    exact: true,
+  });
+  await page!.getByRole("button", { name: "重命名 MDK 工程" }).click();
+  await page!.getByRole("textbox", { name: "重命名 MDK 工程" }).fill("改名后的工程");
+  await page!.getByRole("dialog").getByRole("button", { name: "重命名" }).click();
+  await expect(page!.locator(".titlebar-caption")).toHaveText(path.basename(renamed));
+  await expect(page!.locator(".nav-projects button").first()).toHaveAttribute(
+    "title",
+    renamed,
+  );
+  await expect(visual).toHaveAttribute("aria-selected", "true");
+  await expect(fs.access(archive)).rejects.toThrow();
+  expect(createHash("sha256").update(await fs.readFile(renamed)).digest("hex"))
+    .toBe(hashes[1]);
+  const body = page!.locator(".document-body[contenteditable=true]");
+  await body.click();
+  await page!.keyboard.press("Control+End");
+  await page!.keyboard.insertText(" 改名后继续编辑");
+  await page!.keyboard.press("Control+s");
+  await expect(save).toContainText("已保存");
+  await expect(page!.locator(".toast").filter({ hasText: "工程已保存" })).toHaveCount(0);
+  await expect(body).toBeFocused();
+  expect(readMdkTextFile(renamed, "markdown/001.md").content)
+    .toContain("改名后继续编辑");
   expect(errors).toEqual([]);
   console.log(
     "External open preferences, large-document fallback, and fixed pagination in preview/source and narrow splits passed.",

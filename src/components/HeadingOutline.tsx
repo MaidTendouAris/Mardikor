@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ListTree } from "lucide-react";
 import type { MarkdownHeading } from "../../shared/markdown";
@@ -67,7 +68,7 @@ export function HeadingOutline({
   return (
     <section
       className={`heading-outline ${collapsed ? "collapsed" : ""}`}
-      aria-label="Markdown 标题大纲"
+      aria-label={t("Markdown 标题大纲")}
     >
       <button
         className="heading-outline-toggle"
@@ -77,7 +78,7 @@ export function HeadingOutline({
         <span>
           {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
           <ListTree size={14} />
-          标题大纲
+          {t("标题大纲")}
         </span>
         <small>{headings.length}</small>
       </button>
@@ -86,7 +87,7 @@ export function HeadingOutline({
           ref={list}
           className="heading-outline-list"
           role="tree"
-          aria-label="文内标题"
+          aria-label={t("文内标题")}
           onScroll={(event) => {
             if (virtual) setTop(event.currentTarget.scrollTop);
           }}
@@ -112,7 +113,7 @@ export function HeadingOutline({
               data-heading-line={heading.line}
             >
               <span className="heading-level">H{heading.level}</span>
-              <span>{heading.title || "无标题"}</span>
+              <span>{heading.title || t("无标题")}</span>
             </button>
           ))}
           {virtual && end < headings.length && (
@@ -125,8 +126,8 @@ export function HeadingOutline({
             <p>
               {emptyMessage ??
                 (enabled
-                  ? "当前文稿没有标题。"
-                  : "选择 Markdown 文稿查看标题。")}
+                  ? t("当前文稿没有标题。")
+                  : t("选择 Markdown 文稿查看标题。"))}
             </p>
           )}
         </div>

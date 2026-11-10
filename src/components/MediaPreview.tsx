@@ -1,3 +1,4 @@
+import { appLocale, t } from "../../shared/i18n";
 import { ChevronLeft, ChevronRight, File } from "lucide-react";
 import type { MdkSettings, ProjectFile } from "../../shared/mdk";
 export function MediaPreview({
@@ -28,7 +29,7 @@ export function MediaPreview({
           <div className="button-row">
             <button
               className="icon-button"
-              aria-label="上一图片"
+              aria-label={t("上一图片")}
               disabled={index === 0}
               onClick={() => onSelect(images[index - 1].path)}
             >
@@ -39,7 +40,7 @@ export function MediaPreview({
             </span>
             <button
               className="icon-button"
-              aria-label="下一图片"
+              aria-label={t("下一图片")}
               disabled={index >= images.length - 1}
               onClick={() => onSelect(images[index + 1].path)}
             >
@@ -59,14 +60,16 @@ export function MediaPreview({
       ) : (
         <div className="binary-file-info">
           <File size={32} />
-          <p>二进制附件，仅显示文件信息。</p>
+          <p>{t("二进制附件，仅显示文件信息。")}</p>
           <dl>
-            <dt>路径</dt>
+            <dt>{t("路径")}</dt>
             <dd>{current.path}</dd>
-            <dt>大小</dt>
-            <dd>{current.bytes.toLocaleString()} 字节</dd>
-            <dt>类型</dt>
-            <dd>{data.match(/^data:([^;]+)/)?.[1] ?? "不透明附件"}</dd>
+            <dt>{t("大小")}</dt>
+            <dd>
+              {current.bytes.toLocaleString(appLocale())} {t("字节")}
+            </dd>
+            <dt>{t("类型")}</dt>
+            <dd>{data.match(/^data:([^;]+)/)?.[1] ?? t("不透明附件")}</dd>
           </dl>
         </div>
       )}

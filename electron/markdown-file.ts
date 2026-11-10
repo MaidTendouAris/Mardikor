@@ -1,3 +1,4 @@
+import { t } from "../shared/i18n";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,7 @@ const executable =
 
 export function resolveMarkdownLink(file: string, href: string) {
   if (!href || href.length > 8192 || containsControl(href))
-    throw new Error("文件链接无效。");
+    throw new Error(t("文件链接无效。"));
   const raw = href.split(/[?#]/, 1)[0];
   const fragment = href.includes("#") ? href.slice(href.indexOf("#") + 1) : "";
   let destination: string;
@@ -42,7 +43,7 @@ export function resolveMarkdownLink(file: string, href: string) {
       destination = fileURLToPath(url);
     } else destination = decodeURIComponent(raw);
   } catch {
-    throw new Error("文件链接的路径或百分号编码无效。");
+    throw new Error(t("文件链接的路径或百分号编码无效。"));
   }
   const localPath = (value: string) => {
     const withoutDrive =
@@ -54,15 +55,15 @@ export function resolveMarkdownLink(file: string, href: string) {
     );
   };
   if (!destination || !localPath(destination))
-    throw new Error("仅支持本地文件链接。");
+    throw new Error(t("仅支持本地文件链接。"));
   const target = path.resolve(path.dirname(file), destination);
-  if (!localPath(target)) throw new Error("仅支持本地文件链接。");
+  if (!localPath(target)) throw new Error(t("仅支持本地文件链接。"));
   let actual: string;
   try {
     actual = fs.realpathSync(target);
     if (!fs.statSync(actual).isFile()) throw new Error();
   } catch {
-    throw new Error(`找不到链接文件：${destination}`);
+    throw new Error(t("找不到链接文件：{0}", destination));
   }
   if (
     !localPath(actual) ||
@@ -70,21 +71,22 @@ export function resolveMarkdownLink(file: string, href: string) {
       executable.test(value.trimEnd().replace(/\.+$/, "")),
     )
   )
-    throw new Error("此链接的文件类型不支持直接打开。");
+    throw new Error(t("此链接的文件类型不支持直接打开。"));
   return { path: actual, fragment };
 }
 function read(file: string) {
   if (!isMarkdownFile(file))
-    throw new Error("单 Markdown 工程须使用 .md 扩展名。");
+    throw new Error(t("单 Markdown 工程须使用 .md 扩展名。"));
   const info = fs.lstatSync(file);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1)
-    throw new Error("请选择普通 Markdown 文件，不支持链接文件。");
-  if (info.size > limit) throw new Error("Markdown 文件超过 64 MiB。");
+    throw new Error(t("请选择普通 Markdown 文件，不支持链接文件。"));
+  if (info.size > limit) throw new Error(t("Markdown 文件超过 64 MiB。"));
   const bytes = fs.readFileSync(file);
   let content: string;
   let encoding: "UTF-8" | "GB18030" = "UTF-8";
-  const invalidEncoding =
-    "无法按 UTF-8 或 GB18030 读取此 Markdown，请转换为 UTF-8 文本后重新打开。";
+  const invalidEncoding = t(
+    "无法按 UTF-8 或 GB18030 读取此 Markdown，请转换为 UTF-8 文本后重新打开。",
+  );
   try {
     content = decoder.decode(bytes);
   } catch {
@@ -108,7 +110,7 @@ export function resolveLocalMarkdownPath(file: string, relative: string) {
   for (const part of relative.split("/")) {
     current = path.join(current, part);
     if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink())
-      throw new Error("不支持跨目录链接资源。");
+      throw new Error(t("不支持跨目录链接资源。"));
   }
   return target;
 }
@@ -118,7 +120,7 @@ function write(file: string, content: string, revision?: string) {
     content.includes("\0") ||
     Buffer.byteLength(content) > limit
   )
-    throw new Error("Markdown 内容无效或超过 64 MiB。");
+    throw new Error(t("Markdown 内容无效或超过 64 MiB。"));
   const temporary = file + "." + randomUUID() + ".tmp";
   try {
     const fd = fs.openSync(
@@ -133,7 +135,7 @@ function write(file: string, content: string, revision?: string) {
       fs.closeSync(fd);
     }
     if (revision && read(file).revision !== revision)
-      throw new Error("磁盘 Markdown 已被其他进程修改，未覆盖文件。");
+      throw new Error(t("磁盘 Markdown 已被其他进程修改，未覆盖文件。"));
     if (revision) fs.renameSync(temporary, file);
     else {
       fs.linkSync(temporary, file);
@@ -219,29 +221,30 @@ export function openMarkdownFile(file: string): MdkProject {
 }
 export function createMarkdownFile(file: string) {
   if (!isMarkdownFile(file))
-    throw new Error("单 Markdown 工程须使用 .md 扩展名。");
+    throw new Error(t("单 Markdown 工程须使用 .md 扩展名。"));
   write(file, "");
   return openMarkdownFile(file);
 }
 export function readMarkdownFile(file: string, internalPath: string) {
   if (internalPath !== path.basename(file))
-    throw new Error("单 Markdown 模式仅编辑当前 .md 文件。");
+    throw new Error(t("单 Markdown 模式仅编辑当前 .md 文件。"));
   return { path: internalPath, content: read(file).content };
 }
 export function saveMarkdownSnapshot(file: string, snapshot: SaveSnapshot) {
   const current = read(file);
   if (!snapshot || snapshot.revision !== current.revision)
-    throw new Error("磁盘 Markdown 已被其他进程修改，未覆盖文件。");
+    throw new Error(t("磁盘 Markdown 已被其他进程修改，未覆盖文件。"));
   if (snapshot.settings !== undefined || snapshot.positions !== undefined)
-    throw new Error("单 Markdown 工程没有 TOML 设置或文稿编排。");
+    throw new Error(t("单 Markdown 工程没有 TOML 设置或文稿编排。"));
   const texts = [
     ...(snapshot.text ? [snapshot.text] : []),
     ...(snapshot.texts ?? []),
   ];
-  if (texts.length > 1) throw new Error("单 Markdown 工程只能保存当前文件。");
+  if (texts.length > 1)
+    throw new Error(t("单 Markdown 工程只能保存当前文件。"));
   if (texts.length) {
     if (texts[0].path !== path.basename(file))
-      throw new Error("不能修改单 Markdown 工程以外的文件。");
+      throw new Error(t("不能修改单 Markdown 工程以外的文件。"));
     if (texts[0].content !== current.content)
       write(file, texts[0].content, current.revision);
   }
@@ -261,14 +264,14 @@ export function copyMarkdownDraft(
     texts.length !== 1 ||
     texts[0].path !== path.basename(file)
   )
-    throw new Error("请选择 .md 输出路径，并提供当前文稿的草稿。");
+    throw new Error(t("请选择 .md 输出路径，并提供当前文稿的草稿。"));
   write(output, texts[0].content);
 }
 export function readMarkdownResource(file: string, relative: string) {
   const target = resolveLocalMarkdownPath(file, relative),
     info = fs.statSync(target);
   if (!info.isFile() || info.size > limit)
-    throw new Error("资源无效或超过 64 MiB。");
+    throw new Error(t("资源无效或超过 64 MiB。"));
   const bytes = fs.readFileSync(target);
   checkMedia(relative, bytes);
   const mime = detectMediaType(bytes);
@@ -280,7 +283,7 @@ export function readMarkdownResource(file: string, relative: string) {
       mime.startsWith("video/")
     )
   )
-    throw new Error("此资源不支持直接预览。");
+    throw new Error(t("此资源不支持直接预览。"));
   if (mime === "image/svg+xml") assertPassiveSvg(bytes);
   return `data:${mime};base64,${bytes.toString("base64")}`;
 }
@@ -291,7 +294,7 @@ export function insertMarkdownResources(
 ): ResourceInsertionResult {
   const current = read(file);
   if (insertion?.revision !== current.revision)
-    throw new Error("工程版本已变化，请重新插入。");
+    throw new Error(t("工程版本已变化，请重新插入。"));
   if (
     insertion.text?.path !== path.basename(file) ||
     typeof insertion.text?.content !== "string" ||
@@ -299,13 +302,13 @@ export function insertMarkdownResources(
     !/^[A-Za-z0-9]{24,100}$/.test(insertion.marker) ||
     insertion.text.content.split(insertion.marker).length !== 2
   )
-    throw new Error("资源插入位置无效。");
+    throw new Error(t("资源插入位置无效。"));
   if (
     insertion.settings !== undefined ||
     insertion.positions !== undefined ||
     insertion.texts?.length
   )
-    throw new Error("单 Markdown 工程只能修改当前文件。");
+    throw new Error(t("单 Markdown 工程只能修改当前文件。"));
   const assets = loadInsertionAssets(sources),
     published: string[] = [],
     directories: string[] = [];

@@ -8,7 +8,7 @@
 - **Linux** 需要 Node.js 22.12 或更新版本。将示例中的版本号换成实际归档的版本号。
 
 ```sh
-npm install -g ./mardikor-cli-0.2.2.tgz
+npm install -g ./mardikor-cli-0.2.4.tgz
 mardikor --version
 ```
 
@@ -31,7 +31,9 @@ mardikor validate "小说.mdk"
 
 `write`、`write-file` 和 `apply` 默认从标准输入读取，也接受 `--from <文件>`。`write` 自动识别 UTF‑8 和 GB18030，`write-file` 默认使用 UTF‑8。两者可用 `--encoding utf-8|gb18030|auto` 显式指定，新提交的文本以无 BOM 的 UTF‑8 写入。`apply` 的 JSON 使用 UTF‑8。
 
-每次输入和单个工程内文件最多 64 MiB，容器及其解压后文件总量最多 256 MiB。
+## 输入与容器限额
+
+单次输入和单个工程内文件最多 **64 MiB**。MDK 容器及其解压后文件总量各自最多 **256 MiB**。通过标准输入分批传输仍计为同一次输入。较长文稿可拆成多个目录项，逐篇写入。
 
 在 Linux 终端可以打开指定文稿进行编辑。
 
@@ -50,13 +52,13 @@ EDITOR=vim mardikor edit "小说.mdk" "<文稿ID>"
 | `read <工程> <ID>`                                  | 读取文稿原文                                                 |
 | `write <工程> <ID>`                                 | 替换文稿正文                                                 |
 | `edit <工程> <ID> [--editor <程序>]`                | 用终端或外部编辑器修改指定文稿                               |
-| `add <工程> <文件名> [--after <ID>]`                | 新建文稿，可插在指定文稿后                                   |
+| `add <工程> <文件名> [--after <ID>] [--title <显示名>]` | 新建文稿，可设置独立的目录显示名称                           |
 | `rename <工程> <ID> <文件名>`                       | 重命名文稿                                                   |
 | `remove <工程> <ID>`                                | 移除目录项，子级提升一层；无其他引用时删除正文               |
 | `move <工程> <ID> <before\|after\|inside> <目标ID>` | 移动文稿及其子级                                             |
 | `read-file <工程> <内部路径>`                       | 读取工程内的 Markdown、TOML 或其他 UTF‑8 文本                |
 | `write-file <工程> <内部路径>`                      | 写入或创建工程内的 UTF‑8 文本                                |
-| `apply <工程>`                                      | 在一次保存中提交正文和目录位置变更                           |
+| `apply <工程> [--quiet]`                            | 在一次保存中新增目录项、写入正文和调整目录位置               |
 | `import <工程> <类型> <本地文件>`                   | 导入 image、video、audio、font 或 other 资源，返回工程内路径 |
 | `validate <工程>`                                   | 检查容器、控制文件和资源引用                                 |
 | `watch <工程> --json`                               | 输出当前修订号，之后每次变化输出一行 JSON                    |
@@ -71,19 +73,24 @@ EDITOR=vim mardikor edit "小说.mdk" "<文稿ID>"
 3. 用 `write` 提交单篇，或用 `apply` 提交多篇正文和目录位置。传入变更所基于的修订号。
 4. 用 `validate --json` 检查工程。发生冲突时重新读取内容，再决定如何合并。
 
-`apply` 支持 `writes` 和 `positions` 两个数组，可以只提供其中一个。位置使用 MDK 目录编号字符串。多个目录项指向同一个正文文件时，每次提交只写一次该文件。
+`apply` 接受 `newEntries`、`writes` 和 `positions`，可组合提交。用 `newEntries` 一次建立多层目录项，避免逐条 `add` 重写容器。新文稿的 `path` 使用 `markdown/` 下的相对路径，`position` 使用 MDK 目录编号。可提供 `id`、`title` 和 `markdown`，省略 ID 时自动生成。提供 ID 且省略正文时，也可在同一批次通过 `writes` 写入。多个目录项指向同一个正文文件时，每次提交只写一次该文件。
 
 ```json
 {
+  "newEntries": [
+    { "path": "markdown/scene-01.md", "position": "3.1", "title": "32:00:00", "markdown": "# 32:00:00\n" }
+  ],
   "writes": [{ "id": "<文稿ID>", "markdown": "# 第一章\n\n修改后的正文。\n" }],
   "positions": [{ "id": "<文稿ID>", "position": "2.1" }]
 }
 ```
 
 ```sh
-mardikor apply "小说.mdk" --if-revision "<修订号>" --from changes.json --json
+mardikor apply "小说.mdk" --if-revision "<修订号>" --from changes.json --quiet
 mardikor validate "小说.mdk" --json
 ```
+
+`--quiet` 仅返回 `{"revision":"…"}`。显示名与路径分别保存，`list --json` 可读取可选的 `display_name`。正文标题已有编号时，可在工程设置关闭自动章节编号，也可在 `settings.toml` 中将 `mode.book.chapter_numbering` 设为 `false`。
 
 `--json` 的成功结果写到标准输出，命令错误以 `code`、`message` 写到标准错误。`validate --json` 即使报告含错误也会在标准输出返回完整报告。写入类命令默认返回 JSON，以便取得新修订号。`list --json` 同时提供 `mode` 编码和 `mode_name`。运行 `mardikor <命令> --help` 查看单个命令用法。
 
@@ -94,4 +101,4 @@ mardikor validate "小说.mdk" --json
 | `2`    | 命令参数无效           |
 | `3`    | 修订冲突或工程正被写入 |
 
-桌面端和 CLI 共用写入锁。进程异常退出后可运行 `mardikor unlock "小说.mdk"`。它只清理本机已退出进程持有的锁。遇到旧格式锁或所有者记录缺失，确认所有写入均已结束后再手动清理工程旁的 `<文件名>.mardikor-lock`。
+桌面端和 CLI 共用写入锁。进程异常退出后可运行 `mardikor unlock "小说.mdk"`。该命令也识别旧版本只记录 PID 的文件锁。锁记录有效且本机 PID 已退出时才会删除。所有者无法确认时，请先核实所有写入均已结束，再手动清理工程旁的 `<文件名>.mardikor-lock`。

@@ -35,6 +35,8 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
     return JSON.parse(result.stdout);
   };
   const created = json(["new", file, "--mode", "book"]);
+  for (const args of [["--help"], ["write", "--help"]])
+    assert.match(run(args).stdout, /64 MiB.*256 MiB/);
   assert.equal(created.mode, "01");
   assert.equal(created.mode_name, "book");
   assert.equal(run(["new", file]).status, 1);
@@ -65,12 +67,15 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
     "add",
     file,
     "第二章",
+    "--title",
+    "第二章：32:00:00",
     "--after",
     first,
     "--if-revision",
     written.revision,
   ]);
   const second = added.entries[1].id;
+  assert.equal(added.entries[1].display_name, "第二章：32:00:00");
   const moved = json([
     "move",
     file,
@@ -136,6 +141,7 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   );
   assert.equal(blocked.status, 3);
   assert.equal(JSON.parse(blocked.stderr).code, "E_MDK_LOCKED");
+  assert.equal(run(["unlock", file]).status, 3);
   assert.throws(
     () =>
       saveMdkSnapshot(file, {
@@ -178,9 +184,51 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   assert.equal(run(["unlock", file]).status, 3);
   const departed = spawnSync(process.execPath, ["-e", ""]);
   assert.equal(departed.status, 0);
-  fs.writeFileSync(owner, ownerRecord(departed.pid));
+  fs.writeFileSync(owner, "\ufeff" + ownerRecord(departed.pid));
   assert.equal(json(["unlock", file]).unlocked, true);
   assert.equal(fs.existsSync(lock), false);
+  fs.writeFileSync(lock, String(departed.pid) + "\r\n");
+  assert.equal(json(["unlock", file]).unlocked, true);
+  assert.equal(fs.existsSync(lock), false);
+  fs.writeFileSync(lock, "unknown owner");
+  assert.equal(run(["unlock", file]).status, 3);
+  assert.equal(fs.readFileSync(lock, "utf8"), "unknown owner");
+  fs.unlinkSync(lock);
   if (process.platform !== "win32")
     assert.equal(fs.statSync(file).mode & 0o777, 0o640);
+  const additions = Array.from({ length: 446 }, (_, index) => ({
+    id: "batch-" + index,
+    path: `markdown/chapter/entry-${index}.md`,
+    position: "3." + (index + 1),
+    title: "片段 " + index + ":00",
+    ...(index ? { markdown: `# 标题 ${index}\n\n正文。\n` } : {}),
+  }));
+  const bulk = json(
+    ["apply", file, "--if-revision", fileRevision(file), "--quiet"],
+    JSON.stringify({
+      newEntries: additions,
+      writes: [{ id: "batch-0", markdown: "同一批次的新文稿正文。" }],
+      positions: [{ id: second, position: "2.1" }],
+    }),
+  );
+  assert.deepEqual(Object.keys(bulk), ["revision"]);
+  assert.equal(bulk.revision, fileRevision(file));
+  const listed = json(["list", file]);
+  assert.equal(listed.entries.length, 448);
+  assert.equal(
+    listed.entries.find(({ id }: { id: string }) => id === "batch-0")
+      .display_name,
+    "片段 0:00",
+  );
+  assert.equal(run(["read", file, "batch-0"]).stdout, "同一批次的新文稿正文。");
+  const collision = run(
+    ["apply", file, "--if-revision", bulk.revision],
+    JSON.stringify({
+      newEntries: [{ path: "markdown/001.md", position: "5" }],
+      writes: [{ id: first, markdown: "不能覆盖" }],
+    }),
+  );
+  assert.equal(collision.status, 1);
+  assert.equal(fileRevision(file), bulk.revision);
+  assert.equal(json(["validate", file]).valid, true);
 });

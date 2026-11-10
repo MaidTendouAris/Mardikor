@@ -35,3 +35,24 @@ export interface InsertionDraft {
   content: string;
   marker: string;
 }
+export const resourceRoot = "resources";
+export const resourceCategories = [
+  "image",
+  "video",
+  "audio",
+  "font",
+  "other",
+] as const;
+
+export function isResourcePath(path: string) {
+  return path === resourceRoot || path.startsWith(resourceRoot + "/");
+}
+
+export function isFixedResourceFolder(path: string) {
+  return (
+    path === resourceRoot ||
+    resourceCategories.some(
+      (category) => path === resourceRoot + "/" + category,
+    )
+  );
+}

@@ -1,3 +1,4 @@
+import { setAppLocale, t, type AppLocale } from "../shared/i18n";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopApi } from "../shared/desktop";
 
@@ -47,14 +48,17 @@ function fileDrop(event: DragEvent) {
       if (dropListeners.has(listener)) listener(drop);
   };
   if (!target) {
-    emit({ ...point, error: "请将受支持的文件拖入可编辑的 Markdown 正文。" });
+    emit({
+      ...point,
+      error: t("请将受支持的文件拖入可编辑的 Markdown 正文。"),
+    });
     return;
   }
   let paths: string[];
   try {
     paths = files.map((file) => webUtils.getPathForFile(file));
     if (!paths.length || paths.some((p) => !p))
-      throw new Error("请从文件管理器拖入本地文件。");
+      throw new Error(t("请从文件管理器拖入本地文件。"));
   } catch (error) {
     emit({ ...point, error: String(error) });
     return;
@@ -125,6 +129,11 @@ const api: DesktopApi = {
   dialog: (kind, defaultPath) =>
     ipcRenderer.invoke("app:dialog", kind, defaultPath),
   recent: () => ipcRenderer.invoke("app:recent"),
+  locale: async () => {
+    const locale: AppLocale = await ipcRenderer.invoke("app:locale");
+    setAppLocale(locale);
+    return locale;
+  },
   preferences: (value) => ipcRenderer.invoke("app:preferences", value),
   onPreferencesChanged: (callback) => {
     const listener = (
@@ -138,6 +147,8 @@ const api: DesktopApi = {
   window: (action) => ipcRenderer.invoke("app:window", action),
   setDirty: (dirty) => ipcRenderer.send("app:dirty", dirty),
   openExternal: (url) => ipcRenderer.invoke("app:open-url", url),
+  renameArchive: (name, revision, mode) =>
+    ipcRenderer.invoke("app:rename-archive", name, revision, mode),
   openMarkdownLink: (href) =>
     ipcRenderer.invoke("app:open-markdown-link", href),
   revealFile: (path) => ipcRenderer.invoke("app:reveal-file", path),

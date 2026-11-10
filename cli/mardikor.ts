@@ -5,13 +5,20 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import * as mdk from "../electron/mdk";
-import { MAX_FILE } from "../electron/archive";
+import { MAX_ENTRIES, MAX_FILE } from "../electron/archive";
 import { watchProjectFile } from "../electron/project-watch";
 import { comparePosition } from "../shared/outline";
 import { moveOutline } from "../shared/tree";
 import { isTable } from "../shared/schema";
-import type { MdkProject, ResourceKind, SaveSnapshot } from "../shared/mdk";
+import {
+  entryDisplayName,
+  type MdkProject,
+  type ResourceKind,
+  type SaveSnapshot,
+} from "../shared/mdk";
 
+const limits =
+  "实现限额：单次输入及单个内部文件最多 64 MiB；MDK 容器及解压后总量最多 256 MiB。";
 const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
 
   new <工程> [--mode default|book|comic]
@@ -19,13 +26,13 @@ const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
   read <工程> <文稿ID>
   write <工程> <文稿ID> --if-revision <修订号> [--from <文件>] [--encoding <编码>]
   edit <工程> <文稿ID> [--editor <可执行文件>] [--editor-arg <参数>]
-  add <工程> <文件名> --if-revision <修订号> [--after <文稿ID>]
+  add <工程> <文件名> --if-revision <修订号> [--after <文稿ID>] [--title <显示名>]
   rename <工程> <文稿ID> <文件名> --if-revision <修订号>
   remove <工程> <文稿ID> --if-revision <修订号>
   move <工程> <文稿ID> <before|after|inside> <目标ID> --if-revision <修订号>
   read-file <工程> <内部路径>
   write-file <工程> <内部路径> --if-revision <修订号> [--from <文件>] [--encoding <编码>]
-  apply <工程> --if-revision <修订号> [--from <JSON文件>]
+  apply <工程> --if-revision <修订号> [--from <JSON文件>] [--quiet]
   import <工程> <image|video|audio|font|other> <资源文件> --if-revision <修订号>
   validate <工程>
   watch <工程>
@@ -33,6 +40,7 @@ const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
 
 使用 --json 获取结构化结果。write、write-file、apply 默认从标准输入读取。
 使用 --help 查看用法，--version 查看版本。
+${limits}
 退出码 0 为成功，1 为操作或校验失败，2 为参数错误（E_USAGE），3 为修订冲突或写入锁。
 `;
 
@@ -45,13 +53,13 @@ const commands: Record<
   read: { args: 1 },
   write: { args: 1, revision: true, options: ["from", "encoding"] },
   edit: { args: 1, options: ["editor", "editor-arg"] },
-  add: { args: 1, revision: true, options: ["after"] },
+  add: { args: 1, revision: true, options: ["after", "title"] },
   rename: { args: 2, revision: true },
   remove: { args: 1, revision: true },
   move: { args: 3, revision: true },
   "read-file": { args: 1 },
   "write-file": { args: 1, revision: true, options: ["from", "encoding"] },
-  apply: { args: 0, revision: true, options: ["from"] },
+  apply: { args: 0, revision: true, options: ["from", "quiet"] },
   import: { args: 2, revision: true },
   validate: { args: 0 },
   watch: { args: 0 },
@@ -108,7 +116,16 @@ function projectView(project: MdkProject) {
     readonly: project.readonly,
     entries: [...project.contents.entries]
       .sort((a, b) => comparePosition(a.position, b.position))
-      .map(({ id, path, position }) => ({ id, path, position })),
+      .map((entry) => {
+        const { id, path, position } = entry;
+        const display_name = entryDisplayName(entry);
+        return {
+          id,
+          path,
+          position,
+          ...(display_name ? { display_name } : {}),
+        };
+      }),
   };
 }
 
@@ -128,6 +145,14 @@ function save(file: string, snapshot: SaveSnapshot) {
   return projectView(mdk.saveMdkSnapshot(file, snapshot));
 }
 
+function outlinePosition(value: string) {
+  if (!/^[1-9]\d*(?:\.[1-9]\d*){0,5}$/.test(value))
+    throw new UsageError(
+      "position 必须是 1、1.2、1.2.3 这样的点分编号，最多六层。",
+    );
+  return value;
+}
+
 function apply(file: string, revision: string, text: string) {
   let request: unknown;
   try {
@@ -137,31 +162,57 @@ function apply(file: string, revision: string, text: string) {
   }
   if (
     !isTable(request) ||
-    Object.keys(request).some((key) => !["writes", "positions"].includes(key))
+    Object.keys(request).some(
+      (key) => !["newEntries", "writes", "positions"].includes(key),
+    )
   )
-    throw new UsageError("批量变更只支持 writes 和 positions。");
+    throw new UsageError("批量变更只支持 newEntries、writes 和 positions。");
+  const newEntries = Object.hasOwn(request, "newEntries")
+    ? request.newEntries
+    : [];
   const writes = Object.hasOwn(request, "writes") ? request.writes : [];
   const positions = Object.hasOwn(request, "positions")
     ? request.positions
     : [];
   if (
+    !Array.isArray(newEntries) ||
+    newEntries.length > MAX_ENTRIES ||
     !Array.isArray(writes) ||
     !Array.isArray(positions) ||
-    (!writes.length && !positions.length)
+    (!newEntries.length && !writes.length && !positions.length)
   )
     throw new UsageError("请提供至少一条批量变更。");
-  const project = readProject(file, revision);
-  const texts = writes.map((change) => {
+  const additions = newEntries.map((entry) => {
+    if (
+      !isTable(entry) ||
+      Object.keys(entry).some(
+        (key) => !["id", "path", "position", "markdown", "title"].includes(key),
+      ) ||
+      typeof entry.path !== "string" ||
+      typeof entry.position !== "string" ||
+      (entry.id !== undefined && typeof entry.id !== "string") ||
+      (entry.markdown !== undefined && typeof entry.markdown !== "string") ||
+      (entry.title !== undefined && typeof entry.title !== "string")
+    )
+      throw new UsageError(
+        "每条 newEntries 需要 path 和 position，可选 id、markdown 和 title。",
+      );
+    return {
+      id: entry.id,
+      path: entry.path,
+      position: outlinePosition(entry.position),
+      markdown: entry.markdown,
+      title: entry.title,
+    };
+  });
+  const content = writes.map((change) => {
     if (
       !isTable(change) ||
       typeof change.id !== "string" ||
       typeof change.markdown !== "string"
     )
       throw new UsageError("每条 writes 变更需要 id 和 markdown 字段。");
-    return {
-      path: projectEntry(project, change.id).path,
-      content: change.markdown,
-    };
+    return { id: change.id, markdown: change.markdown };
   });
   const ids = new Set<string>();
   const updates = positions.map((change) => {
@@ -175,16 +226,12 @@ function apply(file: string, revision: string, text: string) {
         "每条 positions 变更需要唯一的 id 和字符串 position。",
       );
     ids.add(change.id);
-    if (!/^[1-9]\d*(?:\.[1-9]\d*){0,5}$/.test(change.position))
-      throw new UsageError(
-        "position 必须是 1、1.2、1.2.3 这样的点分编号，最多六层。",
-      );
-    return { id: change.id, position: change.position };
+    return { id: change.id, position: outlinePosition(change.position) };
   });
-  return save(file, {
-    revision,
-    texts,
-    ...(updates.length ? { positions: updates } : {}),
+  return mdk.applyMdkBatch(file, revision, {
+    newEntries: additions,
+    writes: content,
+    positions: updates,
   });
 }
 
@@ -246,10 +293,12 @@ async function run(args: string[]) {
           help: { type: "boolean", short: "h" },
           version: { type: "boolean", short: "v" },
           json: { type: "boolean" },
+          quiet: { type: "boolean" },
           "if-revision": { type: "string" },
           from: { type: "string" },
           mode: { type: "string" },
           after: { type: "string" },
+          title: { type: "string" },
           editor: { type: "string" },
           "editor-arg": { type: "string", multiple: true },
           encoding: { type: "string" },
@@ -276,6 +325,9 @@ async function run(args: string[]) {
           console.log(
             "VISUAL / EDITOR 仅填写可执行文件路径，附加参数用 --editor-arg 重复传入。",
           );
+        if (helpCommand === "apply")
+          console.log("JSON 可组合 newEntries、writes 和 positions。--quiet 仅返回新的 revision。");
+        console.log(limits);
         console.log(
           "退出码：0 成功，1 操作或校验失败，2 E_USAGE，3 E_MDK_REVISION / E_MDK_LOCKED。",
         );
@@ -362,12 +414,18 @@ async function run(args: string[]) {
         output(await edit(file, first, values.editor, values["editor-arg"]));
         break;
       }
-      case "apply":
-        output(apply(file, revision, await input(values.from)));
+      case "apply": {
+        const project = apply(file, revision, await input(values.from));
+        output(
+          values.quiet ? { revision: project.revision } : projectView(project),
+        );
         break;
+      }
       case "add":
         output(
-          projectView(mdk.addMdkEntry(file, first, values.after, revision)),
+          projectView(
+            mdk.addMdkEntry(file, first, values.after, revision, values.title),
+          ),
         );
         break;
       case "rename":

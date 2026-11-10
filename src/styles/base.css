@@ -86,12 +86,34 @@
   width: 100%;
   accent-color: var(--blue);
 }
-.update-notes pre {
-  white-space: pre-wrap;
+.update-notes-content {
   overflow-wrap: anywhere;
-  font: inherit;
-  max-height: 240px;
+  max-height: 320px;
   overflow: auto;
+  padding-inline: 2px 12px;
+}
+.update-notes-content a {
+  color: var(--accent-text, var(--blue));
+}
+.update-notes-content pre {
+  overflow: auto;
+}
+.save-label {
+  min-inline-size: 4.5em;
+  text-align: center;
+}
+.save-spinner {
+  animation: save-spin 0.8s linear infinite;
+}
+@keyframes save-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-spinner {
+    animation: none;
+  }
 }
 .update-notice {
   position: fixed;
@@ -894,6 +916,9 @@ button:disabled {
   padding: 0 5px;
   width: 65px;
 }
+.import-resource:lang(en) .custom-select-trigger {
+  width: 82px;
+}
 .import-resource .button {
   flex: 1;
   font-size: 10px;
@@ -1173,19 +1198,22 @@ kbd {
 .preview-body th {
   text-align: left;
 }
-.preview-body aside {
+.preview-body aside,
+.document-body aside[data-mdk-container] {
   border-left: 3px solid #79a4ed;
   background: var(--accent-surface, #f0f5fe);
   padding: 13px 17px;
   margin: 15px 0;
   color: var(--accent-text, #4c6eaa);
 }
-.preview-body .mdk-warning {
+.preview-body .mdk-warning,
+.document-body .mdk-warning {
   border-color: #e8b563;
   background: var(--warning-surface, #fffbf2);
   color: var(--warning-text, #8f733c);
 }
-.preview-body .mdk-tip {
+.preview-body .mdk-tip,
+.document-body .mdk-tip {
   border-color: #7c9fe3;
   background: var(--hover-surface, #f4f6fc);
   color: var(--accent-text, #536d9f);
@@ -1408,6 +1436,9 @@ kbd {
   font-size: 22px;
   font-weight: 600;
 }
+.settings-page > .settings-card + .settings-card {
+  margin-top: 20px;
+}
 .settings-card-heading {
   padding-bottom: 4px;
 }
@@ -1476,6 +1507,21 @@ kbd {
 }
 .settings-card-footer .button {
   font-size: 11px;
+}
+.shortcut-help {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.shortcut-binding {
+  min-width: 130px;
+  justify-content: center;
+}
+.shortcut-binding[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: var(--accent-text, var(--blue));
+}
+.shortcut-error {
+  color: var(--error-text, #b42338);
 }
 .delivery-heading {
   margin-bottom: 20px;
@@ -1965,6 +2011,11 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.resource-select-checkbox {
+  margin: 0;
+  flex: none;
+  accent-color: var(--blue);
+}
 .project-tree-row small {
   font-size: 10px;
   color: var(--theme-muted, #8090aa);
@@ -1982,12 +2033,6 @@ kbd {
   position: fixed;
   right: auto;
   z-index: 30;
-}
-.outline-help {
-  font-size: 10px;
-  color: var(--muted);
-  margin: 10px 4px;
-  line-height: 1.6;
 }
 .control-shortcuts {
   display: flex;
@@ -2290,7 +2335,55 @@ kbd {
   min-height: 0;
   flex: 1;
   overflow: auto;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
   padding: 8px;
+}
+.continuous-content,
+.document-page {
+  display: flow-root;
+}
+.document-page {
+  position: relative;
+}
+.continuous-paper .document-page .preview-body,
+.continuous-paper .document-page .document-body {
+  min-height: 0;
+  padding: 0;
+}
+.continuous-paper .document-body :is(ul, ol):not([data-loose-list]) > li > p:first-child {
+  margin-block-end: 0;
+}
+.rich-page-boundary {
+  position: relative;
+  display: flow-root;
+  height: 0;
+  /* A page boundary separates sibling margins without adding visible space. */
+  padding-block-start: 0.02px;
+  pointer-events: none;
+  user-select: none;
+}
+.continuous-paper[data-page-markers="false"] .document-page-marker {
+  display: none;
+}
+.continuous-paper .document-page .preview-literal {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.document-page-marker {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 100%;
+  margin-inline-start: 3px;
+  padding-inline-start: 2px;
+  border-inline-start: 1px solid var(--theme-line, #e0e4eb);
+  color: var(--theme-muted, #64748b);
+  font: 10px/1.4 "Segoe UI", sans-serif;
+  user-select: none;
+  pointer-events: none;
 }
 .disk-change-bar {
   display: flex;
@@ -2322,9 +2415,6 @@ kbd {
 .cli-project-info {
   display: grid;
   gap: 12px;
-}
-.mode-default .paged-preview-viewport .document-paper {
-  padding: 18px min(24px, 6cqi);
 }
 .reading-spread {
   display: flex;
@@ -2522,6 +2612,13 @@ kbd {
   border: 0;
   box-shadow: none;
 }
+.paged-preview-viewport .continuous-paper {
+  min-height: 100%;
+  padding-inline-end: max(30px, min(var(--preview-margin-right, 50px), 12cqi));
+}
+.mode-default .paged-preview-viewport .continuous-paper {
+  padding: 24px 30px 56px clamp(12px, 5cqi, 48px);
+}
 [data-document-drop-zone] {
   position: relative;
 }
@@ -2547,10 +2644,6 @@ kbd {
 }
 .sidebar-sections .outline-heading {
   flex-shrink: 0;
-}
-.sidebar-sections .outline-help {
-  flex-shrink: 0;
-  margin: 4px 0;
 }
 .split-handle {
   position: relative;

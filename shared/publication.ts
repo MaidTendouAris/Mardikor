@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { MdkSettings, ValidationReport } from "./mdk";
 import { defaultSettings } from "./defaults";
 
@@ -186,7 +187,7 @@ export function inspectPublication(value: unknown): PublicationSettings {
     template: Record<string, unknown>,
     prefix: string,
   ): Record<string, unknown> => {
-    if (!object(source)) throw new Error(prefix + " 必须为表。");
+    if (!object(source)) throw new Error(prefix + t(" 必须为表。"));
     const result: Record<string, unknown> = {};
     for (const [key, fallback] of Object.entries(template)) {
       let current = source[key];
@@ -202,7 +203,7 @@ export function inspectPublication(value: unknown): PublicationSettings {
           typeof current !== typeof fallback ||
           (typeof current === "number" && !Number.isFinite(current))
         )
-          throw new Error(field + " 的类型或取值无效。");
+          throw new Error(field + t(" 的类型或取值无效。"));
         if (
           typeof current === "string" &&
           (current.length > 16000 ||
@@ -212,7 +213,7 @@ export function inspectPublication(value: unknown): PublicationSettings {
                 char.charCodeAt(0) === 127,
             ))
         )
-          throw new Error(field + " 含禁止字符或过长。");
+          throw new Error(field + t(" 含禁止字符或过长。"));
         if (
           typeof current === "string" &&
           [...current].some((char) => {
@@ -224,7 +225,7 @@ export function inspectPublication(value: unknown): PublicationSettings {
             );
           })
         )
-          throw new Error(field + " 包含无效的 Unicode 字符。");
+          throw new Error(field + t(" 包含无效的 Unicode 字符。"));
         result[key] = current;
       }
     }
@@ -236,25 +237,27 @@ export function inspectPublication(value: unknown): PublicationSettings {
     "publication",
   ) as unknown as PublicationSettings;
   if (result.version !== 1)
-    throw new Error("不支持此版本的导出配置，请升级应用。");
+    throw new Error(t("不支持此版本的导出配置，请升级应用。"));
   const { pdf, epub, metadata } = result;
   if (
     !metadata.title.trim() ||
     !/^[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*$/.test(metadata.language)
   )
-    throw new Error("作品标题和有效的 BCP 47 语言标记为必填项。");
+    throw new Error(t("作品标题和有效的 BCP 47 语言标记为必填项。"));
   if (
     metadata.identifier &&
     !/^[a-z][a-z0-9+.-]*:\S+$/i.test(metadata.identifier)
   )
-    throw new Error("出版物标识须为 URI，例如 urn:uuid:… 或 urn:isbn:…。");
+    throw new Error(t("出版物标识须为 URI，例如 urn:uuid:… 或 urn:isbn:…。"));
   if (
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(metadata.modified) ||
     !Number.isFinite(Date.parse(metadata.modified)) ||
     new Date(metadata.modified).toISOString().replace(".000Z", "Z") !==
       metadata.modified
   )
-    throw new Error("出版日期须为有效的 UTC 时间，例如 2026-11-04T00:00:00Z。");
+    throw new Error(
+      t("出版日期须为有效的 UTC 时间，例如 2026-11-04T00:00:00Z。"),
+    );
   if (
     (pdf.page_width !== undefined &&
       (pdf.page_width < 96 || pdf.page_width > 14400)) ||
@@ -268,31 +271,33 @@ export function inspectPublication(value: unknown): PublicationSettings {
     pdf.first_page_number < 1 ||
     pdf.first_page_number > 100000
   )
-    throw new Error("PDF 纸张尺寸、缩放、页码或页眉字号超出支持范围。");
+    throw new Error(t("PDF 纸张尺寸、缩放、页码或页眉字号超出支持范围。"));
   if (
     !["none", "page", "right"].includes(pdf.chapter_break) ||
     !["reflowable", "pre-paginated"].includes(epub.layout) ||
     !["ltr", "rtl"].includes(epub.direction)
   )
-    throw new Error("无效的分页、EPUB 布局或阅读方向。");
+    throw new Error(t("无效的分页、EPUB 布局或阅读方向。"));
   if (pdf.font_sha256 && !/^[0-9a-f]{64}$/.test(pdf.font_sha256))
-    throw new Error("字体 SHA-256 无效。");
+    throw new Error(t("字体 SHA-256 无效。"));
   if (
     pdf.page_ranges &&
     !/^\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*$/.test(pdf.page_ranges)
   )
-    throw new Error("页码范围格式须为 1-3,5。");
+    throw new Error(t("页码范围格式须为 1-3,5。"));
   let previous = 0;
   for (const group of pdf.page_ranges.split(",").filter(Boolean)) {
     const [start, end = start] = group.trim().split("-").map(Number);
     if (start <= previous || end < start || end > 100000)
-      throw new Error("页码范围须为递增且不重叠的正整数范围。");
+      throw new Error(t("页码范围须为递增且不重叠的正整数范围。"));
     previous = end;
   }
   for (const text of [pdf.header, pdf.footer])
     if (text.replace(/\{(?:title|author|page|pages)\}/g, "").match(/[{}\r\n]/))
       throw new Error(
-        "页眉页脚仅支持单行文字和 {title}、{author}、{page}、{pages} 占位符。",
+        t(
+          "页眉页脚仅支持单行文字和 {title}、{author}、{page}、{pages} 占位符。",
+        ),
       );
   return result;
 }

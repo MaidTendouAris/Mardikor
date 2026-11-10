@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useId, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Check, ChevronDown } from "lucide-react";
@@ -96,7 +97,7 @@ export function FontCombobox({
           />
           <button
             type="button"
-            aria-label="选择字体"
+            aria-label={t("选择字体")}
             disabled={disabled}
             aria-expanded={open && !disabled}
             onMouseDown={(event) => event.preventDefault()}
@@ -118,7 +119,7 @@ export function FontCombobox({
           ref={list}
           role="listbox"
           id={listId}
-          aria-label="字体建议"
+          aria-label={t("字体建议")}
           className="select-content font-options"
           align="start"
           sideOffset={4}
@@ -148,7 +149,9 @@ export function FontCombobox({
             </div>
           ))}
           {!choices.length && (
-            <div className="select-empty">无匹配项，可直接输入字体名称</div>
+            <div className="select-empty">
+              {t("无匹配项，可直接输入字体名称")}
+            </div>
           )}
         </Popover.Content>
       </Popover.Portal>

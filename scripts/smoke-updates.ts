@@ -81,7 +81,19 @@ try {
       scope.updateQa.checks++;
       client.emit("update-available", {
         version: "0.1.1",
-        releaseNotes: "测试版本说明 <script>window.testUnsafe = true</script>",
+        releaseNotes:
+          scope.updateQa.checks === 1
+            ? [
+                "## 测试版本说明",
+                "",
+                "- **更新**与 `命令`",
+                "- [项目文档](/MaidTendouAris/Mardikor#readme)",
+                "",
+                "<script>window.testUnsafe = true</script>",
+              ].join("\n")
+            : '<h2>订阅源说明</h2><ul><li><em>更新</em></li></ul>' +
+              '<a href="javascript:window.testUnsafe=true" onclick="window.testUnsafe=true">不安全链接</a>' +
+              '<img src="https://example.invalid/image.png"><script>window.testUnsafe=true</script>',
       });
       return { updateInfo: { version: "0.1.1" } };
     };
@@ -132,6 +144,24 @@ try {
   ).toBeVisible();
   expect((await counts()).downloads).toBe(0);
   expect((await counts()).installs).toBe(0);
+  await first.getByText("版本说明", { exact: true }).click();
+  const notes = first.locator(".update-notes-content");
+  await expect(notes.getByRole("heading", { name: "测试版本说明" })).toBeVisible();
+  await expect(notes.locator("li strong")).toHaveText("更新");
+  await expect(notes.locator("li code")).toHaveText("命令");
+  await expect(notes.getByRole("link", { name: "项目文档" })).toHaveAttribute(
+    "href",
+    "https://github.com/MaidTendouAris/Mardikor#readme",
+  );
+  await expect(notes.locator("script")).toHaveCount(0);
+  await first.getByRole("button", { name: "立即检查更新", exact: true }).click();
+  await expect(notes.locator("h2")).toHaveText("订阅源说明");
+  if ((await first.locator(".update-settings .update-notes").getAttribute("open")) === null)
+    await first.getByText("版本说明", { exact: true }).click();
+  await expect(notes.getByRole("heading", { name: "订阅源说明" })).toBeVisible();
+  await expect(notes.locator("li em")).toHaveText("更新");
+  await expect(notes.locator("a")).toHaveText("不安全链接");
+  await expect(notes.locator("[href], [onclick], img, script")).toHaveCount(0);
   expect(
     await first.evaluate(
       () => (window as unknown as { testUnsafe?: boolean }).testUnsafe,

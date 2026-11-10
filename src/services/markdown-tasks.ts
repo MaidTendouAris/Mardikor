@@ -1,3 +1,4 @@
+import { appLocale, t } from "../../shared/i18n";
 import { useEffect, useState } from "react";
 import { markdownHeadings, type MarkdownHeading } from "../../shared/markdown";
 import { previewTextLimit } from "./document-size";
@@ -15,6 +16,13 @@ export function markdownTask<T>(
 ) {
   let cancelled = false;
   let worker: Worker | undefined;
+  const dispose = () => {
+    if (!worker) return;
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.terminate();
+    worker = undefined;
+  };
   const entry =
     task.kind === "preview" && mayContainMath(task.args[0])
       ? import("./markdown-math.worker?worker&inline")
@@ -24,22 +32,23 @@ export function markdownTask<T>(
       if (cancelled) return;
       worker = new MarkdownWorker();
       worker.onmessage = ({ data }) => {
-        worker?.terminate();
+        dispose();
+        if (cancelled) return;
         if (data.error) failure(data.error);
         else result(data.result);
       };
       worker.onerror = (event) => {
-        worker?.terminate();
-        failure(event.message || "Markdown 处理失败。");
+        dispose();
+        if (!cancelled) failure(event.message || t("Markdown 处理失败。"));
       };
-      worker.postMessage(task);
+      worker.postMessage({ ...task, locale: appLocale() });
     })
     .catch((error) => {
       if (!cancelled) failure(String(error));
     });
   return () => {
     cancelled = true;
-    worker?.terminate();
+    dispose();
   };
 }
 

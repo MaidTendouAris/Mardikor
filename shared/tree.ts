@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { MdkEntry, ProjectFile } from "./mdk";
 import { comparePosition } from "./outline";
 
@@ -77,18 +78,18 @@ export function moveOutline(
   };
   const source = locate(roots, (n) => n.entry?.id === sourceId),
     target = locate(roots, (n) => n.position === targetPosition);
-  if (!source || !target) throw new Error("目录项不存在。");
+  if (!source || !target) throw new Error(t("目录项不存在。"));
   if (
     source.node === target.node ||
     target.node.position.startsWith(source.node.position + ".")
   )
-    throw new Error("不能将文稿移入自身或其子目录。");
+    throw new Error(t("不能将文稿移入自身或其子目录。"));
   const height = (node: OutlineNode): number =>
     1 + Math.max(0, ...node.children.map(height));
   const depth =
     target.node.position.split(".").length + (placement === "inside" ? 1 : 0);
   if (depth + height(source.node) - 1 > 6)
-    throw new Error("目录最多允许 6 层。");
+    throw new Error(t("目录最多允许 6 层。"));
   source.siblings.splice(source.siblings.indexOf(source.node), 1);
   const destination =
     placement === "inside" ? target.node.children : target.siblings;
@@ -109,7 +110,7 @@ export function adjustOutline(
   action: "up" | "down" | "indent" | "outdent",
 ): MdkEntry[] {
   const entry = entries.find((e) => e.id === id);
-  if (!entry) throw new Error("目录项不存在。");
+  if (!entry) throw new Error(t("目录项不存在。"));
   const parent = entry.position.split(".").slice(0, -1).join(".");
   const siblings = [...entries]
     .filter((e) => e.position.split(".").slice(0, -1).join(".") === parent)
@@ -142,7 +143,7 @@ export function moveOutlineToIndex(
     }
   };
   const siblings = parentPosition ? find(roots)?.children : roots;
-  if (!siblings) throw new Error("父目录不存在。");
+  if (!siblings) throw new Error(t("父目录不存在。"));
   const oldIndex = siblings.findIndex((n) => n.entry?.id === id);
   const remaining = siblings.filter((n) => n.entry?.id !== id);
   const nextIndex = Math.max(

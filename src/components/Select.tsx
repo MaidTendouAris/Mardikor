@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import {
   Children,
   Fragment,
@@ -93,7 +94,7 @@ export function Select({
         data-value={value}
         ref={trigger}
       >
-        <Primitive.Value placeholder={placeholder ?? "请选择…"} />
+        <Primitive.Value placeholder={placeholder ?? t("请选择…")} />
         <Primitive.Icon className="select-chevron">
           <ChevronDown size={14} />
         </Primitive.Icon>
@@ -145,7 +146,7 @@ export function Select({
             ))}
             {!options.some((group) =>
               group.items.some((item) => item.value !== ""),
-            ) && <div className="select-empty">暂无可选项</div>}
+            ) && <div className="select-empty">{t("暂无可选项")}</div>}
           </Primitive.Viewport>
           <Primitive.ScrollDownButton className="select-scroll-button">
             <ChevronDown size={13} />

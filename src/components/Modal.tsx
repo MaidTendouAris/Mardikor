@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
@@ -46,7 +47,7 @@ export function Modal({
           <button
             type="button"
             className="icon-button"
-            aria-label="取消"
+            aria-label={t("取消")}
             onClick={() => finish(null)}
           >
             <X size={18} />
@@ -63,14 +64,14 @@ export function Modal({
         )}
         <div className="modal-actions">
           <button type="button" className="button" onClick={() => finish(null)}>
-            取消
+            {t("取消")}
           </button>
           <button
             className={`button ${request.danger ? "danger" : "primary"}`}
             type="submit"
             disabled={request.input && !value.trim()}
           >
-            {request.confirm ?? "确定"}
+            {request.confirm ?? t("确定")}
           </button>
         </div>
       </form>

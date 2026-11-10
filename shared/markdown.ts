@@ -39,7 +39,6 @@ export function requiresSourceMode(value: string) {
   if (env.footnotes || (env.references && Object.keys(env.references).length))
     return true;
   const unsafe = (token: (typeof tokens)[number]): boolean =>
-    token.type === "mdk_container_open" ||
     token.type === "mdk_front_matter" ||
     token.type === "html_block" ||
     token.type === "html_inline" ||

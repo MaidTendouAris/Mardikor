@@ -17,6 +17,7 @@ import { publicationHtml } from "./publication-render";
 import { publicationRasterSize } from "./media";
 import { pdfCjkAliases, restorePdfSourceCharacters } from "./pdf-text";
 import { buildEpub } from "./epub";
+import { t, setAppLocale, type AppLocale } from "../shared/i18n";
 
 type PdfDetails = Pick<
   PreparedPublication,
@@ -46,7 +47,7 @@ async function run(work: PublicationWork) {
           try {
             publicationRasterSize(image.data);
           } catch (error) {
-            throw new Error(image.path + "：" + String(error));
+            throw new Error(image.path + t("：") + String(error));
           }
         }
       },
@@ -128,7 +129,12 @@ async function run(work: PublicationWork) {
   };
 }
 
-void run(deserialize(workerData) as PublicationWork).then(
+const { work, locale } = deserialize(workerData) as {
+  work: PublicationWork;
+  locale: AppLocale;
+};
+setAppLocale(locale);
+void run(work).then(
   (value) => parentPort!.postMessage(serialize(value)),
   (error) => {
     throw error;

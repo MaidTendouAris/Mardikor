@@ -1,3 +1,4 @@
+import { t } from "../shared/i18n";
 export function detectMediaType(data: Buffer): string | undefined {
   const header = data.subarray(0, 64);
   const ascii = header.toString("latin1");
@@ -70,7 +71,7 @@ export function checkMedia(name: string, data: Buffer) {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
   const type = expected[extension];
   if (type && detectMediaType(data) !== type)
-    throw new Error(`资源的扩展名与实际文件格式不一致：${name}`);
+    throw new Error(t("资源的扩展名与实际文件格式不一致：{0}", name));
 }
 export function assertPassiveSvg(data: Buffer) {
   if (
@@ -79,7 +80,7 @@ export function assertPassiveSvg(data: Buffer) {
       data.toString("utf8"),
     )
   )
-    throw new Error("SVG 含活动内容或外部引用，不能插入或预览。");
+    throw new Error(t("SVG 含活动内容或外部引用，不能插入或预览。"));
 }
 
 // Check declared raster dimensions before the native decoder can allocate a
@@ -94,7 +95,7 @@ export function publicationRasterSize(data: Buffer) {
   } else if (type === "image/jpeg") {
     let offset = 2;
     while (offset + 4 <= data.length) {
-      if (data[offset++] !== 0xff) throw new Error("JPEG 标记损坏。");
+      if (data[offset++] !== 0xff) throw new Error(t("JPEG 标记损坏。"));
       while (data[offset] === 0xff) offset++;
       const marker = data[offset++];
       if (marker === 0xd9 || marker === 0xda) break;
@@ -102,14 +103,14 @@ export function publicationRasterSize(data: Buffer) {
       if (offset + 2 > data.length) break;
       const length = data.readUInt16BE(offset);
       if (length < 2 || offset + length > data.length)
-        throw new Error("JPEG 数据被截断。");
+        throw new Error(t("JPEG 数据被截断。"));
       if (
         [
           0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd,
           0xce, 0xcf,
         ].includes(marker)
       ) {
-        if (length < 8) throw new Error("JPEG 尺寸段损坏。");
+        if (length < 8) throw new Error(t("JPEG 尺寸段损坏。"));
         height = data.readUInt16BE(offset + 3);
         width = data.readUInt16BE(offset + 5);
         break;
@@ -118,17 +119,17 @@ export function publicationRasterSize(data: Buffer) {
     }
   }
   if (!width || !height || width * height > 40000000)
-    throw new Error("图片尺寸无效或超过四千万像素，未进行解码。");
+    throw new Error(t("图片尺寸无效或超过四千万像素，未进行解码。"));
   if (type === "image/png") {
     let offset = 8;
     while (offset + 12 <= data.length) {
       const length = data.readUInt32BE(offset),
         chunk = data.toString("ascii", offset + 4, offset + 8);
       if (offset + length + 12 > data.length)
-        throw new Error("PNG 数据被截断。");
+        throw new Error(t("PNG 数据被截断。"));
       if (["acTL", "fcTL", "fdAT"].includes(chunk))
         throw new Error(
-          "动画 PNG 不能保证固定帧导出，请转换为静态 PNG 或 JPEG。",
+          t("动画 PNG 不能保证固定帧导出，请转换为静态 PNG 或 JPEG。"),
         );
       offset += length + 12;
       if (chunk === "IEND") break;

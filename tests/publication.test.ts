@@ -167,7 +167,7 @@ test("SVG validation rejects active elements hidden behind an XML namespace pref
     ),
   );
 });
-test("portable settings embed the exact font, retain unknown TOML and remain valid MDK v1", () => {
+test("portable settings pin the bundled font without copying it and retain unknown TOML", () => {
   const { file } = fixture();
   const value = parseToml(mdk.readMdkTextFile(file, "settings.toml").content);
   value.vendor = { keep: "untouched" };
@@ -175,7 +175,7 @@ test("portable settings embed the exact font, retain unknown TOML and remain val
   value.extensions = { other_vendor: { exact: 9007199254740993n } };
   mdk.saveMdkTextFile(file, "settings.toml", stringifyToml(value));
   const info = configure(file);
-  assert.equal(info.configuration.appearance.font_family, bundledFontPath);
+  assert.equal(info.configuration.appearance.font_family, "system");
   assert.equal(info.configuration.publication.pdf.font_sha256, bundledFontHash);
   assert.equal(info.configuration.publication.pdf.engine, runtime.engine);
   assert.ok(
@@ -184,7 +184,18 @@ test("portable settings embed the exact font, retain unknown TOML and remain val
   const saved = parseToml(mdk.readMdkTextFile(file, "settings.toml").content);
   assert.equal((saved.vendor as Table).keep, "untouched");
   assert.equal((saved.appearance as Table).vendor_integer, 9007199254740993n);
-  assert.doesNotThrow(() => preparePublication(file, "pdf", runtime));
+  assert.ok(
+    !mdk
+      .openMdkProject(file)
+      .files.some((item) => item.path === bundledFontPath),
+  );
+  assert.ok(fs.statSync(file).size < 100_000);
+  assert.equal(
+    preparePublication(file, "pdf", runtime).issues.filter(
+      (issue) => issue.severity === "error",
+    ).length,
+    0,
+  );
   assert.equal(
     ((saved.extensions as Table).other_vendor as Table).exact,
     9007199254740993n,
@@ -197,6 +208,41 @@ test("portable settings embed the exact font, retain unknown TOML and remain val
     publicationInfo(file, runtime).configuration.publication.pdf.font_sha256,
     bundledFontHash,
   );
+});
+test("PDF and EPUB render inline and aligned block math and reject invalid formulas", async () => {
+  const { file } = fixture();
+  mdk.saveMdkTextFile(
+    file,
+    "markdown/001.md",
+    "# 公式\n\n能量 $E=mc^2$，字面量 `$a+b$`。\n\n$$\n\\begin{aligned}a&=\\frac{1}{2}\\\\b&=\\sqrt{2}\\end{aligned}\n$$\n\n$x=\\text{物理常数}$",
+  );
+  configure(file);
+  const pdf = preparePublication(file, "pdf", runtime);
+  assert.deepEqual(
+    pdf.issues.filter((issue) => issue.severity === "error"),
+    [],
+  );
+  assert.match(publicationHtml(pdf), /math\/katex.min.css/);
+  assert.match(pdf.chapters[0].html, /class="katex-html"/);
+  assert.match(pdf.fontText, /物理常数/);
+  assert.doesNotMatch(pdf.chapters[0].html, /\$E=mc\^2\$/);
+  const epub = await buildEpub(preparePublication(file, "epub", runtime));
+  const zip = new AdmZip(epub);
+  assert.match(zip.readAsText("EPUB/package.opf"), /properties="mathml"/);
+  const chapter = zip.readAsText("EPUB/chapter-0001.xhtml");
+  assert.match(chapter, /<msup>/);
+  assert.match(chapter, /display="block"[\s\S]*<mtable/);
+  assert.match(chapter, /<code>\$a\+b\$<\/code>/);
+  mdk.saveMdkTextFile(file, "markdown/001.md", "$\\unknownMacro$");
+  for (const format of ["pdf", "epub"] as const) {
+    const result = await planPublication(file, format, runtime);
+    assert.ok(
+      result.report.issues.some(
+        ({ code, path }) => code === "E_MATH" && path === "markdown/001.md",
+      ),
+    );
+    assert.equal(result.report.valid, false);
+  }
 });
 test("book EPUB is deterministic, preserves heading links and escapes XML metadata", async () => {
   const { file } = fixture();

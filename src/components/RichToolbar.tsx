@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import {
@@ -29,6 +30,11 @@ import {
 } from "lucide-react";
 import type { ProjectFile } from "../../shared/mdk";
 import type { EditAction } from "../../shared/desktop";
+import {
+  formattingShortcuts,
+  shortcutKey,
+  type ShortcutOverrides,
+} from "../../shared/shortcuts";
 import { resolveReference } from "../../shared/references";
 import {
   markdownInsertion,
@@ -49,6 +55,7 @@ interface ToolForm {
 }
 interface Props {
   editor: Editor | null;
+  shortcutOverrides?: ShortcutOverrides;
   disabled: boolean;
   sourceEditable: boolean;
   sourceText: string;
@@ -69,6 +76,7 @@ function relativeResource(from: string, to: string) {
 }
 export function RichToolbar({
   editor,
+  shortcutOverrides,
   disabled,
   sourceEditable,
   sourceText,
@@ -78,6 +86,11 @@ export function RichToolbar({
   onImport,
   onSourceInsert,
 }: Props) {
+  const formattingKey = (id: (typeof formattingShortcuts)[number]["id"]) =>
+    shortcutKey(
+      formattingShortcuts.find((item) => item.id === id)!,
+      shortcutOverrides,
+    ) ?? undefined;
   useEditorState({
     editor,
     selector: ({ editor }) =>
@@ -298,7 +311,7 @@ export function RichToolbar({
             "unsafe"
         )
           throw new Error(
-            "请输入有效的 HTTP(S)、mailto、片段或工程内相对地址。",
+            t("请输入有效的 HTTP(S)、mailto、片段或工程内相对地址。"),
           );
         if (form.kind === "link") {
           const attrs = { href: url, title: v.title || null };
@@ -344,7 +357,7 @@ export function RichToolbar({
           cols < 1 ||
           cols > 20
         )
-          throw new Error("表格行数须为 1–100，列数须为 1–20。");
+          throw new Error(t("表格行数须为 1–100，列数须为 1–20。"));
         editor
           .chain()
           .focus()
@@ -352,7 +365,7 @@ export function RichToolbar({
           .run();
       } else {
         if (/[\r\n`]/.test(v.language))
-          throw new Error("代码语言不能包含换行或反引号。");
+          throw new Error(t("代码语言不能包含换行或反引号。"));
         const node = {
           type: "codeBlock",
           attrs: { language: v.language || null },
@@ -371,37 +384,37 @@ export function RichToolbar({
     ? [
         {
           id: "row-before",
-          label: "上方插入行",
+          label: t("上方插入行"),
           run: () => editor.chain().focus().addRowBefore().run(),
         },
         {
           id: "row-after",
-          label: "下方插入行",
+          label: t("下方插入行"),
           run: () => editor.chain().focus().addRowAfter().run(),
         },
         {
           id: "column-before",
-          label: "左侧插入列",
+          label: t("左侧插入列"),
           run: () => editor.chain().focus().addColumnBefore().run(),
         },
         {
           id: "column-after",
-          label: "右侧插入列",
+          label: t("右侧插入列"),
           run: () => editor.chain().focus().addColumnAfter().run(),
         },
         {
           id: "row-delete",
-          label: "删除当前行",
+          label: t("删除当前行"),
           run: () => editor.chain().focus().deleteRow().run(),
         },
         {
           id: "column-delete",
-          label: "删除当前列",
+          label: t("删除当前列"),
           run: () => editor.chain().focus().deleteColumn().run(),
         },
         {
           id: "table-delete",
-          label: "删除表格",
+          label: t("删除表格"),
           run: () => editor.chain().focus().deleteTable().run(),
         },
       ]
@@ -410,21 +423,21 @@ export function RichToolbar({
     ? [
         {
           id: "undo",
-          label: "撤销",
+          label: t("撤销"),
           shortcut: "Ctrl+Z",
           disabled: disabled || !editor.can().undo(),
           run: () => editor.chain().focus().undo().run(),
         },
         {
           id: "redo",
-          label: "重做",
+          label: t("重做"),
           shortcut: "Ctrl+Y",
           disabled: disabled || !editor.can().redo(),
           run: () => editor.chain().focus().redo().run(),
         },
         {
           id: "cut",
-          label: "剪切",
+          label: t("剪切"),
           shortcut: "Ctrl+X",
           separator: true,
           disabled: disabled || !hasSelection,
@@ -432,40 +445,40 @@ export function RichToolbar({
         },
         {
           id: "copy",
-          label: "复制",
+          label: t("复制"),
           shortcut: "Ctrl+C",
           disabled: !hasSelection,
           run: () => safe(() => native("copy")),
         },
         {
           id: "copy-markdown",
-          label: "复制为 Markdown",
+          label: t("复制为 Markdown"),
           disabled: !hasSelection,
           run: () => safe(copyMarkdown),
         },
         {
           id: "paste",
-          label: "粘贴",
+          label: t("粘贴"),
           shortcut: "Ctrl+V",
           disabled,
           run: () => safe(() => native("paste")),
         },
         {
           id: "paste-text",
-          label: "粘贴纯文本",
+          label: t("粘贴纯文本"),
           shortcut: "Ctrl+Shift+V",
           disabled,
           run: () => safe(() => native("paste-text")),
         },
         {
           id: "select-all",
-          label: "全选",
+          label: t("全选"),
           shortcut: "Ctrl+A",
           run: () => editor.chain().focus().selectAll().run(),
         },
         {
           id: "link",
-          label: editor.isActive("link") ? "编辑链接" : "插入链接",
+          label: editor.isActive("link") ? t("编辑链接") : t("插入链接"),
           separator: true,
           disabled,
           run: () => open("link"),
@@ -474,7 +487,7 @@ export function RichToolbar({
           ? [
               {
                 id: "unlink",
-                label: "移除链接",
+                label: t("移除链接"),
                 disabled,
                 run: () =>
                   editor
@@ -488,13 +501,13 @@ export function RichToolbar({
           : []),
         {
           id: "image",
-          label: editor.isActive("image") ? "编辑图片" : "插入图片",
+          label: editor.isActive("image") ? t("编辑图片") : t("插入图片"),
           disabled,
           run: () => open("image"),
         },
         {
           id: "import",
-          label: "导入本地资源",
+          label: t("导入本地资源"),
           disabled,
           run: () => safe(onImport),
         },
@@ -503,14 +516,14 @@ export function RichToolbar({
           : [
               {
                 id: "table",
-                label: "插入表格",
+                label: t("插入表格"),
                 disabled: blockDisabled,
                 run: () => open("table"),
               },
             ]),
         {
           id: "clear",
-          label: "清除格式",
+          label: t("清除格式"),
           separator: true,
           disabled,
           run: () => clearFormatting(),
@@ -547,14 +560,14 @@ export function RichToolbar({
       <div
         className="format-toolbar markdown-ribbon"
         role="toolbar"
-        aria-label="正文格式"
+        aria-label={t("正文格式")}
       >
         {editor && (
           <>
-            <section className="ribbon-group" aria-label="编辑工具">
+            <section className="ribbon-group" aria-label={t("编辑工具")}>
               <div>
                 {tool(
-                  "撤销",
+                  t("撤销"),
                   Undo2,
                   () => editor.chain().focus().undo().run(),
                   false,
@@ -562,7 +575,7 @@ export function RichToolbar({
                   "Ctrl+Z",
                 )}
                 {tool(
-                  "重做",
+                  t("重做"),
                   Redo2,
                   () => editor.chain().focus().redo().run(),
                   false,
@@ -570,7 +583,7 @@ export function RichToolbar({
                   "Ctrl+Y",
                 )}
                 {tool(
-                  "剪切",
+                  t("剪切"),
                   Scissors,
                   () => native("cut"),
                   false,
@@ -578,7 +591,7 @@ export function RichToolbar({
                   "Ctrl+X",
                 )}
                 {tool(
-                  "复制",
+                  t("复制"),
                   Copy,
                   () => native("copy"),
                   false,
@@ -586,7 +599,7 @@ export function RichToolbar({
                   "Ctrl+C",
                 )}
                 {tool(
-                  "粘贴",
+                  t("粘贴"),
                   Clipboard,
                   () => native("paste"),
                   false,
@@ -594,12 +607,12 @@ export function RichToolbar({
                   "Ctrl+V",
                 )}
               </div>
-              <small>编辑</small>
+              <small>{t("编辑")}</small>
             </section>
-            <section className="ribbon-group" aria-label="文本工具">
+            <section className="ribbon-group" aria-label={t("文本工具")}>
               <div>
                 <Select
-                  aria-label="段落样式"
+                  aria-label={t("段落样式")}
                   disabled={blockDisabled}
                   value={
                     editor.isActive("heading")
@@ -619,77 +632,85 @@ export function RichToolbar({
                           .run()
                   }
                 >
-                  <option value="0">正文</option>
+                  <option value="0">{t("正文")}</option>
                   {[1, 2, 3, 4, 5, 6].map((level) => (
                     <option key={level} value={level}>
-                      标题 {level}
+                      {t("标题")} {level}
                     </option>
                   ))}
                 </Select>
                 {tool(
-                  "加粗",
+                  t("加粗"),
                   Bold,
                   () => editor.chain().focus().toggleBold().run(),
                   editor.isActive("bold"),
                   disabled,
-                  "Ctrl+B",
+                  formattingKey("bold"),
                 )}
                 {tool(
-                  "斜体",
+                  t("斜体"),
                   Italic,
                   () => editor.chain().focus().toggleItalic().run(),
                   editor.isActive("italic"),
                   disabled,
-                  "Ctrl+I",
+                  formattingKey("italic"),
                 )}
                 {tool(
-                  "删除线",
+                  t("删除线"),
                   Strikethrough,
                   () => editor.chain().focus().toggleStrike().run(),
                   editor.isActive("strike"),
+                  disabled,
+                  formattingKey("strike"),
                 )}
                 {tool(
-                  "行内代码",
+                  t("行内代码"),
                   Code2,
                   () => editor.chain().focus().toggleCode().run(),
                   editor.isActive("code"),
+                  disabled,
+                  formattingKey("inlineCode"),
                 )}
-                {tool("清除格式", RemoveFormatting, () => clearFormatting())}
+                {tool(t("清除格式"), RemoveFormatting, () => clearFormatting())}
               </div>
-              <small>文本</small>
+              <small>{t("文本")}</small>
             </section>
-            <section className="ribbon-group" aria-label="段落工具">
+            <section className="ribbon-group" aria-label={t("段落工具")}>
               <div>
                 {tool(
-                  "无序列表",
+                  t("无序列表"),
                   List,
                   () => editor.chain().focus().toggleBulletList().run(),
                   editor.isActive("bulletList"),
                   blockDisabled,
+                  formattingKey("bulletList"),
                 )}
                 {tool(
-                  "有序列表",
+                  t("有序列表"),
                   ListOrdered,
                   () => editor.chain().focus().toggleOrderedList().run(),
                   editor.isActive("orderedList"),
                   blockDisabled,
+                  formattingKey("orderedList"),
                 )}
                 {tool(
-                  "任务列表",
+                  t("任务列表"),
                   ListTodo,
                   () => editor.chain().focus().toggleTaskList().run(),
                   editor.isActive("taskList"),
                   blockDisabled,
+                  formattingKey("taskList"),
                 )}
                 {tool(
-                  "引用",
+                  t("引用"),
                   Quote,
                   () => editor.chain().focus().toggleBlockquote().run(),
                   editor.isActive("blockquote"),
                   blockDisabled,
+                  formattingKey("quote"),
                 )}
                 {tool(
-                  "增加列表层级",
+                  t("增加列表层级"),
                   IndentIncrease,
                   () =>
                     editor
@@ -708,7 +729,7 @@ export function RichToolbar({
                       ),
                 )}
                 {tool(
-                  "减少列表层级",
+                  t("减少列表层级"),
                   IndentDecrease,
                   () =>
                     editor
@@ -727,18 +748,18 @@ export function RichToolbar({
                       ),
                 )}
               </div>
-              <small>段落</small>
+              <small>{t("段落")}</small>
             </section>
-            <section className="ribbon-group" aria-label="插入工具">
+            <section className="ribbon-group" aria-label={t("插入工具")}>
               <div>
                 {tool(
-                  "插入链接",
+                  t("插入链接"),
                   Link,
                   () => open("link"),
                   editor.isActive("link"),
                 )}
                 {tool(
-                  "移除链接",
+                  t("移除链接"),
                   Unlink,
                   () =>
                     editor
@@ -751,56 +772,58 @@ export function RichToolbar({
                   disabled || !editor.isActive("link"),
                 )}
                 {tool(
-                  "插入图片",
+                  t("插入图片"),
                   Image,
                   () => open("image"),
                   editor.isActive("image"),
                 )}
-                {tool("导入本地资源", FileUp, onImport)}
+                {tool(t("导入本地资源"), FileUp, onImport)}
                 {tool(
-                  "插入表格",
+                  t("插入表格"),
                   Table2,
                   () => open("table"),
                   table,
                   blockDisabled,
                 )}
                 {tool(
-                  "代码块",
+                  t("代码块"),
                   SquareCode,
                   () => open("code"),
                   editor.isActive("codeBlock"),
                   blockDisabled,
+                  formattingKey("codeBlock"),
                 )}
                 {tool(
-                  "分隔线",
+                  t("分隔线"),
                   Minus,
                   () => editor.chain().focus().setHorizontalRule().run(),
                   false,
                   blockDisabled,
+                  formattingKey("rule"),
                 )}
                 {tool(
-                  "硬换行",
+                  t("硬换行"),
                   WrapText,
                   () => editor.chain().focus().setHardBreak().run(),
                   false,
                   blockDisabled,
                 )}
                 {tool(
-                  "Markdown 语法",
+                  t("Markdown 语法"),
                   BookOpen,
                   () => open("syntax"),
                   false,
                   false,
                 )}
               </div>
-              <small>插入</small>
+              <small>{t("插入")}</small>
             </section>
           </>
         )}
       </div>
       {table && (
-        <div className="table-ribbon" role="toolbar" aria-label="表格工具">
-          <small>GFM 表格</small>
+        <div className="table-ribbon" role="toolbar" aria-label={t("表格工具")}>
+          <small>{t("GFM 表格")}</small>
           {tableActions.map((action) => (
             <button
               className="button small"
@@ -813,7 +836,7 @@ export function RichToolbar({
             </button>
           ))}
           <Select
-            aria-label="表格列对齐"
+            aria-label={t("表格列对齐")}
             disabled={disabled}
             value=""
             onCloseFocus={() => editor!.commands.focus()}
@@ -828,12 +851,12 @@ export function RichToolbar({
             }}
           >
             <option value="" disabled>
-              列对齐
+              {t("列对齐")}
             </option>
-            <option value="left">左对齐</option>
-            <option value="center">居中</option>
-            <option value="right">右对齐</option>
-            <option value="default">默认对齐</option>
+            <option value="left">{t("左对齐")}</option>
+            <option value="center">{t("居中")}</option>
+            <option value="right">{t("右对齐")}</option>
+            <option value="default">{t("默认对齐")}</option>
           </Select>
         </div>
       )}
@@ -842,14 +865,14 @@ export function RichToolbar({
         <EditorDialog
           title={
             form.kind === "link"
-              ? "链接"
+              ? t("链接")
               : form.kind === "image"
-                ? "图片"
+                ? t("图片")
                 : form.kind === "table"
-                  ? "插入表格"
+                  ? t("插入表格")
                   : form.kind === "code"
-                    ? "代码块"
-                    : "Markdown 语法"
+                    ? t("代码块")
+                    : t("Markdown 语法")
           }
           onClose={closeForm}
         >
@@ -857,9 +880,9 @@ export function RichToolbar({
             {form.kind === "syntax" ? (
               <>
                 <label>
-                  语法
+                  {t("语法")}
                   <Select
-                    aria-label="Markdown 语法类型"
+                    aria-label={t("Markdown 语法类型")}
                     value={form.values.syntax}
                     onValueChange={(value) => values("syntax", value)}
                   >
@@ -882,15 +905,15 @@ export function RichToolbar({
                 {(selectedSyntax?.sourceOnly ||
                   requiresSourceMode(sourceText)) && (
                   <p className="field-hint">
-                    插入后切换到源码编辑，以保留此语法的完整写法。
+                    {t("插入后切换到源码编辑，以保留此语法的完整写法。")}
                   </p>
                 )}
               </>
             ) : form.kind === "table" ? (
               <div className="editor-dialog-grid">
                 {[
-                  ["rows", "行数"],
-                  ["cols", "列数"],
+                  ["rows", t("行数")],
+                  ["cols", t("列数")],
                 ].map(([key, label]) => (
                   <label key={key}>
                     {label}
@@ -908,18 +931,18 @@ export function RichToolbar({
             ) : form.kind === "code" ? (
               <>
                 <label>
-                  代码语言
+                  {t("代码语言")}
                   <input
-                    aria-label="代码语言"
+                    aria-label={t("代码语言")}
                     value={form.values.language}
                     placeholder="text、javascript、python…"
                     onChange={(e) => values("language", e.target.value)}
                   />
                 </label>
                 <label>
-                  代码
+                  {t("代码")}
                   <textarea
-                    aria-label="代码内容"
+                    aria-label={t("代码内容")}
                     rows={9}
                     value={form.values.code}
                     onChange={(e) => values("code", e.target.value)}
@@ -929,26 +952,28 @@ export function RichToolbar({
             ) : (
               <>
                 <label>
-                  {form.kind === "image" ? "图片地址" : "链接地址"}
+                  {form.kind === "image" ? t("图片地址") : t("链接地址")}
                   <input
                     autoFocus
-                    aria-label={form.kind === "image" ? "图片地址" : "链接地址"}
+                    aria-label={
+                      form.kind === "image" ? t("图片地址") : t("链接地址")
+                    }
                     value={form.values.url}
                     onChange={(e) => values("url", e.target.value)}
-                    placeholder="https://… 或工程内相对路径"
+                    placeholder={t("https://… 或工程内相对路径")}
                   />
                 </label>
                 {form.kind === "image" && (
                   <label>
-                    工程图片
+                    {t("工程图片")}
                     <Select
-                      aria-label="工程图片"
+                      aria-label={t("工程图片")}
                       value=""
                       onValueChange={(value) => {
                         values("url", relativeResource(sourcePath, value));
                       }}
                     >
-                      <option value="">选择已导入的图片…</option>
+                      <option value="">{t("选择已导入的图片…")}</option>
                       {files
                         .filter(
                           (file) =>
@@ -964,9 +989,11 @@ export function RichToolbar({
                   </label>
                 )}
                 <label>
-                  {form.kind === "image" ? "图片说明" : "链接文字"}
+                  {form.kind === "image" ? t("图片说明") : t("链接文字")}
                   <input
-                    aria-label={form.kind === "image" ? "图片说明" : "链接文字"}
+                    aria-label={
+                      form.kind === "image" ? t("图片说明") : t("链接文字")
+                    }
                     value={form.values[form.kind === "image" ? "alt" : "label"]}
                     onChange={(e) =>
                       values(
@@ -977,16 +1004,18 @@ export function RichToolbar({
                   />
                 </label>
                 <label>
-                  标题（可选）
+                  {t("标题（可选）")}
                   <input
-                    aria-label="链接或图片标题"
+                    aria-label={t("链接或图片标题")}
                     value={form.values.title}
                     onChange={(e) => values("title", e.target.value)}
                   />
                 </label>
                 {form.kind === "image" && (
                   <p className="field-hint">
-                    本地图片可导入工程；外部图片仅保留引用，不自动联网加载。
+                    {t(
+                      "本地图片可导入工程；外部图片仅保留引用，不自动联网加载。",
+                    )}
                   </p>
                 )}
               </>
@@ -1007,11 +1036,11 @@ export function RichToolbar({
                     safe(onImport);
                   }}
                 >
-                  从文件导入
+                  {t("从文件导入")}
                 </button>
               )}
               <button type="button" className="button" onClick={closeForm}>
-                取消
+                {t("取消")}
               </button>
               <button
                 type="submit"
@@ -1020,9 +1049,9 @@ export function RichToolbar({
               >
                 {form.kind === "syntax"
                   ? selectedSyntax?.sourceOnly || requiresSourceMode(sourceText)
-                    ? "插入并编辑源码"
-                    : "插入"
-                  : "确定"}
+                    ? t("插入并编辑源码")
+                    : t("插入")
+                  : t("确定")}
               </button>
             </div>
           </form>

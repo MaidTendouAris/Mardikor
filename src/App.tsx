@@ -1,3 +1,4 @@
+import { appLocale, t } from "../shared/i18n";
 import {
   useCallback,
   useEffect,
@@ -28,6 +29,7 @@ import { Delivery } from "./views/Delivery";
 import { AppSettings } from "./views/AppSettings";
 import { UpdateNotice, useAppUpdate } from "./components/AppUpdate";
 import type { Preferences, RecentProject } from "../shared/desktop";
+import type { MdkProject } from "../shared/mdk";
 import { isMarkdownFile } from "../shared/workspace";
 import type { EditorTab } from "./services/editor-groups";
 
@@ -38,27 +40,31 @@ export type Notify = (message: string, error?: boolean) => void;
 type Page = "home" | "editor" | "delivery" | "settings";
 
 const modes = [
-  { value: "markdown", title: "单 Markdown 工程" },
+  { value: "markdown", title: t("单 Markdown 工程") },
   {
     value: "00",
-    title: "通用工程",
+    title: t("通用工程"),
   },
   {
     value: "01",
-    title: "书籍工程",
+    title: t("书籍工程"),
   },
   {
     value: "02",
-    title: "漫画工程",
+    title: t("漫画工程"),
   },
 ];
 
 export default function App() {
   const update = useAppUpdate();
   const [page, setPage] = useState<Page>("home");
-  const [currentPath, setCurrentPath] = useState("");
+  const [documentProject, setDocumentProject] = useState<{
+    file: string;
+    project: MdkProject;
+  }>();
+  const currentPath = documentProject?.file ?? "";
   const [generation, setGeneration] = useState(0);
-  const [initialView, setInitialView] = useState<EditorTab>("source");
+  const [initialView, setInitialView] = useState<EditorTab>("preview");
   const [initialFragment, setInitialFragment] = useState<string>();
   const [mode, setMode] = useState("00");
   const [recent, setRecent] = useState<RecentProject[]>([]);
@@ -176,12 +182,12 @@ export default function App() {
   }, [isDirty]);
   async function activate(
     file: string,
-    view: EditorTab = "source",
+    view: EditorTab = "preview",
     fragment?: string,
   ) {
     if (workspace.current && !(await workspace.current.flush())) return;
-    await desktop().invoke("open", file);
-    setCurrentPath(file);
+    const project = await desktop().invoke("open", file);
+    setDocumentProject({ file, project });
     setInitialView(view);
     setInitialFragment(fragment);
     setGeneration((n) => n + 1);
@@ -240,25 +246,25 @@ export default function App() {
     const single = mode === "markdown";
     const file = await desktop().dialog(
       single ? "save-markdown" : "save-project",
-      single ? "未命名.md" : "未命名.mdk",
+      single ? t("未命名.md") : t("未命名.mdk"),
     );
     if (!file) return;
     if (single && !isMarkdownFile(file))
-      throw new Error("单 Markdown 工程请使用 .md 扩展名。");
+      throw new Error(t("单 Markdown 工程请使用 .md 扩展名。"));
     await desktop().invoke("create", file, single ? "00" : mode);
-    await activate(file);
-    notify("工程已创建。");
+    await activate(file, "source");
+    notify(t("工程已创建。"));
   }
   async function packDirectory() {
     if (workspace.current && !(await workspace.current.flush())) return;
     const directory = await desktop().dialog("directory");
     if (!directory) return;
     await desktop().invoke("checkPackDirectory", directory);
-    const output = await desktop().dialog("save-project", "工程.mdk");
+    const output = await desktop().dialog("save-project", t("工程.mdk"));
     if (!output) return;
     await desktop().invoke("pack", directory, output, mode);
     await activate(output);
-    notify("目录已打包为 MDK 工程。");
+    notify(t("目录已打包为 MDK 工程。"));
   }
   async function windowAction(action: "minimize" | "maximize" | "close") {
     setMaximized(await desktop().window(action));
@@ -287,19 +293,19 @@ export default function App() {
           )}
           <div className="window-controls">
             <button
-              aria-label="最小化"
+              aria-label={t("最小化")}
               onClick={() => void run(() => windowAction("minimize"))}
             >
               <Minus size={15} />
             </button>
             <button
-              aria-label={maximized ? "还原" : "最大化"}
+              aria-label={maximized ? t("还原") : t("最大化")}
               onClick={() => void run(() => windowAction("maximize"))}
             >
               <Maximize2 size={13} />
             </button>
             <button
-              aria-label="关闭窗口"
+              aria-label={t("关闭窗口")}
               className="window-close"
               onClick={() => void run(() => windowAction("close"))}
             >
@@ -311,20 +317,20 @@ export default function App() {
           <button
             className="workspace-label"
             onClick={() => setCompact(!compact)}
-            aria-label="收起或展开导航"
+            aria-label={t("收起或展开导航")}
             aria-expanded={!compact}
             aria-controls="primary-navigation"
-            title={compact ? "展开导航" : "收起导航"}
+            title={compact ? t("展开导航") : t("收起导航")}
           >
             <PanelLeft size={16} />
-            <span>导航</span>
+            <span>{t("导航")}</span>
           </button>
-          <nav id="primary-navigation" aria-label="主导航">
+          <nav id="primary-navigation" aria-label={t("主导航")}>
             {(
               [
-                { id: "home", icon: LayoutGrid, title: "工程" },
-                { id: "editor", icon: BookOpen, title: "编辑器" },
-                { id: "delivery", icon: ShieldCheck, title: "校验与导出" },
+                { id: "home", icon: LayoutGrid, title: t("工程") },
+                { id: "editor", icon: BookOpen, title: t("编辑器") },
+                { id: "delivery", icon: ShieldCheck, title: t("校验与导出") },
               ] as const
             ).map((item) => (
               <button
@@ -340,7 +346,7 @@ export default function App() {
             ))}
           </nav>
           <div className="nav-projects" inert={compact} aria-hidden={compact}>
-            <span className="nav-caption">最近使用</span>
+            <span className="nav-caption">{t("最近使用")}</span>
             {recent.slice(0, 5).map((item) => (
               <button
                 title={item.path}
@@ -351,42 +357,44 @@ export default function App() {
                 <span>{item.title}</span>
               </button>
             ))}
-            {!recent.length && <p>暂无记录</p>}
+            {!recent.length && <p>{t("暂无记录")}</p>}
           </div>
           <div className="nav-bottom">
             <button
               className="nav-item"
-              title="打开工程"
+              title={t("打开工程")}
               disabled={busy}
               onClick={() => void run(chooseProject)}
             >
               <FolderOpen size={19} />
-              <span>打开工程</span>
+              <span>{t("打开工程")}</span>
             </button>
             <button
               className={`nav-item ${page === "settings" ? "active" : ""}`}
-              title="应用设置"
+              title={t("应用设置")}
               onClick={() => setPage("settings")}
             >
               <Settings2 size={19} strokeWidth={1.7} />
-              <span>应用设置</span>
+              <span>{t("应用设置")}</span>
             </button>
           </div>
         </aside>
         <main className="main-area">
           {!window.mardikor && (
             <div className="browser-notice">
-              此页面为界面预览。请运行桌面应用以创建、打开和保存本地工程。
+              {t(
+                "此页面为界面预览。请运行桌面应用以创建、打开和保存本地工程。",
+              )}
             </div>
           )}
           {page === "home" && (
             <div className="home-page page-scroll">
               <div className="home-heading">
-                <h1>工程</h1>
+                <h1>{t("工程")}</h1>
               </div>
-              <section className="new-project-panel" aria-label="新建工程">
+              <section className="new-project-panel" aria-label={t("新建工程")}>
                 <fieldset className="mode-options">
-                  <legend>新建工程 · 工程类型</legend>
+                  <legend>{t("新建工程 · 工程类型")}</legend>
                   <div className="mode-options-list">
                     {modes.map((item) => (
                       <label
@@ -415,7 +423,7 @@ export default function App() {
                     disabled={busy || mode === "markdown"}
                     onClick={() => void run(packDirectory)}
                   >
-                    打包已解包的 MDK 目录
+                    {t("打包已解包的 MDK 目录")}
                   </button>
                   <button
                     className="button primary"
@@ -423,26 +431,27 @@ export default function App() {
                     onClick={() => void run(createProject)}
                   >
                     <FilePlus2 size={17} />
-                    创建新工程
+                    {t("创建新工程")}
                   </button>
                 </div>
               </section>
               <div className="section-heading recent-heading">
                 <h2>
-                  最近工程 <span className="count-badge">{recent.length}</span>
+                  {t("最近工程")}{" "}
+                  <span className="count-badge">{recent.length}</span>
                 </h2>
                 <button
                   className="text-button"
                   onClick={() => void run(chooseProject)}
                 >
-                  打开其他工程
+                  {t("打开其他工程")}
                 </button>
               </div>
               <div className="recent-list">
                 <div className="recent-columns" aria-hidden="true">
-                  <span>名称 / 路径</span>
-                  <span>工程类型</span>
-                  <span>修改日期</span>
+                  <span>{t("名称 / 路径")}</span>
+                  <span>{t("工程类型")}</span>
+                  <span>{t("修改日期")}</span>
                   <span />
                 </div>
                 {recent.length ? (
@@ -469,14 +478,16 @@ export default function App() {
                           item.mode}
                       </span>
                       <time>
-                        {new Date(item.updatedAt).toLocaleDateString("zh-CN")}
+                        {new Date(item.updatedAt).toLocaleDateString(
+                          appLocale(),
+                        )}
                       </time>
                       <ChevronRight size={16} />
                     </button>
                   ))
                 ) : (
                   <div className="empty-recent">
-                    <p>暂无最近工程</p>
+                    <p>{t("暂无最近工程")}</p>
                   </div>
                 )}
               </div>
@@ -484,17 +495,28 @@ export default function App() {
           )}
           <div className="workspace-container" hidden={page !== "editor"}>
             <Workspace
-              key={`${currentPath}:${generation}`}
+              key={generation}
               ref={workspace}
               file={currentPath}
+              initialProject={documentProject?.project}
               initialView={initialView}
               initialFragment={initialFragment}
               preferences={preferences}
+              shortcutsEnabled={
+                page === "editor" && !request && update?.phase !== "preparing"
+              }
               theme={theme}
               ask={ask}
               notify={notify}
               onDirty={setIsDirty}
               onOpen={() => void run(chooseProject)}
+              onRename={(file) => {
+                setDocumentProject((current) => current && { ...current, file });
+                void desktop()
+                  .recent()
+                  .then(setRecent)
+                  .catch((error) => notify(String(error), true));
+              }}
               onDeliver={() => setPage("delivery")}
             />
           </div>
@@ -523,7 +545,7 @@ export default function App() {
           <div
             className="progress-line"
             role="progressbar"
-            aria-label="正在处理"
+            aria-label={t("正在处理")}
           />
         )}
         {toast && (
@@ -533,7 +555,7 @@ export default function App() {
           >
             <span>{toast.error ? "!" : <Check size={15} />}</span>
             <p>{toast.text}</p>
-            <button aria-label="关闭提示" onClick={() => setToast(null)}>
+            <button aria-label={t("关闭提示")} onClick={() => setToast(null)}>
               <X size={15} />
             </button>
           </div>
@@ -545,9 +567,9 @@ export default function App() {
         <div
           className="update-preparing"
           role="progressbar"
-          aria-label="正在准备更新"
+          aria-label={t("正在准备更新")}
         >
-          <p>正在处理所有窗口的未保存内容…</p>
+          <p>{t("正在处理所有窗口的未保存内容…")}</p>
         </div>
       )}
     </>

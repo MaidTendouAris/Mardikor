@@ -23,7 +23,7 @@ await fs.writeFile(
 const environment = {
   ...process.env,
   MARDIKOR_USER_DATA: userData,
-  MARDIKOR_HEADLESS: "1",
+  MARDIKOR_HEADLESS: packaged ? "offscreen" : "1",
 };
 delete environment.ELECTRON_RUN_AS_NODE;
 delete environment.VITE_DEV_SERVER_URL;
@@ -42,6 +42,12 @@ let page;
 async function capture(name) {
   // Visual QA uses the development executable; packaged hidden windows may not produce frames.
   if (!packaged) await page.screenshot({ path: path.join(root, name) });
+}
+async function openTreePath(internalPath) {
+  const search = page.getByRole("textbox", { name: "搜索工程目录" });
+  await search.fill(internalPath.split("/").at(-1));
+  await page.locator(`.project-tree-row[data-path="${internalPath}"]`).click();
+  await search.clear();
 }
 try {
   await application.evaluate(
@@ -88,7 +94,7 @@ try {
   });
   expect(rejected).toBe(true);
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
-  await page.getByRole("switch").uncheck();
+  await page.getByRole("switch", { name: /^自动保存/ }).uncheck();
   await page.getByRole("button", { name: "保存偏好", exact: true }).click();
   await page.getByRole("button", { name: "工程", exact: true }).click();
   await page.getByRole("button", { name: "创建新工程" }).click();
@@ -107,8 +113,8 @@ try {
   await expect(code).toBeVisible();
   await setSource("# 迁移后的第一章\n\nElectron、React 与 TypeScript 7。");
   await page
-    .getByRole("button", { name: "保存", exact: false })
-    .filter({ hasText: "Ctrl S" })
+    .locator(".document-topbar")
+    .getByRole("button", { name: /^保存/ })
     .click();
 
   await expect(page.locator(".document-title")).toContainText("已保存");
@@ -183,7 +189,7 @@ try {
     .toBe("2");
   await page.getByRole("button", { name: "导入资源", exact: true }).click();
   await expect(page.locator('.toast[role="status"]')).toContainText(
-    "cover.png",
+    "已导入 1 项资源",
   );
   await page.getByRole("tab", { name: "源码", exact: true }).click();
   await setSource(
@@ -209,10 +215,8 @@ try {
   );
   await capture("04-preview.png");
   await page.getByRole("tab", { name: "可视化", exact: true }).click();
-  await expect(
-    page.getByText("此文稿含扩展语法", { exact: false }),
-  ).toBeVisible();
-  await expect(editor).toHaveAttribute("contenteditable", "false");
+  await expect(editor.locator("aside.mdk-note")).toContainText("扩展语法应原样保留");
+  await expect(editor).toHaveAttribute("contenteditable", "true");
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   await page.getByLabel("字号", { exact: true }).fill("18");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
@@ -224,7 +228,7 @@ try {
   );
   await page.getByRole("tab", { name: "源码", exact: true }).click();
   await page.getByRole("tab", { name: "整体目录", exact: true }).click();
-  await page.locator('.project-tree-row[data-path="contents.toml"]').click();
+  await openTreePath("contents.toml");
   const control = (
     await page.evaluate(
       (file) => window.mardikor.invoke("readText", file, "contents.toml"),
@@ -232,7 +236,7 @@ try {
     )
   ).content;
   await setSource("schema_version = 2");
-  await page.getByRole("tab", { name: "工程设置", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "工程设置", exact: true })).toBeDisabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".monaco-source .view-lines")).toContainText(
     "schema_version = 2",
@@ -267,22 +271,8 @@ try {
   await page.getByRole("menuitem", { name: "上移", exact: true }).click();
   await expect(page.locator(".editor-workspace")).not.toHaveClass(/is-busy/);
   await page.getByRole("tab", { name: "整体目录", exact: true }).click();
-  await page.getByRole("button", { name: "新建文本文件", exact: true }).click();
-  await page
-    .getByRole("textbox", { name: "新建文本文件", exact: true })
-    .fill("meta/annotations.json");
-  await page.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(page.locator(".document-title")).toContainText(
-    "meta/annotations.json",
-  );
-  await expect(page.locator(".editor-workspace")).not.toHaveClass(/is-busy/);
-  await setSource('{"comments":[{"text":"批注"}]}');
-  await page.getByRole("button", { name: "保存源码", exact: true }).click();
-  await expect(page.locator(".document-title")).toContainText("已保存");
-  await expect(
-    page.locator('.project-tree-row[data-path="meta/annotations.json"]'),
-  ).toBeVisible();
   await selectOption(page, page.getByLabel("工程模式", { exact: true }), "02");
+  await openTreePath("markdown/001.md");
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   await selectOption(page, page.getByLabel("阅读方向", { exact: true }), "rtl");
   await selectOption(
@@ -291,7 +281,7 @@ try {
     "double",
   );
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
-  await page.locator('.project-tree-row[data-path="contents.toml"]').click();
+  await openTreePath("contents.toml");
   const comicControl = (
     await page.evaluate(
       (file) => window.mardikor.invoke("readText", file, "contents.toml"),
@@ -303,6 +293,7 @@ try {
       '\n[[entries]]\nid="smoke-duplicate"\npath="markdown/001.md"\nposition="6.1"\n',
   );
   await page.getByRole("button", { name: "保存源码", exact: true }).click();
+  await openTreePath("markdown/001.md");
   await page.getByRole("tab", { name: "预览", exact: true }).click();
   await expect(page.locator(".reading-unit")).toHaveCount(3);
   await expect(page.locator(".reading-spread.rtl")).toHaveCount(2);
@@ -323,13 +314,14 @@ try {
   await setSource(comicControl);
   await page.getByRole("button", { name: "保存源码", exact: true }).click();
   await selectOption(page, page.getByLabel("工程模式", { exact: true }), "01");
-  await page
-    .locator('.project-tree-row[data-path="resources/image/cover.png"]')
-    .click();
+  await openTreePath("resources/image/cover.png");
   await expect(page.locator(".image-pages img")).toBeVisible();
   await expect(page.locator(".source-workspace")).toBeHidden();
   await capture("10-resource-preview.png");
-  await page.locator('.project-tree-row[data-path="markdown/001.md"]').click();
+  await openTreePath("contents.toml");
+  await setSource(comicControl);
+  await page.getByRole("button", { name: "保存源码", exact: true }).click();
+  await openTreePath("markdown/001.md");
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   await page.getByLabel("启用按标题拆分", { exact: true }).check();
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
@@ -343,10 +335,11 @@ try {
   await expect(
     page.locator('.project-tree-row[data-path="markdown/001-2.md"]'),
   ).toBeVisible();
+  await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
   await page
     .getByRole("button", { name: "操作 001-2.md", exact: true })
     .click();
-  await page.getByRole("menuitem", { name: "删除", exact: true }).click();
+  await page.getByRole("menuitem", { name: "删除文稿", exact: true }).click();
   await page.getByRole("button", { name: "删除", exact: true }).last().click();
   await expect(
     page.locator('.project-tree-row[data-path="markdown/001-2.md"]'),
@@ -371,7 +364,8 @@ try {
   const preferences = await page.evaluate(() => window.mardikor.preferences());
   expect(preferences.autosaveInterval).toBe(5);
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
-  await page.locator('.project-tree-row[data-path="contents.toml"]').click();
+  await page.getByRole("tab", { name: "整体目录", exact: true }).click();
+  await openTreePath("contents.toml");
   await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
   await page.getByRole("button", { name: "操作 001.md", exact: true }).click();
   await page.getByRole("menuitem", { name: "下移", exact: true }).click();
@@ -403,7 +397,7 @@ try {
   );
   await page.locator('.project-tree-row[data-path="markdown/001.md"]').click();
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
-  await page.getByRole("switch").check();
+  await page.getByRole("switch", { name: /^自动保存/ }).check();
   await page.getByRole("button", { name: "保存偏好", exact: true }).click();
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
   await setSource("# 自动保存验证\n\n未按下保存按钮。");
@@ -427,11 +421,11 @@ try {
   await page
     .getByRole("button", { name: "操作 settings.toml", exact: true })
     .click();
-  await page.getByRole("menuitem", { name: "删除", exact: true }).click();
-  await page.getByRole("button", { name: "删除", exact: true }).last().click();
+  await expect(page.getByRole("menuitem", { name: "删除", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "关闭目录菜单", exact: true }).click();
   await page.getByLabel("搜索工程目录", { exact: true }).fill("");
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
-  await expect(page.getByLabel("字号", { exact: true })).toHaveValue("16");
+  await expect(page.getByLabel("字号", { exact: true })).toHaveValue("18");
   await page.getByLabel("字号", { exact: true }).fill("17");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect

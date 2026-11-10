@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import {
   useEffect,
   useRef,
@@ -113,7 +114,7 @@ monaco.languages.registerCompletionItemProvider("toml", {
           range,
         },
         {
-          label: "MDK 默认设置",
+          label: t("MDK 默认设置"),
           insertText: stringify(defaultSettings()),
           kind: monaco.languages.CompletionItemKind.Snippet,
           range,
@@ -209,7 +210,6 @@ export const SourceEditor = forwardRef<
     zoom: number;
     largeDocument?: boolean;
     onChange: (value: string) => void;
-    onSave: () => void;
     onPosition: (line: number, column: number) => void;
     onScroll?: (ratio: number, firstLine: number) => void;
     onViewportReady?: () => void;
@@ -226,7 +226,6 @@ export const SourceEditor = forwardRef<
     zoom,
     largeDocument,
     onChange,
-    onSave,
     onPosition,
     onScroll,
     onViewportReady,
@@ -327,12 +326,11 @@ export const SourceEditor = forwardRef<
         ? "\n\n" + insertion + "\n\n"
         : insertion,
       range,
-      selected ? undefined : id === "fence" ? "代码" : "文字",
+      selected ? undefined : id === "fence" ? t("代码") : t("文字"),
     );
   }
   const callbacks = useRef({
     onChange,
-    onSave,
     onPosition,
     onScroll,
     onViewportReady,
@@ -363,7 +361,7 @@ export const SourceEditor = forwardRef<
       dropDraft(x, y, marker) {
         const editor = instance.current,
           model = editor?.getModel();
-        if (!editor || !model) throw new Error("源码编辑器尚未就绪。");
+        if (!editor || !model) throw new Error(t("源码编辑器尚未就绪。"));
         const point =
           editor.getTargetAtClientPoint(x, y)?.position ??
           editor.getPosition()!;
@@ -414,7 +412,6 @@ export const SourceEditor = forwardRef<
   );
   callbacks.current = {
     onChange,
-    onSave,
     onPosition,
     onScroll,
     onViewportReady,
@@ -465,7 +462,7 @@ export const SourceEditor = forwardRef<
       unicodeHighlight: { ambiguousCharacters: false },
       renderWhitespace: "selection",
       scrollBeyondLastLine: false,
-      ariaLabel: "源码编辑器",
+      ariaLabel: t("源码编辑器"),
       // Monaco's forced screen reader mode sends entire visible lines to the
       // input surface. In auto mode it bounds that text unless a reader is active.
       accessibilitySupport: largeDocument ? "auto" : "on",
@@ -481,18 +478,18 @@ export const SourceEditor = forwardRef<
     const actions = [
       editor.addAction({
         id: "mdk.markdown.syntax",
-        label: "插入 Markdown 语法…",
+        label: t("插入 Markdown 语法…"),
         precondition: "mdkMarkdown && !editorReadonly",
         contextMenuGroupId: "9_markdown",
         contextMenuOrder: 1,
         run: () => setPalette(true),
       }),
       ...[
-        { id: "bold", label: "Markdown 加粗", key: monaco.KeyCode.KeyB },
-        { id: "italic", label: "Markdown 斜体", key: monaco.KeyCode.KeyI },
-        { id: "link", label: "Markdown 链接" },
-        { id: "fence", label: "Markdown 代码块" },
-        { id: "table", label: "Markdown 表格" },
+        { id: "bold", label: t("Markdown 加粗"), key: monaco.KeyCode.KeyB },
+        { id: "italic", label: t("Markdown 斜体"), key: monaco.KeyCode.KeyI },
+        { id: "link", label: t("Markdown 链接") },
+        { id: "fence", label: t("Markdown 代码块") },
+        { id: "table", label: t("Markdown 表格") },
       ].map((action, index) =>
         editor.addAction({
           id: "mdk.markdown." + action.id,
@@ -526,9 +523,6 @@ export const SourceEditor = forwardRef<
           editor.getVisibleRanges()[0]?.startLineNumber ?? 1,
         );
     });
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
-      callbacks.current.onSave(),
-    );
     return () => {
       change.dispose();
       cursor.dispose();
@@ -537,6 +531,7 @@ export const SourceEditor = forwardRef<
       const model = editor.getModel();
       editor.dispose();
       instance.current = null;
+      views.current.clear();
       release(selected.current, model);
       if (!modelPool) {
         models.current.forEach((model) => model.dispose());
@@ -570,6 +565,7 @@ export const SourceEditor = forwardRef<
           }),
         );
         models.current.set(path, model);
+        model.onWillDispose(() => modelText.delete(model!));
         modelText.set(model, { version: model.getVersionId(), value });
       }
       selected.current = path;
@@ -634,7 +630,7 @@ export const SourceEditor = forwardRef<
       <div className="monaco-source" ref={element} data-file={path} />
       {palette && (
         <EditorDialog
-          title="插入 Markdown 语法"
+          title={t("插入 Markdown 语法")}
           onClose={() => {
             setPalette(false);
             instance.current?.focus();
@@ -648,9 +644,9 @@ export const SourceEditor = forwardRef<
             }}
           >
             <label>
-              语法
+              {t("语法")}
               <Select
-                aria-label="Markdown 语法"
+                aria-label={t("Markdown 语法")}
                 value={syntaxId}
                 onValueChange={setSyntaxId}
               >
@@ -681,10 +677,10 @@ export const SourceEditor = forwardRef<
                   instance.current?.focus();
                 }}
               >
-                取消
+                {t("取消")}
               </button>
               <button className="button primary" type="submit">
-                插入
+                {t("插入")}
               </button>
             </div>
           </form>

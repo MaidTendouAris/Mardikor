@@ -1,3 +1,4 @@
+import { t } from "../shared/i18n";
 import AdmZip from "adm-zip";
 import subsetFont from "subset-font";
 import { DOMParser } from "@xmldom/xmldom";
@@ -12,6 +13,7 @@ import { bundledFontHash, publicationLabels } from "../shared/publication";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 const OPF = "http://www.idpf.org/2007/opf";
+const MATHML = "http://www.w3.org/1998/Math/MathML";
 function xmlDocument(source: string) {
   return new DOMParser({
     onError: (level, message) => {
@@ -26,19 +28,20 @@ export function validateGeneratedEpub(bytes: Buffer) {
     bytes.subarray(30, 38).toString() !== "mimetype" ||
     bytes.readUInt16LE(28) !== 0
   )
-    throw new Error("EPUB mimetype 必须是无扩展字段的首个未压缩项。");
+    throw new Error(t("EPUB mimetype 必须是无扩展字段的首个未压缩项。"));
   const zip = new AdmZip(bytes),
     paths = new Set(zip.getEntries().map((e) => e.entryName));
   if (
     paths.size !== zip.getEntries().length ||
     zip.readAsText("mimetype") !== "application/epub+zip"
   )
-    throw new Error("EPUB 容器存在重复文件或错误 mimetype。");
+    throw new Error(t("EPUB 容器存在重复文件或错误 mimetype。"));
   const container = xmlDocument(zip.readAsText("META-INF/container.xml"));
   const rootfile = container
     .getElementsByTagName("rootfile")[0]
     ?.getAttribute("full-path");
-  if (rootfile !== "EPUB/package.opf") throw new Error("EPUB rootfile 无效。");
+  if (rootfile !== "EPUB/package.opf")
+    throw new Error(t("EPUB rootfile 无效。"));
   const opf = xmlDocument(zip.readAsText(rootfile)),
     manifest = Array.from(opf.getElementsByTagNameNS(OPF, "item")),
     ids = new Map<string, string>();
@@ -49,7 +52,7 @@ export function validateGeneratedEpub(bytes: Buffer) {
     !opf.getElementsByTagName("dc:language")[0]?.textContent ||
     !opf.getElementsByTagName("dc:identifier")[0]?.textContent
   )
-    throw new Error("EPUB 必需出版元数据不完整。");
+    throw new Error(t("EPUB 必需出版元数据不完整。"));
   const declared = new Set<string>();
   for (const item of manifest) {
     const id = item.getAttribute("id")!,
@@ -61,7 +64,7 @@ export function validateGeneratedEpub(bytes: Buffer) {
       !paths.has("EPUB/" + href) ||
       !item.getAttribute("media-type")
     )
-      throw new Error("EPUB manifest 的 ID、资源路径或 MIME 无效。");
+      throw new Error(t("EPUB manifest 的 ID、资源路径或 MIME 无效。"));
     ids.set(id, href);
     declared.add(href);
   }
@@ -70,13 +73,13 @@ export function validateGeneratedEpub(bytes: Buffer) {
       item.getAttribute("properties")?.split(" ").includes("nav"),
     ).length !== 1
   )
-    throw new Error("EPUB 必须且只能有一份导航文档。");
+    throw new Error(t("EPUB 必须且只能有一份导航文档。"));
   const spine = Array.from(opf.getElementsByTagNameNS(OPF, "itemref"));
   if (
     !spine.length ||
     spine.some((item) => !ids.has(item.getAttribute("idref")!))
   )
-    throw new Error("EPUB 阅读顺序无效。");
+    throw new Error(t("EPUB 阅读顺序无效。"));
   const documents = new Map<string, ReturnType<typeof xmlDocument>>(),
     anchorIds = new Map<string, Set<string>>();
   for (const item of manifest)
@@ -88,20 +91,27 @@ export function validateGeneratedEpub(bytes: Buffer) {
         doc.documentElement?.namespaceURI !== XHTML ||
         !doc.getElementsByTagNameNS(XHTML, "title")[0]?.textContent
       )
-        throw new Error("EPUB XHTML 根元素或标题无效。");
+        throw new Error(t("EPUB XHTML 根元素或标题无效。"));
+      if (
+        !!doc.getElementsByTagNameNS(MATHML, "math").length !==
+        !!item.getAttribute("properties")?.split(/\s+/).includes("mathml")
+      )
+        throw new Error(
+          t("EPUB 的 MathML 内容与 manifest 声明不一致：") + href,
+        );
       for (const element of Array.from(doc.getElementsByTagName("*"))) {
         const id = element.getAttribute("id");
-        if (id && found.has(id)) throw new Error("EPUB 文档存在重复锚点。");
+        if (id && found.has(id)) throw new Error(t("EPUB 文档存在重复锚点。"));
         if (id) found.add(id);
         if (
           ["script", "iframe", "object", "embed", "form"].includes(
             element.localName ?? "",
           )
         )
-          throw new Error("EPUB 不允许脚本、嵌入活动内容或表单。");
+          throw new Error(t("EPUB 不允许脚本、嵌入活动内容或表单。"));
         for (const attribute of Array.from(element.attributes))
           if (/^on/i.test(attribute.name))
-            throw new Error("EPUB 不允许事件属性。");
+            throw new Error(t("EPUB 不允许事件属性。"));
       }
       documents.set(href, doc);
       anchorIds.set(href, found);
@@ -117,13 +127,13 @@ export function validateGeneratedEpub(bytes: Buffer) {
         )
           continue;
         if (/^[a-z]+:|^\/|\.\./i.test(value))
-          throw new Error("EPUB 含不安全或外部展示引用。");
+          throw new Error(t("EPUB 含不安全或外部展示引用。"));
         const [raw, fragment] = value.split("#"),
           target = raw || href;
         if (!declared.has(target))
-          throw new Error("EPUB 引用未在 manifest 声明：" + value);
+          throw new Error(t("EPUB 引用未在 manifest 声明：") + value);
         if (fragment && !anchorIds.get(target)?.has(fragment))
-          throw new Error("EPUB 锚点不存在：" + value);
+          throw new Error(t("EPUB 锚点不存在：") + value);
       }
   for (const name of paths)
     if (
@@ -131,7 +141,7 @@ export function validateGeneratedEpub(bytes: Buffer) {
       name !== "EPUB/package.opf" &&
       !declared.has(name.slice(5))
     )
-      throw new Error("EPUB 包含未声明的出版资源。");
+      throw new Error(t("EPUB 包含未声明的出版资源。"));
 }
 export async function buildEpub(prepared: PreparedPublication) {
   const {
@@ -166,7 +176,7 @@ export async function buildEpub(prepared: PreparedPublication) {
   if ((epub.embed_font || fixed) && sha256(prepared.font) === bundledFontHash) {
     const license = prepared.fontLicense;
     if (!license)
-      throw new Error("内置字体的分发许可证缺失，请重新保存导出配置。");
+      throw new Error(t("内置字体的分发许可证缺失，请重新保存导出配置。"));
     add("META-INF/font-license.txt", license);
   }
   if (coverFile) {
@@ -195,7 +205,12 @@ export async function buildEpub(prepared: PreparedPublication) {
       id,
       chapter.file,
       "application/xhtml+xml",
-      chapter.html.includes('.svg"') ? "svg" : "",
+      [
+        chapter.html.includes('.svg"') ? "svg" : "",
+        chapter.hasMath ? "mathml" : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
     );
     let property = "";
     if (fixed && project.mode === "02" && c.comic.spread_mode === "double") {

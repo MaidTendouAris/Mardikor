@@ -11,6 +11,8 @@ import {
   maxPageLength,
 } from "../shared/desktop";
 import type { PublicationConfiguration } from "../shared/publication";
+import { migrateShortcuts, shortcutError } from "../shared/shortcuts";
+import { t, languagePreferences } from "../shared/i18n";
 
 const defaults: Preferences = {
   autosave: true,
@@ -21,6 +23,8 @@ const defaults: Preferences = {
   followOutline: true,
   appTheme: "light",
   pageLength: defaultPageLength,
+  showPageMarkers: true,
+  language: "system",
 };
 // A single 64 MiB Markdown entry can take twice its UTF-8 size in a
 // serialized UTF-16 draft. Leave room for the surrounding snapshot metadata.
@@ -50,7 +54,7 @@ export class AppState {
     if (fs.existsSync(this.file)) {
       const saved = JSON.parse(fs.readFileSync(this.file, "utf8"));
       if (!Array.isArray(saved.recent))
-        throw new Error("应用状态损坏，无法读取最近工程。");
+        throw new Error(t("应用状态损坏，无法读取最近工程。"));
       this.value.recent = saved.recent
         .filter(
           (r: RecentProject) =>
@@ -83,6 +87,17 @@ export class AppState {
         this.value.preferences.followOutline = true;
       if (!validPageLength(this.value.preferences.pageLength))
         this.value.preferences.pageLength = defaultPageLength;
+      if (typeof this.value.preferences.showPageMarkers !== "boolean")
+        this.value.preferences.showPageMarkers = true;
+      if (
+        !languagePreferences.includes(
+          this.value.preferences.language ?? "system",
+        )
+      )
+        this.value.preferences.language = "system";
+      this.value.preferences.shortcuts = migrateShortcuts(
+        this.value.preferences.shortcuts,
+      );
       if (
         Number.isFinite(saved.updateLastChecked) &&
         saved.updateLastChecked >= 0
@@ -167,7 +182,7 @@ export class AppState {
     if (value === undefined) {
       if (!fs.existsSync(target)) return null;
       if (fs.statSync(target).size > recoveryLimit)
-        throw new Error("恢复草稿超过实现支持范围。");
+        throw new Error(t("恢复草稿超过实现支持范围。"));
       return deserialize(fs.readFileSync(target));
     }
     if (value === null) {
@@ -176,7 +191,7 @@ export class AppState {
     }
     const data = serialize(value);
     if (data.length > recoveryLimit)
-      throw new Error("恢复草稿超过 129 MiB 实现支持范围。");
+      throw new Error(t("恢复草稿超过 129 MiB 实现支持范围。"));
     fs.mkdirSync(dir, { recursive: true });
     const temporary = target + "." + randomUUID() + ".tmp";
     try {
@@ -195,7 +210,7 @@ export class AppState {
       }
     }
   }
-  remember(file: string, mode: string) {
+  remember(file: string, mode: string, renamedFrom?: string) {
     const resolved = path.resolve(file);
     this.value.recent = [
       {
@@ -204,12 +219,18 @@ export class AppState {
         mode,
         updatedAt: new Date().toISOString(),
       },
-      ...this.value.recent.filter((p) => p.path !== resolved),
+      ...this.value.recent.filter(
+        (p) => p.path !== resolved && p.path !== renamedFrom,
+      ),
     ].slice(0, 20);
     this.save();
   }
   preferences(value?: Preferences) {
     if (value) {
+      if (value.shortcuts !== undefined) {
+        const error = shortcutError(value.shortcuts);
+        if (error) throw new Error(error);
+      }
       if (
         typeof value.autosave !== "boolean" ||
         !Number.isFinite(value.autosaveInterval) ||
@@ -225,9 +246,13 @@ export class AppState {
           typeof value.followOutline !== "boolean") ||
         (value.pageLength !== undefined &&
           !validPageLength(value.pageLength)) ||
-        (value.appTheme !== undefined && !appThemes.includes(value.appTheme))
+        (value.showPageMarkers !== undefined &&
+          typeof value.showPageMarkers !== "boolean") ||
+        (value.appTheme !== undefined && !appThemes.includes(value.appTheme)) ||
+        (value.language !== undefined &&
+          !languagePreferences.includes(value.language))
       )
-        throw new Error("偏好设置无效。");
+        throw new Error(t("偏好设置无效。"));
       this.value.preferences = {
         ...this.value.preferences,
         ...value,

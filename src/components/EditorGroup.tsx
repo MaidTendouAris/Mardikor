@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import {
   forwardRef,
   lazy,
@@ -17,7 +18,11 @@ import { RichEditor, RichToolbar, richDropDraft } from "./RichEditor";
 import { Select } from "./Select";
 import { ProjectSettings } from "./ProjectSettings";
 import { ReadingPreview } from "./ReadingPreview";
-import { PagedPreview, type PagedPreviewHandle } from "./PagedPreview";
+import {
+  PagedPreview,
+  type PagePoint,
+  type PagedPreviewHandle,
+} from "./PagedPreview";
 import { PageNavigation } from "./PageNavigation";
 import { MediaPreview } from "./MediaPreview";
 import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
@@ -37,10 +42,21 @@ import {
 } from "../../shared/markdown";
 import { canEditVisually, isLargeDocument } from "../services/document-size";
 import {
+  editWindowAt,
+  headingOffsetAtLine,
   pageAtLine,
   replacePage,
+  replacePages,
+  shiftEditWindow,
   type DocumentPages,
+  type EditPageWindow,
 } from "../services/document-pages";
+import {
+  richPageDraft,
+  richPageTextPosition,
+  type RichPageChange,
+} from "../services/rich-pages";
+import { richDropTransaction } from "../services/rich-markdown";
 import { markdownTask } from "../services/markdown-tasks";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import type { MdkProject, MdkSettings } from "../../shared/mdk";
@@ -54,10 +70,12 @@ import {
 } from "../services/editor-groups";
 import type { Notify } from "../App";
 import type { ResolvedAppTheme } from "../../shared/desktop";
+import type { ShortcutOverrides, VisualShortcut } from "../../shared/shortcuts";
 
 const SourceEditor = lazy(async () => {
   // Monaco translates action labels when its modules are first evaluated.
-  await import("monaco-editor/nls/lang/zh-cn.js");
+  if (document.documentElement.lang === "zh-CN")
+    await import("monaco-editor/nls/lang/zh-cn.js");
   const module = await import("./SourceEditor");
   return { default: module.SourceEditor };
 });
@@ -67,6 +85,7 @@ export interface EditorGroupHandle {
   dropDraft: (x: number, y: number, marker: string) => InsertionDraft;
   applyValue: (content: string) => void;
   focus: () => void;
+  format: (action: VisualShortcut) => void;
 }
 interface Props {
   group: EditorGroupState;
@@ -81,19 +100,23 @@ interface Props {
   followOutline: boolean;
   theme: ResolvedAppTheme;
   pageLength: number;
+  showPageMarkers: boolean;
   headings?: MarkdownHeading[];
   split: boolean;
   label: string;
   busy: boolean;
+  editingBlocked: boolean;
+  shortcutOverrides?: ShortcutOverrides;
   directoryDirty: boolean;
   notify: Notify;
   execute: (work: () => Promise<unknown>) => Promise<void>;
   flush: () => Promise<boolean>;
+  saveDocument: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
   changeTab: (tab: EditorTab) => Promise<void>;
   updateContent: (content: string) => void;
   setPagination: (content: string, layout: DocumentPages) => void;
-  updatePage: (page: number, text: string) => string | void;
+  updatePages: (changes: RichPageChange[]) => RichPageChange[];
   importResources: () => Promise<void>;
   pasteImage: (image: File) => Promise<void>;
   revert: () => Promise<void>;
@@ -121,19 +144,23 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       followOutline,
       theme,
       pageLength,
+      showPageMarkers,
       headings,
       split,
       label,
       busy,
+      editingBlocked,
+      shortcutOverrides,
       directoryDirty,
       notify,
       execute,
       flush,
+      saveDocument,
       openFile,
       changeTab,
       updateContent,
       setPagination,
-      updatePage,
+      updatePages,
       importResources,
       pasteImage,
       revert,
@@ -302,6 +329,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         (tab === "source" && splitPreview));
     const layoutText = tab === "write" ? markdown : previewMarkdown;
     const [pageIndex, setPageIndex] = useState(0);
+    const [editingPageIndex, setEditingPage] = useState(0);
+    const [windowSelection, setWindowSelection] = useState<EditPageWindow>();
+    const queuedRichHeading = useRef<MarkdownHeading | null>(null);
+    const queuedRichPoint = useRef<PagePoint | null | undefined>(undefined);
     const [cancelled, setCancelled] = useState(false);
     const [savedLayout, setSavedLayout] = useState<{
       text: string;
@@ -319,21 +350,51 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       pageIndex,
       Math.max(0, (layout?.pages.length ?? 1) - 1),
     );
-    const currentPage = paged ? layout?.pages[page] : undefined;
-    const pageText = currentPage
-      ? layoutText.slice(currentPage.start, layout?.pages[page + 1]?.start)
-      : "";
+    const editingPage = Math.min(
+      editingPageIndex,
+      Math.max(0, (layout?.pages.length ?? 1) - 1),
+    );
+    const currentPage = paged ? layout?.pages[editingPage] : undefined;
+    const editWindow =
+      layout && tab === "write" && currentPage && !currentPage.readOnly
+        ? windowSelection &&
+          windowSelection.last < layout.pages.length &&
+          !layout.pages
+            .slice(windowSelection.first, windowSelection.last + 1)
+            .some(({ readOnly }) => readOnly)
+          ? windowSelection
+          : editWindowAt(layout, editingPage)
+        : undefined;
+    const windowPages = useMemo(() => {
+      if (!editWindow || !layout) return undefined;
+      return layout.pages
+        .slice(editWindow.first, editWindow.last + 1)
+        .map((entry, offset) => {
+          const index = editWindow.first + offset;
+          return {
+            index,
+            text: layoutText.slice(entry.start, layout.pages[index + 1]?.start),
+            final: index === layout.pages.length - 1,
+          };
+        });
+    }, [layout, layoutText, editWindow?.first, editWindow?.last]);
+    const windowText =
+      editWindow && layout
+        ? layoutText.slice(
+            layout.pages[editWindow.first].start,
+            layout.pages[editWindow.last + 1]?.start,
+          )
+        : "";
     const layoutHeadings = sourceHeadings?.length
       ? sourceHeadings
       : layout?.headings;
-    const offset = useMemo(() => {
-      if (!currentPage) return 0;
-      const index =
-        layoutHeadings?.findIndex(
-          (heading) => heading.line >= currentPage.line,
-        ) ?? -1;
-      return index < 0 ? (layoutHeadings?.length ?? 0) : index;
-    }, [layoutHeadings, currentPage]);
+    const offset =
+      editWindow && layoutHeadings && layout
+        ? headingOffsetAtLine(
+            layoutHeadings,
+            layout.pages[editWindow.first].line,
+          )
+        : 0;
     const priorHeadingLevels = useMemo(
       () => layoutHeadings?.slice(0, offset).map(({ level }) => level),
       [layoutHeadings, offset],
@@ -351,7 +412,17 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     useEffect(() => {
       setCancelled(false);
       setPageIndex(0);
+      setEditingPage(0);
+      setWindowSelection(undefined);
+      queuedRichHeading.current = null;
+      queuedRichPoint.current = undefined;
     }, [activePath]);
+    useLayoutEffect(() => {
+      if (tab === "write") {
+        setEditingPage(page);
+        setWindowSelection(undefined);
+      }
+    }, [tab]);
     useEffect(() => {
       if (!paged || layout || cancelled) return;
       const timer = setTimeout(
@@ -393,18 +464,17 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         mayContainMath(previewMarkdown),
     );
     const previewSettings = useMemo(
-      () =>
-        project?.mode === "00"
-          ? {
-              ...settings,
-              preview: {
-                ...settings.preview,
-                show_toc: false,
-                show_title: true,
-              },
-            }
-          : settings,
-      [settings, project?.mode],
+      () => ({
+        ...settings,
+        preview: {
+          ...settings.preview,
+          show_toc: false,
+          show_title:
+            project?.mode === "00" || tab === "write" ||
+            settings.preview.show_title,
+        },
+      }),
+      [settings, project?.mode, tab],
     );
     const previewHtml = useMemo(() => {
       if (
@@ -449,7 +519,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             if (live && value) image.src = value;
           })
           .catch(() => {
-            if (live) image.alt = "资源不可用：" + src;
+            if (live) image.alt = t("资源不可用：") + src;
           });
       });
       return () => {
@@ -473,12 +543,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         const viewport = lineOrViewport;
         const rows =
           viewport.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6");
-        const offset = viewport.getBoundingClientRect().top + 24;
+        const readingLine = viewport.getBoundingClientRect().top + 24;
         let lo = 0,
           hi = rows.length;
         while (lo < hi) {
           const mid = (lo + hi) >>> 1;
-          if (rows[mid].getBoundingClientRect().top <= offset) lo = mid + 1;
+          if (rows[mid].getBoundingClientRect().top <= readingLine)
+            lo = mid + 1;
           else hi = mid;
         }
         const row = rows[Math.max(0, lo - 1)];
@@ -487,9 +558,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           row.closest<HTMLElement>("[data-source-path]")?.dataset.sourcePath ??
           path;
         const numbered = /mdk-heading-(\d+)$/.exec(row.id);
-        index = numbered
-          ? Number(numbered[1]) - 1
-          : offset + Math.max(0, lo - 1);
+        if (numbered) index = Number(numbered[1]) - 1;
+        else {
+          const slice = row.closest<HTMLElement>("[data-heading-offset]");
+          const localIndex = slice
+            ? Array.from(slice.querySelectorAll("h1,h2,h3,h4,h5,h6")).indexOf(
+                row,
+              )
+            : Math.max(0, lo - 1);
+          index = Number(slice?.dataset.headingOffset ?? 0) + localIndex;
+        }
       }
       if (
         index !== group.activeHeading ||
@@ -558,7 +636,18 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       if (previewHeading && previewHeading.path === activePath)
         pagedPreview.current?.jump("mdk-heading-" + (previewHeading.index + 1));
     }, [previewHeading, activePath]);
-    const queuedRichHeading = useRef<MarkdownHeading | null>(null);
+    function selectEditingPage(index: number) {
+      setEditingPage(index);
+      if (
+        layout &&
+        (!editWindow || index < editWindow.first || index > editWindow.last)
+      )
+        setWindowSelection(editWindowAt(layout, index));
+    }
+    function activatePage(index: number, point?: PagePoint) {
+      queuedRichPoint.current = point ?? null;
+      selectEditingPage(index);
+    }
     function selectRichHeading(editor: Editor, index: number) {
       let current = 0,
         position = -1;
@@ -575,11 +664,30 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           .run();
     }
     useLayoutEffect(() => {
-      if (!richEditor || !queuedRichHeading.current) return;
-      const heading = queuedRichHeading.current;
-      queuedRichHeading.current = null;
-      selectRichHeading(richEditor, heading.index - offset);
-    }, [richEditor]);
+      if (!richEditor) return;
+      if (queuedRichHeading.current) {
+        const heading = queuedRichHeading.current;
+        queuedRichHeading.current = null;
+        selectRichHeading(richEditor, heading.index - offset);
+      } else if (queuedRichPoint.current !== undefined) {
+        const point = queuedRichPoint.current;
+        queuedRichPoint.current = undefined;
+        const position =
+          point &&
+          ((point.block !== undefined && point.textOffset !== undefined
+            ? richPageTextPosition(
+                richEditor,
+                point.index,
+                point.block,
+                point.textOffset,
+              )
+            : undefined) ??
+            richEditor.view.posAtCoords({ left: point.x, top: point.y })?.pos);
+        richEditor.commands.focus(position ?? "start", {
+          scrollIntoView: false,
+        });
+      }
+    }, [richEditor, editWindow?.first, editWindow?.last]);
     useImperativeHandle(
       ref,
       () => ({
@@ -591,8 +699,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               pagedPreview.current?.jump("mdk-heading-" + (heading.index + 1));
               return;
             }
-            if (page !== target || !richEditor) {
+            if (
+              !editWindow ||
+              target < editWindow.first ||
+              target > editWindow.last ||
+              !richEditor
+            ) {
               queuedRichHeading.current = heading;
+              selectEditingPage(target);
               pagedPreview.current?.showPage(target);
               return;
             }
@@ -606,18 +720,23 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           selectRichHeading(richEditor, heading.index - offset);
         },
         dropDraft(x, y, marker) {
+          if (tab === "write" && richEditor && editWindow && layout) {
+            const transaction = richDropTransaction(richEditor, x, y, marker);
+            return {
+              marker,
+              content: replacePages(
+                markdown,
+                layout,
+                richPageDraft(richEditor, transaction),
+              ).content,
+            };
+          }
           const draft =
             tab === "write" && richEditor
               ? richDropDraft(richEditor, x, y, marker)
               : sourceEditor.current?.dropDraft(x, y, marker);
-          if (!draft) throw new Error("编辑器尚未就绪。");
-          return tab === "write" && paged && layout
-            ? {
-                ...draft,
-                content: replacePage(markdown, layout, page, draft.content)
-                  .content,
-              }
-            : draft;
+          if (!draft) throw new Error(t("编辑器尚未就绪。"));
+          return draft;
         },
         applyValue(content) {
           if (tab === "write" && paged) return;
@@ -633,12 +752,23 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           else if (tab === "source") sourceEditor.current?.focus();
           else host.current?.focus();
         },
+        format(action) {
+          if (!richEditor?.isEditable || !richEditor.view.hasFocus()) return;
+          if (
+            ("level" in action || "block" in action) &&
+            richEditor.isActive("table")
+          )
+            return;
+          if ("command" in action) richEditor.commands[action.command]();
+          else if (action.level)
+            richEditor.commands.setHeading({ level: action.level });
+          else richEditor.commands.setParagraph();
+        },
       }),
-      [richEditor, tab, layout, page, offset, paged, markdown],
+      [richEditor, tab, layout, editWindow, offset, paged, markdown],
     );
     const setCursor = (cursor: { line: number; column: number }) =>
       patch({ cursor });
-    const flushRef = { current: flush };
     const style = {
       ...settingsToCss(settings),
       ...(projectFont ? { "--preview-font-family": projectFont } : {}),
@@ -661,8 +791,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     ].filter(Boolean);
     const renderRich = (text: string, paginated: boolean) => (
       <div
-        className="document-paper"
-        style={style}
+        className={paginated ? "paged-editor-slice" : "document-paper"}
+        style={paginated ? undefined : style}
         data-document-drop-zone="write"
         data-document-path={activePath}
         onClick={(event) => {
@@ -677,7 +807,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         }}
       >
         <RichEditor
-          key={activePath + (paginated ? ":" + page : "")}
+          key={activePath + (paginated ? ":paged" : "")}
           content={text}
           chapterPosition={
             project?.mode === "01" && settings.mode.book.chapter_numbering
@@ -687,9 +817,21 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           priorHeadingLevels={paginated ? priorHeadingLevels : undefined}
           reservedSections={reserved.get(activeEntry?.position ?? "")}
           revision={revision}
-          editable={!busy && !project?.readonly}
-          onChange={
-            paginated ? (value) => updatePage(page, value) : updateContent
+          editable={!editingBlocked && !project?.readonly}
+          onChange={updateContent}
+          pageWindow={
+            paginated && windowPages && layout && editWindow
+              ? {
+                  pages: windowPages,
+                  update: updatePages,
+                  expand: (direction) => {
+                    const next = shiftEditWindow(layout, editWindow, direction);
+                    if (next === editWindow) return;
+                    pagedPreview.current?.preserve();
+                    setWindowSelection(next);
+                  },
+                }
+              : undefined
           }
           onReady={setRichEditor}
           resolveResource={resolveResource}
@@ -703,7 +845,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         data-editor-group={group.id}
         data-document-theme={documentTheme}
         role="region"
-        aria-label={label + "编辑组"}
+        aria-label={label + t("编辑组")}
         tabIndex={-1}
         onPointerDownCapture={() => {
           sourceCursorMoved.current = 0;
@@ -714,11 +856,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           sourceCursorMoved.current = 0;
           onActivate();
         }}
-        onLoadCapture={viewportReady}
+        onLoadCapture={paged ? undefined : viewportReady}
         onScrollCapture={(event) => {
           const node = event.target;
           if (
             !(node instanceof HTMLElement) ||
+            (paged && node.matches(".paged-inline")) ||
             !node.matches(
               ".document-canvas,.reading-preview,.inline-preview",
             ) ||
@@ -736,7 +879,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           <header className="editor-group-heading">
             <span>{label}</span>
             <Select
-              aria-label={label + "文件"}
+              aria-label={label + t("文件")}
               value={activePath}
               disabled={busy}
               onValueChange={(value) => void execute(() => openFile(value))}
@@ -753,8 +896,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             </Select>
             <button
               className="icon-button"
-              aria-label={"关闭" + label}
-              title={"关闭" + label}
+              aria-label={t("关闭") + label}
+              title={t("关闭") + label}
               disabled={busy}
               onClick={onClose}
             >
@@ -766,13 +909,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           <div
             className="document-mode-tabs"
             role="tablist"
-            aria-label="编辑模式"
+            aria-label={t("编辑模式")}
           >
             {[
-              { id: "source", name: "源码", icon: Braces },
-              { id: "write", name: "可视化", icon: Pencil },
-              { id: "preview", name: "预览", icon: Eye },
-              { id: "settings", name: "工程设置", icon: Settings2 },
+              { id: "source", name: t("源码"), icon: Braces },
+              { id: "write", name: t("可视化"), icon: Pencil },
+              { id: "preview", name: t("预览"), icon: Eye },
+              { id: "settings", name: t("工程设置"), icon: Settings2 },
             ].map((item) => (
               <button
                 role="tab"
@@ -781,7 +924,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 aria-selected={tab === item.id}
                 title={
                   item.id === "write" && isMarkdown && !visualAvailable
-                    ? "此文稿可使用源码编辑或分页预览"
+                    ? t("此文稿可使用源码编辑或分页预览")
                     : undefined
                 }
                 className={tab === item.id ? "active" : ""}
@@ -809,8 +952,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           <div className="document-view-actions">
             {tab === "source" && isMarkdown && (
               <button
-                aria-label="切换源码与预览分栏"
-                title="源码与预览分栏"
+                aria-label={t("切换源码与预览分栏")}
+                title={t("源码与预览分栏")}
                 className={`icon-button ${splitPreview ? "selected" : ""}`}
                 onClick={() => setSplitPreview(!splitPreview)}
               >
@@ -822,7 +965,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 className="text-button"
                 onClick={() => void execute(revert)}
               >
-                撤销文件更改
+                {t("撤销文件更改")}
               </button>
             )}
             {tab === "write" && unsupported && (
@@ -830,7 +973,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 className="text-button"
                 onClick={() => void execute(() => changeTab("source"))}
               >
-                切换到源码
+                {t("切换到源码")}
               </button>
             )}
             <PageNavigation
@@ -847,14 +990,19 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     : 0
               }
               disabled={busy || !paged}
-              onPage={(index) => pagedPreview.current?.showPage(index)}
+              onPage={(index) => {
+                if (tab === "write") selectEditingPage(index);
+                pagedPreview.current?.showPage(index);
+              }}
             />
           </div>
         </div>
         {project && !["00", "01", "02"].includes(project.mode) && (
           <p className="source-warning">
-            未知 mode {project.mode}
-            ：只读显示基础内容，其附加约束未验证。可显式切换到 00 后编辑。
+            {t("未知 mode")} {project.mode}
+            {t(
+              "：只读显示基础内容，其附加约束未验证。可显式切换到 00 后编辑。",
+            )}
           </p>
         )}
         {project &&
@@ -862,18 +1010,20 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             0 && (
             <details className="project-diagnostics">
               <summary>
-                工程有{" "}
+                {t("工程有")}{" "}
                 {
                   project.issues.filter((issue) => issue.severity === "error")
                     .length
                 }{" "}
-                项待处理问题；允许保存，交付前须修复
+                {t("项待处理问题；允许保存，交付前须修复")}
               </summary>
               {project.issues
                 .filter((issue) => issue.severity === "error")
                 .map((issue, index) => (
                   <p key={index}>
-                    {issue.path}：{issue.message}
+                    {issue.path}
+                    {t("：")}
+                    {issue.message}
                   </p>
                 ))}
             </details>
@@ -881,17 +1031,24 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         {tab === "write" && richEditor && !unsupported && (
           <RichToolbar
             editor={richEditor}
+            shortcutOverrides={shortcutOverrides}
             disabled={busy || !!project?.readonly}
             sourceEditable={!busy && !project?.readonly}
-            sourceText={paged ? pageText : markdown}
+            sourceText={paged ? windowText : markdown}
             notify={notify}
             sourcePath={activePath}
             files={project?.files ?? []}
             onImport={importResources}
             onSourceInsert={async (text) => {
               const content =
-                paged && layout
-                  ? replacePage(markdown, layout, page, text).content
+                editWindow && layout
+                  ? replacePage(
+                      markdown,
+                      layout,
+                      editWindow.first,
+                      text,
+                      editWindow.last,
+                    ).content
                   : text;
               await execute(async () => {
                 await changeTab("source");
@@ -947,34 +1104,37 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                           disabled={busy}
                           onClick={() => void execute(splitEntry)}
                         >
-                          按标题拆分
+                          {t("按标题拆分")}
                         </button>
                       )}
                     <button
                       className="button small"
                       disabled={busy || !contentDirty}
-                      onClick={() =>
-                        void execute(async () => {
-                          if (await flush()) notify("文件已保存。");
-                        })
-                      }
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => void saveDocument()}
                     >
-                      保存源码
+                      {t("保存源码")}
                     </button>
                   </div>
                   {project?.encoding === "GB18030" && (
-                    <p className="source-warning">修改后保存时将转为 UTF-8。</p>
+                    <p className="source-warning">
+                      {t("修改后保存时将转为 UTF-8。")}
+                    </p>
                   )}
                   {["contents.toml", "mimetype"].includes(codeBuffer.path) && (
                     <p className="source-warning">
                       {directoryDirty && codeBuffer.path === "contents.toml"
-                        ? "目录有待同步变更，源码显示上次保存的版本。请先点击“更新目录”。"
-                        : "关键工程文件，保存前执行格式校验。"}
+                        ? t(
+                            "目录有待同步变更，源码显示上次保存的版本。请先点击“更新目录”。",
+                          )
+                        : t("关键工程文件，保存前执行格式校验。")}
                     </p>
                   )}
                   <Suspense
                     fallback={
-                      <p className="editor-loading">正在加载源码编辑器…</p>
+                      <p className="editor-loading">
+                        {t("正在加载源码编辑器…")}
+                      </p>
                     }
                   >
                     <SourceEditor
@@ -1015,17 +1175,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                         project?.readonly ||
                         (project?.settings_readonly &&
                           codeBuffer.path === "settings.toml") ||
-                        busy ||
+                        editingBlocked ||
                         tab !== "source" ||
                         !buffer ||
                         (directoryDirty && codeBuffer.path === "contents.toml")
                       }
                       onChange={updateContent}
-                      onSave={() =>
-                        void execute(async () => {
-                          if (await flushRef.current()) notify("工程已保存。");
-                        })
-                      }
                       onPosition={(line, column) => {
                         if (tab !== "source") return;
                         sourceCursorMoved.current = Date.now();
@@ -1053,14 +1208,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               }}
               onSave={() =>
                 void execute(async () => {
-                  if (await flush()) notify("工程设置已保存。");
+                  if (await flush()) notify(t("工程设置已保存。"));
                 })
               }
               onSource={() => void execute(() => openFile("settings.toml"))}
             />
           ) : paged ? (
             <PagedPreview
-              key={activePath}
+              key={activePath + ":" + pageLength}
               ref={pagedPreview}
               className={tab === "source" ? "inline-preview paged-inline" : ""}
               args={[
@@ -1074,16 +1229,21 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 reserved.get(activeEntry?.position ?? ""),
               ]}
               layout={layout}
-              page={page}
               onPage={setPageIndex}
-              headings={sourceHeadings ?? []}
-              headingOffset={offset}
-              priorHeadingLevels={priorHeadingLevels}
+              headings={sourceHeadings}
+              showMarkers={showPageMarkers}
               preparing={!cancelled}
               onTogglePreparing={() => setCancelled(!cancelled)}
               editor={
-                tab === "write" && currentPage && !unsupported
-                  ? renderRich(pageText, true)
+                tab === "write" && layout
+                  ? {
+                      range: editWindow,
+                      content:
+                        editWindow && !unsupported
+                          ? renderRich(windowText, true)
+                          : undefined,
+                      activate: activatePage,
+                    }
                   : undefined
               }
               initialFragment={initialFragment}
@@ -1179,10 +1339,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             <div className="workspace-empty">
               <p>
                 {activeEntry
-                  ? "文稿文件缺失：" +
+                  ? t("文稿文件缺失：") +
                     activeEntry.path +
-                    "。请在整体目录中恢复同名文件，或显式删除目录项；不会自动创建空白正文。"
-                  : "从左侧选择文稿或工程文件。"}
+                    t(
+                      "。请在整体目录中恢复同名文件，或显式删除目录项；不会自动创建空白正文。",
+                    )
+                  : t("从左侧选择文稿或工程文件。")}
               </p>
             </div>
           )}

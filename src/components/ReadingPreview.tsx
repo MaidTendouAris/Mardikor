@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import {
   useEffect,
   useRef,
@@ -108,12 +109,14 @@ export function ReadingPreview({
   );
   const rendered = useMemo(() => {
     const reserved = reservedSectionNumbers(units.map((unit) => unit.position));
-    const viewSettings = fluid
-      ? {
-          ...settings,
-          preview: { ...settings.preview, show_toc: false, show_title: true },
-        }
-      : settings;
+    const viewSettings = {
+      ...settings,
+      preview: {
+        ...settings.preview,
+        show_toc: false,
+        show_title: fluid || settings.preview.show_title,
+      },
+    };
     const currentUnits = fluid
       ? activeDocument
         ? [{ ...activeDocument, id: "current", position: "" }]
@@ -158,7 +161,7 @@ export function ReadingPreview({
           reference = image.dataset.mdkRef ?? "";
         const target = resolveReference(source, reference, true);
         if (target.kind !== "local") {
-          image.alt += "（外部或不安全媒体未加载）";
+          image.alt += t("（外部或不安全媒体未加载）");
           return;
         }
         void desktop()
@@ -167,7 +170,7 @@ export function ReadingPreview({
             if (live) image.src = data;
           })
           .catch(() => {
-            if (live) image.alt += "（资源缺失或不可预览）";
+            if (live) image.alt += t("（资源缺失或不可预览）");
           });
       });
     return () => {
@@ -203,7 +206,7 @@ export function ReadingPreview({
       }}
     >
       {error && <p role="alert">{error}</p>}
-      {!displayed.length && !error && <p>请选择 Markdown 文稿。</p>}
+      {!displayed.length && !error && <p>{t("请选择 Markdown 文稿。")}</p>}
       {spreads.map((spread, index) => (
         <div
           className={`reading-spread ${pair ? "double" : "single"} ${comic && settings.mode.comic.reading_direction === "rtl" ? "rtl" : ""}`}
@@ -223,7 +226,8 @@ export function ReadingPreview({
               )}
               {unit.markdown === null ? (
                 <p className="missing-document">
-                  文稿缺失或无法按 UTF-8 读取：{unit.path}
+                  {t("文稿缺失或无法按 UTF-8 读取：")}
+                  {unit.path}
                 </p>
               ) : (
                 <div

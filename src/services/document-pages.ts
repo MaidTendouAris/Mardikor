@@ -19,6 +19,39 @@ export type DocumentPages = {
   headings?: { line: number; level: number }[];
 };
 
+export type EditPageWindow = { first: number; last: number };
+
+function writablePage(layout: DocumentPages, index: number) {
+  const page = layout.pages[index];
+  return !!page && !page.readOnly;
+}
+
+export function editWindowAt(layout: DocumentPages, index: number) {
+  if (!writablePage(layout, index)) return undefined;
+  return {
+    first: writablePage(layout, index - 1) ? index - 1 : index,
+    last: writablePage(layout, index + 1) ? index + 1 : index,
+  };
+}
+
+export function shiftEditWindow(
+  layout: DocumentPages,
+  window: EditPageWindow,
+  direction: -1 | 1,
+) {
+  if (direction === 1 && writablePage(layout, window.last + 1))
+    return {
+      first: Math.max(window.first, window.last - 1),
+      last: window.last + 1,
+    };
+  if (direction === -1 && writablePage(layout, window.first - 1))
+    return {
+      first: window.first - 1,
+      last: Math.min(window.last, window.first + 1),
+    };
+  return window;
+}
+
 const blocks = createMarkdownParser(true, false).set({ html: true });
 const eol = /\r\n|\r|\n/g;
 export function lineBreaks(text: string) {
@@ -93,6 +126,13 @@ export function paginateMarkdown(text: string, length: number): DocumentPages {
         .map((t) => t.map![0]),
     ),
   ].sort((a, b) => a - b);
+  const tableEnds = new Map(
+    tokens.flatMap((token) =>
+      token.type === "table_open" && token.level === 0 && token.map
+        ? [[token.map[0], token.map[1]] as const]
+        : [],
+    ),
+  );
   const notes: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].type !== "footnote_reference_open" || tokens[i].level !== 0)
@@ -118,58 +158,62 @@ export function paginateMarkdown(text: string, length: number): DocumentPages {
   for (let index = 0; index < starts.length; index++) {
     const from = index === 0 ? 0 : starts[index];
     const to = starts[index + 1] ?? offsets.length;
+    const oversized = offset(to) - offset(from) > Math.max(length * 2, 24000);
+    const tableStart = starts[index];
+    const tableEnd = tableEnds.get(tableStart);
+    if (
+      oversized &&
+      tableEnd !== undefined &&
+      tableEnd > tableStart + 2 &&
+      offset(tableStart + 2) - offset(tableStart) < length
+    ) {
+      const header = text.slice(offset(tableStart), offset(tableStart + 2));
+      if (end > start && offset(tableStart + 3) - offset(start) > length) {
+        pages.push({ start: offset(start), line: start + 1 });
+        start = from;
+      }
+      let row = tableStart;
+      while (row < tableEnd) {
+        const continuation = row > tableStart;
+        const first = continuation ? row : start;
+        pages.push({
+          start: offset(first),
+          line: first + 1,
+          readOnly: true,
+          ...(continuation ? { tableHeader: header } : {}),
+        });
+        let next = continuation ? row + 1 : tableStart + 3;
+        const overhead = continuation ? header.length : 0;
+        while (
+          next < tableEnd &&
+          offset(next + 1) - offset(first) + overhead <= length
+        )
+          next++;
+        row = next;
+      }
+      if (offset(to) - offset(tableEnd) > length)
+        pages.push(
+          ...boundedRanges(
+            text,
+            offset(tableEnd),
+            offset(to),
+            length,
+            tableEnd + 1,
+          ),
+        );
+      start = end = to;
+      continue;
+    }
     if (end > start && offset(to) - offset(start) > length) {
       pages.push({ start: offset(start), line: start + 1 });
       start = from;
     }
-    if (offset(to) - offset(from) > Math.max(length * 2, 24000)) {
-      const table = tokens.find(
-        (token) =>
-          token.type === "table_open" &&
-          token.map?.[0] === from &&
-          token.level === 0,
+    if (oversized) {
+      pages.push(
+        ...boundedRanges(text, offset(from), offset(to), length, from + 1).map(
+          (page) => ({ ...page, literal: true }),
+        ),
       );
-      const tableEnd = table?.map?.[1];
-      if (
-        tableEnd &&
-        tableEnd > from + 2 &&
-        offset(from + 2) - offset(from) < length
-      ) {
-        const tableHeader = text.slice(offset(from), offset(from + 2));
-        let row = from;
-        while (row < tableEnd) {
-          pages.push({
-            start: offset(row),
-            line: row + 1,
-            readOnly: true,
-            ...(row > from ? { tableHeader } : {}),
-          });
-          let next = row === from ? row + 2 : row + 1;
-          while (next < tableEnd && offset(next + 1) - offset(row) <= length)
-            next++;
-          row = next;
-        }
-        if (offset(to) - offset(tableEnd) > length)
-          pages.push(
-            ...boundedRanges(
-              text,
-              offset(tableEnd),
-              offset(to),
-              length,
-              tableEnd + 1,
-            ),
-          );
-      } else {
-        pages.push(
-          ...boundedRanges(
-            text,
-            offset(from),
-            offset(to),
-            length,
-            from + 1,
-          ).map((page) => ({ ...page, literal: true })),
-        );
-      }
       start = to;
     }
     end = to;
@@ -202,22 +246,26 @@ export function replacePage(
   layout: DocumentPages,
   index: number,
   markdown: string,
+  last = index,
 ) {
   const start = layout.pages[index].start;
-  const end = layout.pages[index + 1]?.start ?? text.length;
+  const end = layout.pages[last + 1]?.start ?? text.length;
   const original = text.slice(start, end);
   // Keep the exact surrounding separator and line ending convention. In
   // particular a Tiptap serializer usually strips the trailing blank lines.
   const edge = /(?:\r\n|\r|\n)[\t \r\n]*$/.exec(original)?.[0] ?? "";
-  const newline = original.includes("\r\n") ? "\r\n" : "\n";
+  const newline =
+    original.includes("\r\n") || (!original && text.includes("\r\n"))
+      ? "\r\n"
+      : "\n";
   const body = markdown.replace(/\r\n?|\n/g, newline).replace(/[\r\n]+$/, "");
   const bom =
     original.startsWith("\ufeff") && !body.startsWith("\ufeff") ? "\ufeff" : "";
   const tail =
-    index + 1 < layout.pages.length && lineBreaks(edge) < 2
+    last + 1 < layout.pages.length && lineBreaks(edge) < 2
       ? newline + newline
       : edge;
-  const value = bom + body + tail;
+  const value = bom + body + (body ? tail : "");
   const delta = value.length - original.length;
   const lines = lineBreaks(value) - lineBreaks(original);
   return {
@@ -229,19 +277,18 @@ export function replacePage(
       headings: !lines
         ? layout.headings
         : layout.headings?.map((heading) =>
-            heading.line >= (layout.pages[index + 1]?.line ?? Infinity)
+            heading.line >= (layout.pages[last + 1]?.line ?? Infinity)
               ? { ...heading, line: heading.line + lines }
               : heading,
           ),
-      pages: layout.pages.map((page, i) =>
-        i <= index
-          ? page
-          : {
-              ...page,
-              start: page.start + delta,
-              line: page.line + lines,
-            },
-      ),
+      pages: [
+        ...layout.pages.slice(0, index + 1),
+        ...layout.pages.slice(last + 1).map((page) => ({
+          ...page,
+          start: page.start + delta,
+          line: page.line + lines,
+        })),
+      ],
     },
   };
 }
@@ -255,4 +302,34 @@ export function pageAtLine(pages: TextPage[], line: number) {
     else hi = mid;
   }
   return Math.max(0, lo - 1);
+}
+
+export function replacePages(
+  text: string,
+  layout: DocumentPages,
+  changes: { index: number; text: string }[],
+) {
+  let content = text;
+  let pagination = layout;
+  const applied = changes.map(({ index, text }) => {
+    const next = replacePage(content, pagination, index, text);
+    content = next.content;
+    pagination = next.layout;
+    return { index, text: next.pageText };
+  });
+  return { content, pagination, applied };
+}
+
+export function headingOffsetAtLine(
+  headings: { line: number }[],
+  line: number,
+) {
+  let lo = 0,
+    hi = headings.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (headings[mid].line < line) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }

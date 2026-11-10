@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export interface MarkdownSyntax {
   id: string;
   label: string;
@@ -8,104 +9,122 @@ export interface MarkdownSyntax {
 export const markdownSyntax: MarkdownSyntax[] = [
   ...Array.from({ length: 6 }, (_, i) => ({
     id: "heading" + (i + 1),
-    label: i + 1 + " 级标题",
-    group: "标题",
-    example: "#".repeat(i + 1) + " 标题",
+    label: i + 1 + t(" 级标题"),
+    group: t("标题"),
+    example: "#".repeat(i + 1) + t(" 标题"),
   })),
-  { id: "bold", label: "加粗", group: "文本", example: "**文字**" },
-  { id: "italic", label: "斜体", group: "文本", example: "*文字*" },
-  { id: "strike", label: "删除线", group: "文本", example: "~~文字~~" },
-  { id: "code", label: "行内代码", group: "文本", example: "`代码`" },
-  { id: "quote", label: "引用", group: "段落", example: "> 引用内容" },
+  { id: "bold", label: t("加粗"), group: t("文本"), example: t("**文字**") },
+  { id: "italic", label: t("斜体"), group: t("文本"), example: t("*文字*") },
+  {
+    id: "strike",
+    label: t("删除线"),
+    group: t("文本"),
+    example: t("~~文字~~"),
+  },
+  { id: "code", label: t("行内代码"), group: t("文本"), example: t("`代码`") },
+  { id: "quote", label: t("引用"), group: t("段落"), example: t("> 引用内容") },
   {
     id: "bullet",
-    label: "无序列表",
-    group: "列表",
-    example: "- 项目一\n- 项目二",
+    label: t("无序列表"),
+    group: t("列表"),
+    example: t("- 项目一\n- 项目二"),
   },
   {
     id: "ordered",
-    label: "有序列表",
-    group: "列表",
-    example: "1. 项目一\n2. 项目二",
+    label: t("有序列表"),
+    group: t("列表"),
+    example: t("1. 项目一\n2. 项目二"),
   },
   {
     id: "task",
-    label: "任务列表",
-    group: "列表",
-    example: "- [ ] 待办\n- [x] 已完成",
+    label: t("任务列表"),
+    group: t("列表"),
+    example: t("- [ ] 待办\n- [x] 已完成"),
   },
   {
     id: "link",
-    label: "链接",
-    group: "插入",
-    example: "[链接文字](https://example.com)",
+    label: t("链接"),
+    group: t("插入"),
+    example: t("[链接文字](https://example.com)"),
   },
   {
     id: "image",
-    label: "图片引用",
-    group: "插入",
-    example: "![图片说明](../resources/image/image.png)",
+    label: t("图片引用"),
+    group: t("插入"),
+    example: t("![图片说明](../resources/image/image.png)"),
   },
   {
     id: "table",
-    label: "表格",
-    group: "插入",
-    example: "| 标题一 | 标题二 |\n| --- | --- |\n| 内容 | 内容 |",
+    label: t("表格"),
+    group: t("插入"),
+    example: t("| 标题一 | 标题二 |\n| --- | --- |\n| 内容 | 内容 |"),
   },
   {
     id: "fence",
-    label: "代码块",
-    group: "插入",
-    example: "```text\n代码\n```",
+    label: t("代码块"),
+    group: t("插入"),
+    example: t("```text\n代码\n```"),
   },
-  { id: "rule", label: "分隔线", group: "插入", example: "---" },
-  { id: "break", label: "硬换行", group: "插入", example: "上一行  \n下一行" },
+  { id: "rule", label: t("分隔线"), group: t("插入"), example: "---" },
+  {
+    id: "break",
+    label: t("硬换行"),
+    group: t("插入"),
+    example: t("上一行  \n下一行"),
+  },
   {
     id: "autolink",
-    label: "自动链接",
-    group: "源码写法",
+    label: t("自动链接"),
+    group: t("源码写法"),
     example: "<https://example.com>",
   },
   {
     id: "reference",
-    label: "引用式链接",
-    group: "源码写法",
-    example: '[链接文字][link-id]\n\n[link-id]: https://example.com "链接标题"',
+    label: t("引用式链接"),
+    group: t("源码写法"),
+    example: t(
+      '[链接文字][link-id]\n\n[link-id]: https://example.com "链接标题"',
+    ),
     sourceOnly: true,
   },
   {
     id: "reference-image",
-    label: "引用式图片",
-    group: "源码写法",
-    example:
+    label: t("引用式图片"),
+    group: t("源码写法"),
+    example: t(
       '![图片说明][image-id]\n\n[image-id]: ../resources/image/image.png "图片标题"',
+    ),
     sourceOnly: true,
   },
   {
     id: "setext",
-    label: "Setext 标题",
-    group: "源码写法",
-    example: "标题\n====",
+    label: t("Setext 标题"),
+    group: t("源码写法"),
+    example: t("标题\n===="),
   },
   {
     id: "indented-code",
-    label: "缩进式代码块",
-    group: "源码写法",
-    example: "    代码行一\n    代码行二",
+    label: t("缩进式代码块"),
+    group: t("源码写法"),
+    example: t("    代码行一\n    代码行二"),
   },
-  { id: "escape", label: "转义标点", group: "源码写法", example: "\\*文字\\*" },
+  {
+    id: "escape",
+    label: t("转义标点"),
+    group: t("源码写法"),
+    example: t("\\*文字\\*"),
+  },
   {
     id: "math-inline",
-    label: "行内公式",
-    group: "源码写法",
+    label: t("行内公式"),
+    group: t("源码写法"),
     example: "$E=mc^2$",
     sourceOnly: true,
   },
   {
     id: "math-block",
-    label: "块级公式",
-    group: "源码写法",
+    label: t("块级公式"),
+    group: t("源码写法"),
     example: "$$\n\\frac{a}{b}\n$$",
     sourceOnly: true,
   },
@@ -142,14 +161,14 @@ export function codeFence(content: string, language = "") {
   );
 }
 export function markdownInsertion(id: string, selected = "") {
-  const text = selected || "文字";
+  const text = selected || t("文字");
   if (id === "escape") {
     const special = new Set("\\`*_{}[]()#+-.!>|~".split(""));
-    return [...(selected || "*文字*")]
+    return [...(selected || t("*文字*"))]
       .map((char) => (special.has(char) ? "\\" + char : char))
       .join("");
   }
-  if (id === "setext") return (selected || "标题") + "\n====";
+  if (id === "setext") return (selected || t("标题")) + "\n====";
   if (/^heading[1-6]$/.test(id))
     return text
       .split(/\r?\n/)
@@ -189,9 +208,9 @@ export function markdownInsertion(id: string, selected = "") {
                 : i + 1 + ". ") + line,
       )
       .join("\n");
-  if (id === "fence") return codeFence(selected || "代码", "text");
+  if (id === "fence") return codeFence(selected || t("代码"), "text");
   if (id === "indented-code")
-    return (selected || "代码")
+    return (selected || t("代码"))
       .split(/\r?\n/)
       .map((line) => "    " + line)
       .join("\n");
@@ -202,7 +221,7 @@ export function markdownInsertion(id: string, selected = "") {
   if (id === "image")
     return imageMarkdown(
       "../resources/image/image.png",
-      selected || "图片说明",
+      selected || t("图片说明"),
     );
   return markdownSyntax.find((syntax) => syntax.id === id)?.example ?? "";
 }

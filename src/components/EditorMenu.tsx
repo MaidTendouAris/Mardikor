@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 export interface EditorMenuItem {
@@ -80,7 +81,7 @@ export function EditorMenu({
       className="editor-context-menu"
       ref={menu}
       role="menu"
-      aria-label="正文右键菜单"
+      aria-label={t("正文右键菜单")}
       style={{ left: x, top: y }}
     >
       {items.map((item) => (
@@ -137,7 +138,7 @@ export function EditorDialog({
         <strong>{title}</strong>
         <button
           className="icon-button"
-          aria-label="关闭对话框"
+          aria-label={t("关闭对话框")}
           onClick={onClose}
         >
           ×

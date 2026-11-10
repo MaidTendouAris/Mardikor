@@ -47,6 +47,8 @@ pre,code,kbd,samp{font-family:${fontFamily};font-size:.9em}pre{white-space:pre-w
 table{border-collapse:collapse;table-layout:fixed;width:100%;margin:1em 0}th,td{border:1px solid #bbc2cb;padding:.45em;overflow-wrap:anywhere}thead{display:table-header-group}tr{break-inside:avoid}hr{border:0;border-top:1px solid #bbb;margin:1.5em 0}ul,ol{padding-left:1.8em}li>p{margin-bottom:.3em}li{orphans:2;widows:2}p{orphans:2;widows:2}.task-list-item{list-style:none}.task-marker{margin-right:.4em}aside{border-left:3px solid #6a8ec9;padding:.75em;margin:1em 0;background:#f2f6fc}
 .toc a{color:inherit}.toc ol{list-style:none;padding-left:1.2em}.toc>ol{padding-left:0}.toc li{margin:.3em 0}.cover{display:flex;align-items:center;justify-content:center}.cover img{max-height:100%;width:100%;height:100%;object-fit:contain}
 th{text-align:left}
+.katex-block{break-inside:avoid;text-align:center}math{max-width:100%}
+.katex span[class*="_fallback"]{font-family:${fontFamily}}
 ${fixed ? `.unit{height:${(height - l.margin_top - l.margin_bottom) / scale}px;min-width:0}.unit>p:only-child:has(>img:only-child){height:100%;margin:0;line-height:0}.unit>p:only-child>img:only-child{height:${c.comic.page_fit === "width" ? "auto" : "100%"};max-height:${c.comic.page_fit === "width" ? "none" : "100%"};width:100%;object-fit:${c.comic.page_fit === "width" ? "contain" : c.comic.page_fit}}` : ""}
 @media print{a{text-decoration:inherit}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 `;
@@ -143,5 +145,10 @@ ${prepared.format === "pdf" && pdf.first_page_number !== 1 ? `@page:first{counte
 body{width:${(width - l.margin_left - l.margin_right) / scale}px}.front-page{break-after:page;min-height:${(height - l.margin_top - l.margin_bottom) / scale}px}.cover{height:${(height - l.margin_top - l.margin_bottom) / scale}px}
 ${pair ? ".spread{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;break-after:page}.spread>.unit{direction:ltr}" : `.unit+.unit{break-before:${breaks === "none" ? "auto" : breaks}}`}
 `;
-  return `<!DOCTYPE html><html lang="${escapeXml(metadata.language)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'unsafe-inline';img-src 'self';font-src 'self';base-uri 'none';form-action 'none'"><title>${escapeXml(metadata.title)}</title><style>${css}</style></head><body>${content}</body></html>`;
+  const mathStyles =
+    prepared.format === "pdf" &&
+    prepared.chapters.some(({ hasMath }) => hasMath)
+      ? '<link rel="stylesheet" href="math/katex.min.css">'
+      : "";
+  return `<!DOCTYPE html><html lang="${escapeXml(metadata.language)}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none';style-src 'self' 'unsafe-inline';img-src 'self';font-src 'self';base-uri 'none';form-action 'none'"><title>${escapeXml(metadata.title)}</title><style>${css}</style>${mathStyles}</head><body>${content}</body></html>`;
 }

@@ -1,26 +1,18 @@
+import { t } from "./i18n";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import footnote from "markdown-it-footnote";
 import type { RuleBlock } from "markdown-it/lib/parser_block.mjs";
 
-// Use MarkdownIt's block tokenizer; the extension only supplies strict container
-// boundaries. Unclosed/unknown declarations fall through as ordinary Markdown.
-const containerRule: RuleBlock = (state, start, end, silent) => {
-  const line = (index: number) =>
-    state.src.slice(
-      state.bMarks[index] + state.tShift[index],
-      state.eMarks[index],
-    );
-  if (state.sCount[start] - state.blkIndent >= 4) return false;
-  const opening = line(start).match(/^(:{3,})[\t ]*(note|warning|tip)[\t ]*$/);
-  if (!opening) return false;
-  const stack = [opening[1].length];
-  let closing = -1,
-    fence: { marker: string; length: number } | null = null;
-  for (let i = start + 1; i < end; i++) {
-    if (state.sCount[i] < state.blkIndent && line(i).trim()) break;
-    const value = line(i);
-    if (state.sCount[i] - state.blkIndent >= 4) continue;
+export const mdkContainerOpening = /^(:{3,})[\t ]*(note|warning|tip)[\t ]*$/;
+
+export function mdkContainerClose(
+  length: number,
+  lines: Iterable<{ position: number; value: string }>,
+) {
+  const stack = [length];
+  let fence: { marker: string; length: number } | null = null;
+  for (const { position, value } of lines) {
     const code = value.match(/^(`{3,}|~{3,})(.*)$/);
     if (fence) {
       if (
@@ -36,7 +28,7 @@ const containerRule: RuleBlock = (state, start, end, silent) => {
       fence = { marker: code[1][0], length: code[1].length };
       continue;
     }
-    const nested = value.match(/^(:{3,})[\t ]*(note|warning|tip)[\t ]*$/);
+    const nested = value.match(mdkContainerOpening);
     if (nested && nested[1].length < stack.at(-1)!) {
       stack.push(nested[1].length);
       continue;
@@ -44,12 +36,31 @@ const containerRule: RuleBlock = (state, start, end, silent) => {
     const close = value.match(/^(:{3,})[\t ]*$/);
     if (close && close[1].length >= stack.at(-1)!) {
       stack.pop();
-      if (!stack.length) {
-        closing = i;
-        break;
-      }
+      if (!stack.length) return position;
     }
   }
+  return -1;
+}
+
+// Unclosed and unknown declarations fall through as ordinary Markdown.
+const containerRule: RuleBlock = (state, start, end, silent) => {
+  const line = (index: number) =>
+    state.src.slice(
+      state.bMarks[index] + state.tShift[index],
+      state.eMarks[index],
+    );
+  if (state.sCount[start] - state.blkIndent >= 4) return false;
+  const opening = line(start).match(mdkContainerOpening);
+  if (!opening) return false;
+  function* lines() {
+    for (let position = start + 1; position < end; position++) {
+      const value = line(position);
+      if (state.sCount[position] < state.blkIndent && value.trim()) break;
+      if (state.sCount[position] - state.blkIndent < 4)
+        yield { position, value };
+    }
+  }
+  const closing = mdkContainerClose(opening[1].length, lines());
   if (closing < 0) return false;
   if (silent) return true;
   const previousParent = state.parentType,
@@ -101,8 +112,12 @@ export function createMarkdownParser(containers = true, taskCheckboxes = true) {
   // The plug-in's declarations target MarkdownIt's equivalent CJS interface.
   parser.use(footnote as unknown as (md: MarkdownIt) => void);
   const backlink = parser.renderer.rules.footnote_anchor!;
-  parser.renderer.rules.footnote_anchor = (...args) =>
-    backlink(...args).replace(">↩︎</a>", ' aria-label="返回脚注引用">^</a>');
+  parser.renderer.rules.footnote_anchor = (...args) => {
+    const label = parser.utils.escapeHtml(
+      args[3].footnoteLabel ?? t("返回脚注引用"),
+    );
+    return backlink(...args).replace(">↩︎</a>", ` aria-label="${label}">^</a>`);
+  };
   parser.renderer.rules.mdk_container_open = (
     tokens,
     index,

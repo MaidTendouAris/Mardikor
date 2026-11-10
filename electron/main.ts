@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import * as mdk from "./mdk";
 import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
+import { t, appLocale, resolveAppLocale, setAppLocale } from "../shared/i18n";
 import { containsControl } from "../shared/schema";
 import { insertionFormats } from "../shared/resources";
 import { isMarkdownFile, isSupportedDocument } from "../shared/workspace";
@@ -54,7 +55,7 @@ function persistWindowSize() {
   try {
     state.windowSize(pendingWindowSize);
   } catch (error) {
-    console.error("无法保存窗口尺寸", error);
+    console.error(t("无法保存窗口尺寸"), error);
   }
   pendingWindowSize = undefined;
 }
@@ -84,10 +85,13 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
     if (context.window.isDestroyed() || !context.dirty) continue;
     const { response } = await dialog.showMessageBox(context.window, {
       type: "question",
-      title: "安装更新前处理未保存内容",
-      message: `${path.basename(context.activeProject) || "当前窗口"} 有未保存的更改。`,
-      detail: "安装更新将关闭所有 Mardikor 窗口。",
-      buttons: ["保存并更新", "放弃更改并更新", "取消更新"],
+      title: t("安装更新前处理未保存内容"),
+      message: t(
+        "{0} 有未保存的更改。",
+        path.basename(context.activeProject) || t("当前窗口"),
+      ),
+      detail: t("安装更新将关闭所有 Mardikor 窗口。"),
+      buttons: [t("保存并更新"), t("放弃更改并更新"), t("取消更新")],
       defaultId: 0,
       cancelId: 2,
     });
@@ -124,6 +128,21 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
 }
 function createHandlers(context: DocumentWindow): MdkCommands {
   const { droppedFiles, publicationOutputs } = context;
+  async function extractFiles(file: string, paths: string[], revision: string, resourcesOnly: boolean) {
+    const plan = mdk.prepareMdkResourceExtraction(file, paths, revision, resourcesOnly);
+    if (plan.filename) {
+      const result = await dialog.showSaveDialog(context.window, {
+        title: resourcesOnly ? t("提取资源文件") : t("提取文件"),
+        defaultPath: plan.filename,
+      });
+      return result.canceled || !result.filePath ? null : plan.extract(result.filePath);
+    }
+    const result = await dialog.showOpenDialog(context.window, {
+      title: resourcesOnly ? t("选择资源导出的目标目录") : t("选择文件提取的目标目录"),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled || !result.filePaths[0] ? null : plan.extract(result.filePaths[0]);
+  }
   const exportRuntime = (source?: string) =>
     publicationRuntime(
       state,
@@ -132,7 +151,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
           approval = publicationOutputs.get(key);
         publicationOutputs.delete(key);
         if (!approval || approval.expires < Date.now())
-          throw new Error("请选择 PDF / EPUB 输出文件并确认覆盖。");
+          throw new Error(t("请选择 PDF / EPUB 输出文件并确认覆盖。"));
         return approval.revision;
       },
       source
@@ -178,11 +197,26 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     reorderEntries: mdk.reorderMdkEntries,
     splitEntry: mdk.splitMdkEntry,
     importResource: mdk.importMdkResource,
+    createResourceFolder: mdk.createMdkResourceFolder,
+    renameResource: mdk.renameMdkResource,
+    deleteResource: mdk.deleteMdkResource,
+    importResourcesTo: async (file, folder, mode, revision) => {
+      if (mode !== "files" && mode !== "folders")
+        throw new Error(t("文件对话框参数无效。"));
+      const result = await dialog.showOpenDialog(context.window, {
+        title: mode === "files" ? t("导入资源文件") : t("导入资源文件夹"),
+        properties: [mode === "files" ? "openFile" : "openDirectory", "multiSelections"],
+      });
+      if (result.canceled || !result.filePaths.length) return null;
+      return mdk.importMdkResourceBatch(file, folder, result.filePaths, revision);
+    },
+    extractResources: (file, paths, revision) => extractFiles(file, paths, revision, true),
+    extractProjectFiles: (file, paths, revision) => extractFiles(file, paths, revision, false),
     insertResources: (file, token, insertion) => {
       const files = droppedFiles.get(token);
       droppedFiles.delete(token);
       if (!files || files.expires < Date.now())
-        throw new Error("拖入文件授权已失效，请重新拖入。");
+        throw new Error(t("拖入文件授权已失效，请重新拖入。"));
       return isMarkdownFile(file)
         ? markdownFile.insertMarkdownResources(file, files.sources, insertion)
         : mdk.insertMdkResources(file, files.sources, insertion);
@@ -199,10 +233,6 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     readMode: mdk.readMdkMode,
     readResource: mdk.readMdkResource,
     setMode: mdk.setMdkMode,
-    createText: mdk.createTextFile,
-    createDirectory: mdk.createProjectDirectory,
-    renameFile: mdk.renameProjectFile,
-    deleteFile: mdk.deleteProjectFile,
     checkPackDirectory: mdk.checkMdkDirectory,
     pack: mdk.packMdk,
     unpack: mdk.unpackMdk,
@@ -230,14 +260,14 @@ function verifySender(
     event.sender !== context.window.webContents ||
     frame !== event.sender.mainFrame
   )
-    throw new Error("不受信任的 IPC 来源。");
+    throw new Error(t("不受信任的 IPC 来源。"));
   const url = frame?.url ?? "";
   if (
     devUrl
       ? new URL(url).origin !== new URL(devUrl).origin
       : url.split(/[?#]/)[0] !== pathToFileURL(rendererFile).href
   )
-    throw new Error("IPC 页面来源无效。");
+    throw new Error(t("IPC 页面来源无效。"));
   return context;
 }
 function assertApproved(
@@ -248,7 +278,23 @@ function assertApproved(
     typeof file !== "string" ||
     !context.approvedFiles.has(path.resolve(file))
   )
-    throw new Error("请通过文件对话框选择此路径。");
+    throw new Error(t("请通过文件对话框选择此路径。"));
+}
+function watchActiveProject(context: DocumentWindow, source: string) {
+  if (context.activeProject !== source) {
+    context.stopWatching?.();
+    context.activeProject = source;
+    let reportedRevision: string | null | undefined;
+    context.stopWatching = watchProjectFile(source, (revision) => {
+      if (context.window.isDestroyed() || context.activeProject !== source)
+        return;
+      const changed = context.revisions.get(source) !== revision;
+      if (reportedRevision === (changed ? revision : undefined)) return;
+      reportedRevision = changed ? revision : undefined;
+      context.window.webContents.send("app:project-changed", source, revision);
+    });
+  }
+  context.window.setTitle(`${path.basename(source)} - Mardikor`);
 }
 const counts: Record<keyof MdkCommands, [number, number]> = {
   publicationInfo: [1, 1],
@@ -266,6 +312,12 @@ const counts: Record<keyof MdkCommands, [number, number]> = {
   reorderEntries: [2, 2],
   splitEntry: [2, 2],
   importResource: [3, 3],
+  createResourceFolder: [4, 4],
+  renameResource: [4, 4],
+  deleteResource: [3, 3],
+  importResourcesTo: [4, 4],
+  extractResources: [3, 3],
+  extractProjectFiles: [3, 3],
   insertResources: [3, 3],
   readText: [2, 2],
   saveText: [3, 3],
@@ -279,10 +331,6 @@ const counts: Record<keyof MdkCommands, [number, number]> = {
   readMode: [1, 1],
   readResource: [2, 2],
   setMode: [2, 2],
-  createText: [3, 3],
-  createDirectory: [2, 2],
-  renameFile: [3, 3],
-  deleteFile: [2, 2],
   checkPackDirectory: [1, 1],
   pack: [3, 3],
   unpack: [2, 2],
@@ -297,7 +345,7 @@ function registerDroppedFiles(context: DocumentWindow, paths: unknown) {
       (p) => typeof p !== "string" || !path.isAbsolute(p) || p.length > 32768,
     )
   )
-    throw new Error("拖入文件无效，一次最多 16 个文件。");
+    throw new Error(t("拖入文件无效，一次最多 16 个文件。"));
   return registerInsertionSources(droppedFiles, paths);
 }
 function registerInsertionSources(
@@ -306,7 +354,7 @@ function registerInsertionSources(
 ) {
   for (const [key, value] of droppedFiles)
     if (value.expires < Date.now()) droppedFiles.delete(key);
-  if (droppedFiles.size >= 32) throw new Error("请完成当前资源操作后重试。");
+  if (droppedFiles.size >= 32) throw new Error(t("请完成当前资源操作后重试。"));
   const token = randomUUID();
   droppedFiles.set(token, { sources, expires: Date.now() + 60000 });
   setTimeout(() => droppedFiles.delete(token), 60000).unref();
@@ -335,7 +383,7 @@ function registerIpc() {
         }
       return result;
     }
-    throw new Error("更新操作无效。");
+    throw new Error(t("更新操作无效。"));
   });
   ipcMain.on("app:saved-for-update", (event, request, success) => {
     verifySender(event);
@@ -349,11 +397,11 @@ function registerIpc() {
   ipcMain.handle("app:pick-document-resources", async (event) => {
     const context = verifySender(event);
     const result = await dialog.showOpenDialog(context.window, {
-      title: "插入本地资源",
+      title: t("插入本地资源"),
       properties: ["openFile", "multiSelections"],
       filters: [
         {
-          name: "支持的图片、音视频及 PDF",
+          name: t("支持的图片、音视频及 PDF"),
           extensions: Object.keys(insertionFormats),
         },
       ],
@@ -369,18 +417,18 @@ function registerIpc() {
       !bytes.length ||
       bytes.length > 16 * 1024 * 1024
     )
-      throw new Error("剪贴板图片为空或超过 16 MiB。");
+      throw new Error(t("剪贴板图片为空或超过 16 MiB。"));
     const extension = Object.keys(insertionFormats).find(
       (key) =>
         insertionFormats[key].kind === "image" &&
         insertionFormats[key].mime === mime,
     );
-    if (!extension) throw new Error("不支持此剪贴板图片格式。");
+    if (!extension) throw new Error(t("不支持此剪贴板图片格式。"));
     for (const [token, pending] of droppedFiles)
       if (typeof pending.sources[0] !== "string") droppedFiles.delete(token);
     return registerInsertionSources(droppedFiles, [
       {
-        name: "剪贴板图片." + extension,
+        name: t("剪贴板图片.") + extension,
         bytes: Buffer.from(bytes),
       },
     ]);
@@ -389,7 +437,7 @@ function registerIpc() {
     verifySender(event);
     if (action === "copy-text") {
       if (typeof text !== "string" || text.length > 16 * 1024 * 1024)
-        throw new Error("复制内容无效或过大。");
+        throw new Error(t("复制内容无效或过大。"));
       clipboard.writeText(text);
       return;
     }
@@ -398,7 +446,7 @@ function registerIpc() {
     else if (action === "paste") event.sender.paste();
     else if (action === "paste-text") event.sender.pasteAndMatchStyle();
     else if (action === "select-all") event.sender.selectAll();
-    else throw new Error("编辑命令无效。");
+    else throw new Error(t("编辑命令无效。"));
   });
   ipcMain.handle("app:recovery", (event, file, value) => {
     const context = verifySender(event);
@@ -410,7 +458,7 @@ function registerIpc() {
         typeof value !== "object" ||
         typeof value.revision !== "string")
     )
-      throw new Error("恢复草稿参数无效。");
+      throw new Error(t("恢复草稿参数无效。"));
     const recovery = state.recovery(file, value, context.recoveryOwner);
     return value === undefined ? recovery : null;
   });
@@ -422,13 +470,13 @@ function registerIpc() {
       !/^https?:\/\/|^mailto:/i.test(url) ||
       containsControl(url)
     )
-      throw new Error("禁止的导航协议。");
+      throw new Error(t("禁止的导航协议。"));
     return shell.openExternal(url);
   });
   ipcMain.handle("app:open-markdown-link", async (event, href) => {
     const context = verifySender(event);
     if (typeof href !== "string" || !isMarkdownFile(context.activeProject))
-      throw new Error("此窗口不能打开本地文件链接。");
+      throw new Error(t("此窗口不能打开本地文件链接。"));
     const target = markdownFile.resolveMarkdownLink(
       context.activeProject,
       href,
@@ -436,13 +484,13 @@ function registerIpc() {
     if (isMarkdownFile(target.path)) createWindow(target.path, target.fragment);
     else {
       const error = await shell.openPath(target.path);
-      if (error) throw new Error(`无法用默认应用打开文件：${error}`);
+      if (error) throw new Error(t("无法用默认应用打开文件：{0}", error));
     }
   });
   ipcMain.handle("app:reveal-file", (event, entry: unknown) => {
     const { activeProject } = verifySender(event);
     if (!activeProject || typeof entry !== "string")
-      throw new Error("当前文件无效。");
+      throw new Error(t("当前文件无效。"));
     const target =
       isMarkdownFile(activeProject) &&
       entry &&
@@ -450,12 +498,62 @@ function registerIpc() {
         ? markdownFile.resolveLocalMarkdownPath(activeProject, entry)
         : activeProject;
     if (!fs.statSync(target, { throwIfNoEntry: false })?.isFile())
-      throw new Error("当前文件不存在。");
+      throw new Error(t("当前文件不存在。"));
     shell.showItemInFolder(target);
+  });
+  ipcMain.handle("app:rename-archive", (event, name, revision, mode) => {
+    const context = verifySender(event);
+    const file = context.activeProject;
+    if (
+      !/\.mdk$/i.test(file) ||
+      typeof name !== "string" ||
+      name.length > 255 ||
+      typeof mode !== "string" ||
+      !/^[\da-f]{2}$/i.test(mode)
+    )
+      throw new Error(t("工程名称无效。"));
+    assertApproved(context, file);
+    if (typeof revision !== "string" || revision !== context.revisions.get(file))
+      throw new mdk.MdkRevisionError();
+    const target = mdk.mdkRenameTarget(file, name);
+    if (target === file) return file;
+    const sourcePath = fs.realpathSync.native(file);
+    for (const other of windows.values()) {
+      if (other === context) continue;
+      const opened = other.activeProject || other.queuedFile;
+      if (!opened) continue;
+      let resolved: string;
+      try {
+        resolved = fs.realpathSync.native(opened);
+      } catch {
+        continue;
+      }
+      if (resolved === sourcePath)
+        throw new Error(t("请先关闭其他打开此工程的窗口。"));
+    }
+    const draft = state.recovery(file, undefined, context.recoveryOwner);
+    mdk.renameMdkArchive(file, target, revision);
+    for (const other of windows.values()) {
+      other.approvedFiles.delete(file);
+      other.revisions.delete(file);
+    }
+    context.approvedFiles.add(target);
+    context.revisions.set(target, revision);
+    watchActiveProject(context, target);
+    try {
+      state.remember(target, mode, file);
+      if (draft) {
+        state.recovery(target, draft, context.recoveryOwner);
+        state.recovery(file, null, context.recoveryOwner);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    return target;
   });
   ipcMain.handle(
     "mdk:invoke",
-    (event, command: keyof MdkCommands, args: unknown[]) => {
+    async (event, command: keyof MdkCommands, args: unknown[]) => {
       const context = verifySender(event);
       const handlers = createHandlers(context);
       const { revisions } = context;
@@ -464,10 +562,10 @@ function registerIpc() {
         !Object.hasOwn(handlers, command) ||
         !Array.isArray(args)
       )
-        throw new Error("IPC 命令无效。");
+        throw new Error(t("IPC 命令无效。"));
       const [minimum, maximum] = counts[command];
       if (args.length < minimum || args.length > maximum)
-        throw new Error("IPC 参数数量无效。");
+        throw new Error(t("IPC 参数数量无效。"));
       args.forEach((arg, index) => {
         if (
           index === 1 &&
@@ -481,12 +579,18 @@ function registerIpc() {
           return;
         if (index === 2 && command === "addEntry" && arg === undefined) return;
         if (index === 2 && command === "insertResources") return;
+        if (index === 1 && (command === "extractResources" || command === "extractProjectFiles")) {
+          if (!Array.isArray(arg) || arg.length > 10000 ||
+              arg.some((item) => typeof item !== "string" || item.length > 65535))
+            throw new Error(t("IPC 参数类型或大小无效。"));
+          return;
+        }
         if (index === 2 && command === "copyDraft") {
-          if (!arg || typeof arg !== "object") throw new Error("草稿无效。");
+          if (!arg || typeof arg !== "object") throw new Error(t("草稿无效。"));
           return;
         }
         if (typeof arg !== "string" || arg.length > 16 * 1024 * 1024)
-          throw new Error("IPC 参数类型或大小无效。");
+          throw new Error(t("IPC 参数类型或大小无效。"));
       });
       assertApproved(context, args[0]);
       if (
@@ -515,10 +619,10 @@ function registerIpc() {
         "saveText",
         "updateSettings",
         "setMode",
-        "createText",
-        "createDirectory",
-        "renameFile",
-        "deleteFile",
+        "createResourceFolder",
+        "renameResource",
+        "deleteResource",
+        "importResourcesTo",
         "saveSnapshot",
       ].includes(command);
       if (
@@ -527,7 +631,7 @@ function registerIpc() {
         mdk.fileRevision(source) !== revisions.get(source)
       )
         throw new Error(
-          "磁盘工程已被其他进程修改；存在保存冲突，请重新打开或另存副本。",
+          t("磁盘工程已被其他进程修改；存在保存冲突，请重新打开或另存副本。"),
         );
       const standaloneHandlers: Partial<MdkCommands> = {
         publicationInfo: handlers.publicationInfo,
@@ -549,8 +653,9 @@ function registerIpc() {
           ? standaloneHandlers[command]
           : handlers[command];
       if (!handler)
-        throw new Error("此功能仅适用于 MDK 工程，单 Markdown 模式不可用。");
-      const result = (handler as (...values: unknown[]) => unknown)(...args);
+        throw new Error(t("此功能仅适用于 MDK 工程，单 Markdown 模式不可用。"));
+      const pending = (handler as (...values: unknown[]) => unknown)(...args);
+      const result = command === "importResourcesTo" ? await pending : pending;
       if (command === "open" || command === "create") {
         state.remember(
           args[0],
@@ -558,30 +663,10 @@ function registerIpc() {
             ? "markdown"
             : (result as { mode: string }).mode,
         );
-        if (context.activeProject !== source) {
-          context.stopWatching?.();
-          context.activeProject = source;
-          let reportedRevision: string | null | undefined;
-          context.stopWatching = watchProjectFile(source, (revision) => {
-            if (
-              context.window.isDestroyed() ||
-              context.activeProject !== source
-            )
-              return;
-            const changed = context.revisions.get(source) !== revision;
-            if (reportedRevision === (changed ? revision : undefined)) return;
-            reportedRevision = changed ? revision : undefined;
-            context.window.webContents.send(
-              "app:project-changed",
-              source,
-              revision,
-            );
-          });
-        }
-        context.window.setTitle(`${path.basename(source)} - Mardikor`);
+        watchActiveProject(context, source);
       }
       if (
-        (mutating || command === "open" || command === "create") &&
+        result !== null && (mutating || command === "open" || command === "create") &&
         fs.existsSync(source)
       )
         revisions.set(
@@ -614,24 +699,24 @@ function registerIpc() {
         ].includes(kind) ||
         (defaultPath !== undefined && typeof defaultPath !== "string")
       )
-        throw new Error("文件对话框参数无效。");
+        throw new Error(t("文件对话框参数无效。"));
       const filters =
         kind === "save-pdf" || kind === "save-epub"
           ? [
               {
-                name: kind === "save-pdf" ? "PDF 文档" : "EPUB 电子书",
+                name: kind === "save-pdf" ? t("PDF 文档") : t("EPUB 电子书"),
                 extensions: [kind === "save-pdf" ? "pdf" : "epub"],
               },
             ]
           : kind === "save-markdown"
-            ? [{ name: "Markdown 文件", extensions: ["md"] }]
+            ? [{ name: t("Markdown 文件"), extensions: ["md"] }]
             : kind === "open-project"
               ? [
                   { name: "Mardikor / Markdown", extensions: ["mdk", "md"] },
-                  { name: "MDK 工程", extensions: ["mdk"] },
-                  { name: "Markdown 文件", extensions: ["md"] },
+                  { name: t("MDK 工程"), extensions: ["mdk"] },
+                  { name: t("Markdown 文件"), extensions: ["md"] },
                 ]
-              : [{ name: "Mardikor 工程", extensions: ["mdk"] }];
+              : [{ name: t("Mardikor 工程"), extensions: ["mdk"] }];
       let selected: string | undefined;
       if (
         ["save-project", "save-markdown", "save-pdf", "save-epub"].includes(
@@ -641,7 +726,7 @@ function registerIpc() {
         const result = await dialog.showSaveDialog(context.window, {
           defaultPath:
             defaultPath ??
-            (kind === "save-markdown" ? "未命名.md" : "未命名.mdk"),
+            (kind === "save-markdown" ? t("未命名.md") : t("未命名.mdk")),
           filters,
         });
         if (!result.canceled) selected = result.filePath;
@@ -676,6 +761,10 @@ function registerIpc() {
       context.approvedFiles.add(path.resolve(file.path));
     return recent;
   });
+  ipcMain.handle("app:locale", (event) => {
+    verifySender(event);
+    return appLocale();
+  });
   ipcMain.handle("app:preferences", (event, value?: Preferences) => {
     verifySender(event);
     const result = state.preferences(value);
@@ -695,7 +784,7 @@ function registerIpc() {
       if (window.isMaximized()) window.unmaximize();
       else window.maximize();
     } else if (action === "close") window.close();
-    else if (action !== "isMaximized") throw new Error("窗口操作无效。");
+    else if (action !== "isMaximized") throw new Error(t("窗口操作无效。"));
     return !window.isDestroyed() && window.isMaximized();
   });
   ipcMain.on("app:dirty", (event, value) => {
@@ -818,11 +907,11 @@ function createWindow(file?: string, fragment?: string) {
     if (context.dirty) {
       const choice = dialog.showMessageBoxSync(window!, {
         type: "question",
-        buttons: ["保存并关闭", "放弃更改并关闭", "取消"],
+        buttons: [t("保存并关闭"), t("放弃更改并关闭"), t("取消")],
         defaultId: 0,
         cancelId: 2,
-        title: "尚有未保存的更改",
-        message: "关闭后，未保存的正文、源码或目录更改会丢失。",
+        title: t("尚有未保存的更改"),
+        message: t("关闭后，未保存的正文、源码或目录更改会丢失。"),
       });
       if (choice === 1 && context.activeProject)
         state.recovery(context.activeProject, null, context.recoveryOwner);
@@ -882,8 +971,15 @@ else {
   app
     .whenReady()
     .then(() => {
+      const systemLocale = process.env.MARDIKOR_HEADLESS
+        ? (process.env.MARDIKOR_TEST_SYSTEM_LOCALE ?? "zh-CN")
+        : (app.getPreferredSystemLanguages()[0] ?? app.getLocale());
+      setAppLocale(resolveAppLocale("system", systemLocale));
       state = new AppState(
         process.env.MARDIKOR_USER_DATA ?? app.getPath("userData"),
+      );
+      setAppLocale(
+        resolveAppLocale(state.preferences().language, systemLocale),
       );
       const canInstallUpdate =
         app.isPackaged &&
@@ -931,7 +1027,7 @@ else {
       });
     })
     .catch((error) => {
-      dialog.showErrorBox("Mardikor 启动失败", String(error));
+      dialog.showErrorBox(t("Mardikor 启动失败"), String(error));
       app.quit();
     });
   app.on("window-all-closed", () => {

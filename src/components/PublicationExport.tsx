@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Download,
@@ -18,13 +19,13 @@ import type {
 } from "../../shared/publication";
 
 const progressLabels: Record<PublicationStage, string> = {
-  prepare: "正在读取工程并校验文稿、字体和资源…",
-  "validate-layout": "正在排版并检查页面、字体和图片…",
-  "print-pdf": "正在生成 PDF 页面…",
-  "pdf-toc": "正在计算 PDF 目录页码…",
-  "finalize-pdf": "正在整理 PDF 书签和文档信息…",
-  "build-epub": "正在构建 EPUB 并校验文件…",
-  write: "正在校验修订并写入导出文件…",
+  prepare: t("正在读取工程并校验文稿、字体和资源…"),
+  "validate-layout": t("正在排版并检查页面、字体和图片…"),
+  "print-pdf": t("正在生成 PDF 页面…"),
+  "pdf-toc": t("正在计算 PDF 目录页码…"),
+  "finalize-pdf": t("正在整理 PDF 书签和文档信息…"),
+  "build-epub": t("正在构建 EPUB 并校验文件…"),
+  write: t("正在校验修订并写入导出文件…"),
 };
 
 export function PublicationExport({
@@ -67,7 +68,7 @@ export function PublicationExport({
       setBusy(true);
       void (async () => {
         if (!(await flushRef.current()))
-          throw new Error("请先保存或修复编辑缓冲区。");
+          throw new Error(t("请先保存或修复编辑缓冲区。"));
         return desktop().invoke("publicationInfo", file);
       })()
         .then((value) => {
@@ -112,14 +113,7 @@ export function PublicationExport({
       setBusy(false);
     }
   }
-  const needsSave =
-    !!info &&
-    !!draft &&
-    (changed ||
-      !info.saved ||
-      (!info.standalone &&
-        format === "pdf" &&
-        draft.appearance.font_family === "system"));
+  const needsSave = !!info && !!draft && (changed || !info.saved);
   async function persistConfiguration() {
     if (!draft || !info) return;
     const current = await desktop().invoke("publicationInfo", file);
@@ -130,7 +124,7 @@ export function PublicationExport({
         JSON.stringify(current.configuration) !==
           JSON.stringify(info.configuration))
     )
-      throw new Error("工程导出设置已变化，请重新读取配置后再保存。");
+      throw new Error(t("工程导出设置已变化，请重新读取配置后再保存。"));
     const value = await desktop().invoke(
       "configurePublication",
       file,
@@ -154,8 +148,8 @@ export function PublicationExport({
       if (!value) return;
       notify(
         value.standalone
-          ? "导出配置已保存在本机，Markdown 原文件保持不变。"
-          : "导出配置已保存至工程。",
+          ? t("导出配置已保存在本机，Markdown 原文件保持不变。")
+          : t("导出配置已保存至工程。"),
       );
     } catch (error) {
       setError(String(error));
@@ -167,7 +161,7 @@ export function PublicationExport({
     if (!info || !draft) return;
     setBusy(true);
     setError("");
-    setProgress("正在保存文稿与导出配置…");
+    setProgress(t("正在保存文稿与导出配置…"));
     try {
       if (!(await flush())) return;
       if (needsSave) await persistConfiguration();
@@ -178,7 +172,7 @@ export function PublicationExport({
         draft.publication.metadata.title.replace(/[\\/:<>"|?*]/g, "_") +
         "." +
         format;
-      setProgress("请选择导出位置。");
+      setProgress(t("请选择导出位置。"));
       const output = await desktop().dialog(
         format === "pdf" ? "save-pdf" : "save-epub",
         name,
@@ -192,7 +186,11 @@ export function PublicationExport({
         result.fingerprint,
       );
       notify(
-        `${format.toUpperCase()} 已导出${exported.pages ? `，共 ${exported.pages} 页` : ""}。`,
+        t(
+          "{0} 已导出{1}。",
+          format.toUpperCase(),
+          exported.pages ? t("，共 {0} 页", exported.pages) : "",
+        ),
       );
     } catch (error) {
       setError(String(error));
@@ -303,22 +301,22 @@ export function PublicationExport({
     )?.[0] ?? "current";
   if (!file) return null;
   return (
-    <section className="publication-export" aria-label="PDF 与 EPUB 导出">
+    <section className="publication-export" aria-label={t("PDF 与 EPUB 导出")}>
       {busy && progress && (
         <div className="publication-progress" role="status">
           <span>{progress}</span>
-          <progress aria-label="出版任务进度" />
+          <progress aria-label={t("出版任务进度")} />
         </div>
       )}
       <div className="section-heading">
-        <h2>出版导出</h2>
+        <h2>{t("出版导出")}</h2>
         <button
           className="button small"
           disabled={busy}
           onClick={() => void reload()}
         >
           <RefreshCw size={14} />
-          重新读取配置
+          {t("重新读取配置")}
         </button>
       </div>
       {error && (
@@ -327,12 +325,14 @@ export function PublicationExport({
         </p>
       )}
       {!draft || !info ? (
-        <p>{busy ? "正在读取导出设置…" : "请修复控制文件或重新读取配置。"}</p>
+        <p>
+          {busy ? t("正在读取导出设置…") : t("请修复控制文件或重新读取配置。")}
+        </p>
       ) : (
         <>
           <div className="publication-actions">
             <Select
-              aria-label="出版导出格式"
+              aria-label={t("出版导出格式")}
               value={format}
               disabled={busy}
               onValueChange={(value) => {
@@ -340,9 +340,10 @@ export function PublicationExport({
                 setPlan(null);
               }}
             >
-              <option value="pdf">PDF 文档</option>
+              <option value="pdf">{t("PDF 文档")}</option>
               <option value="epub" disabled={!allowedEpub}>
-                EPUB 3 电子书{!allowedEpub ? "（仅 book / comic）" : ""}
+                {t("EPUB 3 电子书")}
+                {!allowedEpub ? t("（仅 book / comic）") : ""}
               </option>
             </Select>
             <button
@@ -351,7 +352,9 @@ export function PublicationExport({
               onClick={() => void save()}
             >
               <Save size={15} />
-              {info.standalone ? "保存本机导出配置" : "保存导出配置至工程"}
+              {info.standalone
+                ? t("保存本机导出配置")
+                : t("保存导出配置至工程")}
             </button>
             <button
               className="button"
@@ -359,7 +362,7 @@ export function PublicationExport({
               onClick={() => void perform(false)}
             >
               <FileCheck2 size={15} />
-              {needsSave ? "保存并预检" : "严格预检"}
+              {needsSave ? t("保存并预检") : t("严格预检")}
             </button>
             <button
               className="button primary"
@@ -370,7 +373,7 @@ export function PublicationExport({
               onClick={() => void perform(true)}
             >
               <Download size={15} />
-              {needsSave ? "保存并导出" : "导出"} {format.toUpperCase()}
+              {needsSave ? t("保存并导出") : t("导出")} {format.toUpperCase()}
             </button>
           </div>
           {needsSave && (
@@ -379,51 +382,57 @@ export function PublicationExport({
               className="publication-preflight"
               role="status"
             >
-              执行预检或导出时会先保存当前配置。
+              {t("执行预检或导出时会先保存当前配置。")}
             </p>
           )}
           {busy && (
             <p role="status" className="publication-note">
-              正在处理导出任务，请稍候…
+              {t("正在处理导出任务，请稍候…")}
             </p>
           )}
           <p className="publication-note">
             {info.standalone
-              ? "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。"
+              ? t(
+                  "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。",
+                )
               : format === "pdf"
-                ? "PDF 配置与固定字体随 MDK 分发，可在其他电脑复现导出。"
-                : "EPUB 配置保存在 settings.toml，内置字体的子集直接写入电子书。"}
+                ? t(
+                    "PDF 配置和字体校验值随 MDK 分发，使用匹配的应用版本复现导出。",
+                  )
+                : t(
+                    "EPUB 配置保存在 settings.toml，内置字体的子集直接写入电子书。",
+                  )}
           </p>
           {plan && (
             <p className="publication-preflight" role="status">
-              {plan.report.valid ? "严格预检通过" : "严格预检未通过"} ·{" "}
+              {plan.report.valid ? t("严格预检通过") : t("严格预检未通过")} ·{" "}
               {
                 plan.report.issues.filter((issue) => issue.severity === "error")
                   .length
               }{" "}
-              个错误 ·{" "}
+              {t("个错误 ·")}{" "}
               {
                 plan.report.issues.filter(
                   (issue) => issue.severity === "warning",
                 ).length
               }{" "}
-              个警告 <a href="#publication-report">查看详情</a>
+              {t("个警告")} <a href="#publication-report">{t("查看详情")}</a>
             </p>
           )}
           <fieldset disabled={busy}>
             <details open>
-              <summary>作品信息与封面</summary>
+              <summary>{t("作品信息与封面")}</summary>
               <div className="publication-fields">
                 {(
                   [
-                    ["title", "作品标题"],
-                    ["author", "作者"],
-                    ["language", "语言"],
-                    ["identifier", "出版物标识"],
-                    ["modified", "出版日期（UTC）"],
-                    ["publisher", "出版者"],
-                    ["rights", "版权说明"],
-                    ["description", "作品简介"],
+                    ["title", t("作品标题")],
+                    ["author", t("作者")],
+                    ["language", t("语言")],
+                    ["identifier", t("出版物标识")],
+                    ["modified", t("出版日期（UTC）")],
+                    ["publisher", t("出版者")],
+                    ["rights", t("版权说明")],
+                    ["description", t("作品简介")],
                   ] as const
                 ).map(([key, label]) => (
                   <div key={key}>
@@ -435,7 +444,7 @@ export function PublicationExport({
                           c.publication.metadata[key] = value;
                         }),
                       key === "identifier"
-                        ? "留空时生成固定 UUID"
+                        ? t("留空时生成固定 UUID")
                         : key === "modified"
                           ? "2026-11-04T00:00:00Z"
                           : undefined,
@@ -443,10 +452,10 @@ export function PublicationExport({
                   </div>
                 ))}
                 {choose(
-                  "封面资源",
+                  t("封面资源"),
                   draft.publication.metadata.cover || "none",
                   [
-                    ["none", "不设置封面"],
+                    ["none", t("不设置封面")],
                     ...info.images.map(
                       (path) => [path, path] as [string, string],
                     ),
@@ -460,13 +469,13 @@ export function PublicationExport({
               </div>
             </details>
             <details open>
-              <summary>排版与字体</summary>
+              <summary>{t("排版与字体")}</summary>
               <div className="publication-fields">
                 {choose(
-                  "导出字体",
+                  t("导出字体"),
                   draft.appearance.font_family,
                   [
-                    ["system", "Noto Sans CJK SC（内置，保存时嵌入工程）"],
+                    ["system", t("Noto Sans CJK SC（应用内置）")],
                     ...info.fonts.map(
                       (path) => [path, path] as [string, string],
                     ),
@@ -486,7 +495,7 @@ export function PublicationExport({
                     }),
                 )}
                 {number(
-                  "正文字号（px）",
+                  t("正文字号（px）"),
                   draft.appearance.font_size,
                   (value) =>
                     change((c) => {
@@ -495,7 +504,7 @@ export function PublicationExport({
                   0.1,
                 )}
                 {number(
-                  "正文行高",
+                  t("正文行高"),
                   draft.appearance.line_height,
                   (value) =>
                     change((c) => {
@@ -504,7 +513,7 @@ export function PublicationExport({
                   0.1,
                 )}
                 {number(
-                  "段间距（em）",
+                  t("段间距（em）"),
                   draft.appearance.paragraph_spacing,
                   (value) =>
                     change((c) => {
@@ -513,10 +522,10 @@ export function PublicationExport({
                 )}
                 {(
                   [
-                    ["text", "正文颜色"],
-                    ["background", "纸张背景"],
-                    ["link", "链接颜色"],
-                    ["quote", "引用颜色"],
+                    ["text", t("正文颜色")],
+                    ["background", t("纸张背景")],
+                    ["link", t("链接颜色")],
+                    ["quote", t("引用颜色")],
                   ] as const
                 ).map(([key, label]) => (
                   <div key={key}>
@@ -528,7 +537,7 @@ export function PublicationExport({
                   </div>
                 ))}
                 {number(
-                  "目录标题深度",
+                  t("目录标题深度"),
                   draft.book.toc_depth,
                   (value) =>
                     change((c) => {
@@ -536,13 +545,16 @@ export function PublicationExport({
                     }),
                   1,
                 )}
-                {check("书籍章节编号", draft.book.chapter_numbering, (value) =>
-                  change((c) => {
-                    c.book.chapter_numbering = value;
-                  }),
+                {check(
+                  t("书籍章节编号"),
+                  draft.book.chapter_numbering,
+                  (value) =>
+                    change((c) => {
+                      c.book.chapter_numbering = value;
+                    }),
                 )}
                 {check(
-                  "渲染 note / warning / tip 容器",
+                  t("渲染 note / warning / tip 容器"),
                   draft.render_containers,
                   (value) =>
                     change((c) => {
@@ -551,18 +563,19 @@ export function PublicationExport({
                 )}
               </div>
               <p className="publication-note">
-                PDF
-                使用工程内字体并校验全部字形，不回退到系统字体。自定义字体须允许分发与嵌入。字号和行距等通用选项同时用于工程排版。
+                {t(
+                  "PDF 使用工程内字体并校验全部字形，不回退到系统字体。自定义字体须允许分发与嵌入。字号和行距等通用选项同时用于工程排版。",
+                )}
               </p>
             </details>
             <details open>
-              <summary>PDF 纸张 / EPUB 固定画布</summary>
+              <summary>{t("PDF 纸张 / EPUB 固定画布")}</summary>
               <div className="publication-fields">
                 {choose(
-                  "纸张预设",
+                  t("纸张预设"),
                   paperPreset,
                   [
-                    ["current", "当前自定义尺寸"],
+                    ["current", t("当前自定义尺寸")],
                     ["A4", "A4 · 210 × 297 mm"],
                     ["A5", "A5 · 148 × 210 mm"],
                     ["Letter", "Letter · 215.9 × 279.4 mm"],
@@ -583,7 +596,7 @@ export function PublicationExport({
                     }),
                 )}
                 {number(
-                  "纸张宽度（mm）",
+                  t("纸张宽度（mm）"),
                   draft.publication.pdf.page_width ?? draft.layout.page_width,
                   (value) =>
                     change((c) => {
@@ -593,7 +606,7 @@ export function PublicationExport({
                   25.4 / 96,
                 )}
                 {number(
-                  "纸张高度（mm）",
+                  t("纸张高度（mm）"),
                   draft.publication.pdf.page_height,
                   (value) =>
                     change((c) => {
@@ -604,10 +617,10 @@ export function PublicationExport({
                 )}
                 {(
                   [
-                    ["margin_top", "上边距（mm）"],
-                    ["margin_bottom", "下边距（mm）"],
-                    ["margin_left", "左边距（mm）"],
-                    ["margin_right", "右边距（mm）"],
+                    ["margin_top", t("上边距（mm）")],
+                    ["margin_bottom", t("下边距（mm）")],
+                    ["margin_left", t("左边距（mm）")],
+                    ["margin_right", t("右边距（mm）")],
                   ] as const
                 ).map(([key, label]) => (
                   <div key={key}>
@@ -626,10 +639,10 @@ export function PublicationExport({
               </div>
             </details>
             <details open={format === "pdf"}>
-              <summary>PDF 选项</summary>
+              <summary>{t("PDF 选项")}</summary>
               <div className="publication-fields">
                 {check(
-                  "PDF 横向纸张",
+                  t("PDF 横向纸张"),
                   draft.publication.pdf.landscape,
                   (value) =>
                     change((c) => {
@@ -637,20 +650,23 @@ export function PublicationExport({
                     }),
                 )}
                 {check(
-                  "打印背景色",
+                  t("打印背景色"),
                   draft.publication.pdf.print_background,
                   (value) =>
                     change((c) => {
                       c.publication.pdf.print_background = value;
                     }),
                 )}
-                {check("灰度输出", draft.publication.pdf.grayscale, (value) =>
-                  change((c) => {
-                    c.publication.pdf.grayscale = value;
-                  }),
+                {check(
+                  t("灰度输出"),
+                  draft.publication.pdf.grayscale,
+                  (value) =>
+                    change((c) => {
+                      c.publication.pdf.grayscale = value;
+                    }),
                 )}
                 {check(
-                  "生成无障碍标签",
+                  t("生成无障碍标签"),
                   draft.publication.pdf.tagged,
                   (value) =>
                     change((c) => {
@@ -658,7 +674,7 @@ export function PublicationExport({
                     }),
                 )}
                 {check(
-                  "按标题生成 PDF 书签",
+                  t("按标题生成 PDF 书签"),
                   draft.publication.pdf.outline,
                   (value) =>
                     change((c) => {
@@ -666,7 +682,7 @@ export function PublicationExport({
                     }),
                 )}
                 {check(
-                  "PDF 插入封面页",
+                  t("PDF 插入封面页"),
                   draft.publication.pdf.include_cover,
                   (value) =>
                     change((c) => {
@@ -674,7 +690,7 @@ export function PublicationExport({
                     }),
                 )}
                 {check(
-                  "PDF 插入目录",
+                  t("PDF 插入目录"),
                   draft.publication.pdf.include_toc,
                   (value) =>
                     change((c) => {
@@ -682,14 +698,14 @@ export function PublicationExport({
                     }),
                 )}
                 {choose(
-                  "章节分页",
+                  t("章节分页"),
                   info.mode === "02"
                     ? "page"
                     : draft.publication.pdf.chapter_break,
                   [
-                    ["none", "连续排版"],
-                    ["page", "每篇另起一页"],
-                    ["right", "每篇从右页开始"],
+                    ["none", t("连续排版")],
+                    ["page", t("每篇另起一页")],
+                    ["right", t("每篇从右页开始")],
                   ],
                   (value) =>
                     change((c) => {
@@ -699,7 +715,7 @@ export function PublicationExport({
                   info.mode === "02",
                 )}
                 {number(
-                  "PDF 缩放",
+                  t("PDF 缩放"),
                   draft.publication.pdf.scale,
                   (value) =>
                     change((c) => {
@@ -708,16 +724,16 @@ export function PublicationExport({
                   0.25,
                 )}
                 {text(
-                  "PDF 页码范围",
+                  t("PDF 页码范围"),
                   draft.publication.pdf.page_ranges,
                   (value) =>
                     change((c) => {
                       c.publication.pdf.page_ranges = value;
                     }),
-                  "留空导出全部，例如 1-3,5",
+                  t("留空导出全部，例如 1-3,5"),
                 )}
                 {number(
-                  "起始页码",
+                  t("起始页码"),
                   draft.publication.pdf.first_page_number,
                   (value) =>
                     change((c) => {
@@ -726,7 +742,7 @@ export function PublicationExport({
                   1,
                 )}
                 {number(
-                  "页眉页脚字号（px）",
+                  t("页眉页脚字号（px）"),
                   draft.publication.pdf.furniture_size,
                   (value) =>
                     change((c) => {
@@ -734,18 +750,18 @@ export function PublicationExport({
                     }),
                   6,
                 )}
-                {text("页眉", draft.publication.pdf.header, (value) =>
+                {text(t("页眉"), draft.publication.pdf.header, (value) =>
                   change((c) => {
                     c.publication.pdf.header = value;
                   }),
                 )}
-                {text("页脚", draft.publication.pdf.footer, (value) =>
+                {text(t("页脚"), draft.publication.pdf.footer, (value) =>
                   change((c) => {
                     c.publication.pdf.footer = value;
                   }),
                 )}
                 {check(
-                  "空页脚时自动显示页码",
+                  t("空页脚时自动显示页码"),
                   draft.publication.pdf.page_numbers,
                   (value) =>
                     change((c) => {
@@ -754,38 +770,42 @@ export function PublicationExport({
                 )}
               </div>
               <p className="publication-note">
-                页眉页脚支持 {"{title}、{author}、{page}、{pages}"}
-                ；选定页码范围时保留完整文档中的页码，总页数表示全文页数。漫画按实际目录项分单页
-                / 双页，内容超出固定页面时拒绝导出。
+                {t("页眉页脚支持")} {"{title}、{author}、{page}、{pages}"}
+                {t(
+                  "；选定页码范围时保留完整文档中的页码，总页数表示全文页数。漫画按实际目录项分单页 / 双页，内容超出固定页面时拒绝导出。",
+                )}
               </p>
               <details>
-                <summary>跨电脑复现信息</summary>
+                <summary>{t("跨电脑复现信息")}</summary>
                 <p className="publication-engine">
-                  固定渲染版本：
-                  {draft.publication.pdf.engine || "保存配置时记录当前版本"}
+                  {t("固定渲染版本：")}
+                  {draft.publication.pdf.engine || t("保存配置时记录当前版本")}
                   <br />
-                  当前版本：{info.engine}
+                  {t("当前版本：")}
+                  {info.engine}
                   <br />
-                  字体 SHA-256：
-                  {draft.publication.pdf.font_sha256 || "保存配置时记录"}
+                  {t("字体 SHA-256：")}
+                  {draft.publication.pdf.font_sha256 || t("保存配置时记录")}
                 </p>
               </details>
               <p className="publication-note">
-                重新保存会明确采用当前渲染版本与字体摘要；已有配置不匹配时不会自动替换。
+                {t(
+                  "重新保存会明确采用当前渲染版本与字体摘要；已有配置不匹配时不会自动替换。",
+                )}
               </p>
             </details>
             {allowedEpub && (
               <details open={format === "epub"}>
-                <summary>EPUB 转换选项</summary>
+                <summary>{t("EPUB 转换选项")}</summary>
                 <div className="publication-fields">
                   {choose(
-                    "EPUB 版式",
+                    t("EPUB 版式"),
                     draft.publication.epub.layout,
                     info.mode === "02"
-                      ? [["pre-paginated", "固定版式（漫画）"]]
+                      ? [["pre-paginated", t("固定版式（漫画）")]]
                       : [
-                          ["reflowable", "可重排版式（书籍）"],
-                          ["pre-paginated", "固定版式"],
+                          ["reflowable", t("可重排版式（书籍）")],
+                          ["pre-paginated", t("固定版式")],
                         ],
                     (value) =>
                       change((c) => {
@@ -794,13 +814,13 @@ export function PublicationExport({
                       }),
                   )}
                   {choose(
-                    "EPUB 翻页方向",
+                    t("EPUB 翻页方向"),
                     info.mode === "02"
                       ? draft.comic.reading_direction
                       : draft.publication.epub.direction,
                     [
-                      ["ltr", "从左到右"],
-                      ["rtl", "从右到左"],
+                      ["ltr", t("从左到右")],
+                      ["rtl", t("从右到左")],
                     ],
                     (value) =>
                       change((c) => {
@@ -811,7 +831,7 @@ export function PublicationExport({
                       }),
                   )}
                   {check(
-                    "EPUB 嵌入字体（固定版式强制嵌入）",
+                    t("EPUB 嵌入字体（固定版式强制嵌入）"),
                     draft.publication.epub.layout === "pre-paginated" ||
                       draft.publication.epub.embed_font,
                     (value) =>
@@ -821,7 +841,7 @@ export function PublicationExport({
                     draft.publication.epub.layout === "pre-paginated",
                   )}
                   {check(
-                    "将导航目录加入阅读顺序",
+                    t("将导航目录加入阅读顺序"),
                     draft.publication.epub.toc_in_spine,
                     (value) =>
                       change((c) => {
@@ -829,7 +849,7 @@ export function PublicationExport({
                       }),
                   )}
                   {check(
-                    "EPUB 插入封面",
+                    t("EPUB 插入封面"),
                     draft.publication.epub.include_cover,
                     (value) =>
                       change((c) => {
@@ -838,24 +858,22 @@ export function PublicationExport({
                   )}
                 </div>
                 <p className="publication-note">
-                  EPUB 3
-                  转换执行前严格检查容器、控制文件、阅读顺序、链接锚点、字体和资源兼容性。原始
-                  HTML
-                  按文本显示。外部媒体、附件链接和不兼容图片须先处理；生成后再次检查
-                  XHTML、manifest、spine 和导航。
+                  {t(
+                    "EPUB 3 转换执行前严格检查容器、控制文件、阅读顺序、链接锚点、字体和资源兼容性。原始 HTML 按文本显示。外部媒体、附件链接和不兼容图片须先处理；生成后再次检查 XHTML、manifest、spine 和导航。",
+                  )}
                 </p>
               </details>
             )}
             {info.mode === "02" && (
               <details open>
-                <summary>漫画页面</summary>
+                <summary>{t("漫画页面")}</summary>
                 <div className="publication-fields">
                   {choose(
-                    "漫画页面排列",
+                    t("漫画页面排列"),
                     draft.comic.spread_mode,
                     [
-                      ["single", "单页"],
-                      ["double", "双页"],
+                      ["single", t("单页")],
+                      ["double", t("双页")],
                     ],
                     (value) =>
                       change((c) => {
@@ -863,11 +881,11 @@ export function PublicationExport({
                       }),
                   )}
                   {choose(
-                    "漫画阅读方向",
+                    t("漫画阅读方向"),
                     draft.comic.reading_direction,
                     [
-                      ["ltr", "从左到右"],
-                      ["rtl", "从右到左"],
+                      ["ltr", t("从左到右")],
+                      ["rtl", t("从右到左")],
                     ],
                     (value) =>
                       change((c) => {
@@ -875,12 +893,12 @@ export function PublicationExport({
                       }),
                   )}
                   {choose(
-                    "漫画图片适应",
+                    t("漫画图片适应"),
                     draft.comic.page_fit,
                     [
-                      ["contain", "完整显示"],
-                      ["cover", "填充裁切"],
-                      ["width", "宽度适应"],
+                      ["contain", t("完整显示")],
+                      ["cover", t("填充裁切")],
+                      ["width", t("宽度适应")],
                     ],
                     (value) =>
                       change((c) => {
@@ -896,18 +914,18 @@ export function PublicationExport({
               className="publication-report"
               id="publication-report"
               role="region"
-              aria-label="出版转换校验结果"
+              aria-label={t("出版转换校验结果")}
             >
               <strong>
-                {plan.report.valid ? "严格预检通过" : "严格预检未通过"} ·{" "}
-                {plan.chapters} 篇文稿
+                {plan.report.valid ? t("严格预检通过") : t("严格预检未通过")} ·{" "}
+                {plan.chapters} {t("篇文稿")}
               </strong>
               {plan.report.issues.map((issue, index) => (
                 <div className={`issue ${issue.severity}`} key={index}>
                   <TriangleAlert size={16} />
                   <div>
                     <strong>
-                      {issue.path ?? "出版转换"}
+                      {issue.path ?? t("出版转换")}
                       <code>{issue.code}</code>
                     </strong>
                     <p>{issue.message}</p>

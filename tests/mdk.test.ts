@@ -43,6 +43,36 @@ test("writer emits exactly two mode bytes and a first, STORE mimetype entry", ()
   assert.equal(mdk.validateMdk(file).valid, true);
 });
 
+test("archive rename preserves bytes and refuses existing names, stale revisions and directory traversal", () => {
+  const file = target("rename-source.mdk");
+  const occupied = target("rename-occupied.mdk");
+  const renamed = mdk.mdkRenameTarget(file, "重命名工程.mdk");
+  mdk.createMdkProject(file, "01");
+  mdk.createMdkProject(occupied, "02");
+  const original = fs.readFileSync(file);
+  const other = fs.readFileSync(occupied);
+  const revision = mdk.fileRevision(file);
+  assert.equal(renamed, target("重命名工程.mdk"));
+  for (const name of ["../unsafe", "sub/file", "CON", "extra."])
+    assert.throws(() => mdk.mdkRenameTarget(file, name));
+  assert.throws(
+    () => mdk.renameMdkArchive(file, renamed, "stale"),
+    mdk.MdkRevisionError,
+  );
+  assert.throws(() => mdk.renameMdkArchive(file, occupied, revision));
+  assert.deepEqual(fs.readFileSync(occupied), other);
+  assert.deepEqual(fs.readFileSync(file), original);
+  mdk.renameMdkArchive(file, renamed, revision);
+  assert(!fs.existsSync(file));
+  assert.deepEqual(fs.readFileSync(renamed), original);
+  const caseName = mdk.mdkRenameTarget(renamed, "renamed");
+  const caseTarget = mdk.mdkRenameTarget(caseName, "Renamed");
+  mdk.renameMdkArchive(renamed, caseName, revision);
+  mdk.renameMdkArchive(caseName, caseTarget, revision);
+  assert(fs.readdirSync(root).includes("Renamed.mdk"));
+  assert.deepEqual(fs.readFileSync(caseTarget), original);
+});
+
 test("minimal empty project, omitted settings/meta, lowercase and reserved modes remain compatible", () => {
   const file = fixture("minimal.mdk", "aF", {
     "contents.toml": "schema_version = 1\n",
@@ -566,5 +596,203 @@ test("project font references are checked and binary extensions are never create
   assert.equal(mdk.validateMdk(file).valid, false);
   assert.throws(() =>
     mdk.createTextFile(file, "resources/other/file.pdf", "plain text"),
+  );
+});
+
+test("resource management keeps nested paths, references and extraction inside resources", () => {
+  const file = target("resource-manager.mdk");
+  let project = mdk.createMdkProject(file, "00");
+  project = mdk.createMdkResourceFolder(
+    file,
+    "resources",
+    "Assets",
+    project.revision,
+  );
+  project = mdk.createMdkResourceFolder(
+    file,
+    "resources/Assets",
+    "Deep",
+    project.revision,
+  );
+  const incoming = target("incoming-resources");
+  fs.mkdirSync(path.join(incoming, "Empty"), { recursive: true });
+  fs.writeFileSync(path.join(incoming, "notes.txt"), "original text");
+  const second = target("notes.txt");
+  fs.writeFileSync(second, "duplicate name");
+  const dest = "resources/Assets/Deep";
+  project = mdk.importMdkResourceBatch(
+    file,
+    dest,
+    [incoming],
+    project.revision,
+  ).project;
+  const importedFolder = dest + "/incoming-resources";
+  project = mdk.importMdkResourceBatch(
+    file,
+    importedFolder,
+    [second],
+    project.revision,
+  ).project;
+  assert.ok(
+    project.files.some(
+      (entry) => entry.path === importedFolder + "/notes-2.txt",
+    ),
+  );
+  const sourcePath = importedFolder + "/notes.txt";
+  const manuscript = "markdown/001.md";
+  const previousLink = "../" + sourcePath;
+  mdk.saveMdkTextFile(
+    file,
+    manuscript,
+    [
+      "[Read][notes]",
+      "",
+      "[notes]: " + previousLink + '#part "Title"',
+      "",
+      "[Inline](" + previousLink + "?q=x#item)",
+      "",
+      "```md",
+      "[Example](" + previousLink + ")",
+      "```",
+      "",
+    ].join("\r\n"),
+  );
+  const contents = mdk.readMdkTextFile(file, "contents.toml").content;
+  const before = mdk.fileRevision(file);
+  assert.throws(() =>
+    mdk.createMdkResourceFolder(file, "markdown", "hidden", before),
+  );
+  assert.throws(() =>
+    mdk.createMdkResourceFolder(file, dest, "../hidden", before),
+  );
+  assert.throws(() =>
+    mdk.renameMdkResource(file, "resources/other", "old", before),
+  );
+  assert.throws(() =>
+    mdk.prepareMdkResourceExtraction(file, [manuscript], before),
+  );
+  assert.throws(() =>
+    mdk.renameMdkResource(file, sourcePath, "notes-2.txt", before),
+  );
+  assert.equal(mdk.fileRevision(file), before);
+
+  project = mdk.renameMdkResource(file, importedFolder, "Renamed", before);
+  const renamed = dest + "/Renamed";
+  const markdown = mdk.readMdkTextFile(file, manuscript).content;
+  assert.ok(
+    markdown.includes(`[notes]: <../${renamed}/notes.txt#part> "Title"`),
+  );
+  assert.ok(markdown.includes(`[Inline](<../${renamed}/notes.txt?q=x#item>)`));
+  assert.ok(markdown.includes(`[Example](${previousLink})`));
+  assert.ok(!/(?<!\r)\n/.test(markdown));
+  assert.equal(mdk.readMdkTextFile(file, "contents.toml").content, contents);
+  assert.ok(!project.issues.some(({ code }) => code === "E_RESOURCE_MISSING"));
+  const single = mdk.prepareMdkResourceExtraction(
+    file,
+    [renamed + "/notes.txt"],
+    project.revision,
+  );
+  assert.equal(single.filename, "notes.txt");
+  const extracted = target("extracted-note.txt");
+  assert.equal(single.extract(extracted).count, 1);
+  assert.equal(fs.readFileSync(extracted, "utf8"), "original text");
+  assert.throws(() => single.extract(extracted));
+  assert.equal(fs.readFileSync(extracted, "utf8"), "original text");
+  const batch = mdk.prepareMdkResourceExtraction(
+    file,
+    [dest, renamed + "/notes-2.txt"],
+    project.revision,
+  );
+  assert.equal(batch.filename, undefined);
+  const result = batch.extract(root);
+  assert.equal(result.count, 2);
+  assert.equal(
+    fs.readFileSync(
+      path.join(result.path, "Assets/Deep/Renamed/notes-2.txt"),
+      "utf8",
+    ),
+    "duplicate name",
+  );
+  assert.ok(
+    fs
+      .statSync(path.join(result.path, "Assets/Deep/Renamed/Empty"))
+      .isDirectory(),
+  );
+  assert.throws(() => mdk.importMdkResourceBatch(file, dest, [second], before));
+});
+
+test("a failing resource batch leaves every imported file outside the archive", () => {
+  const file = target("resource-atomic.mdk");
+  const project = mdk.createMdkProject(file, "00");
+  const valid = target("valid-note.txt");
+  const invalid = target("invalid-batch-image.png");
+  fs.writeFileSync(valid, "keep external");
+  fs.writeFileSync(invalid, "not a PNG");
+  assert.throws(() =>
+    mdk.importMdkResourceBatch(
+      file,
+      "resources/other",
+      [valid, invalid],
+      project.revision,
+    ),
+  );
+  assert.equal(mdk.fileRevision(file), project.revision);
+  assert.ok(
+    !mdk
+      .openMdkProject(file)
+      .files.some(({ path }) => path.startsWith("resources/")),
+  );
+});
+
+test("resource rename rewrites font and cover values while retaining TOML layout", () => {
+  const file = target("resource-settings.mdk");
+  let project = mdk.createMdkProject(file, "01");
+  const font = target("custom.otf");
+  const cover = target("resource-cover.png");
+  fs.writeFileSync(font, Buffer.from("OTTO resource fixture"));
+  fs.writeFileSync(cover, Buffer.from("89504e470d0a1a0a", "hex"));
+  project = mdk.importMdkResourceBatch(
+    file,
+    "resources/font",
+    [font],
+    project.revision,
+  ).project;
+  mdk.importMdkResourceBatch(
+    file,
+    "resources/image",
+    [cover],
+    project.revision,
+  );
+  const settings = [
+    "schema_version = 1",
+    "",
+    "# Preserve this comment",
+    "[appearance]",
+    'font_family = "resources/font/custom.otf" # inline comment',
+    "",
+    "[extensions.mardikor.publication.metadata]",
+    'cover = "resources/image/resource-cover.png"',
+    "[extensions.unknown]",
+    'data = "keep the original string"',
+    "",
+  ].join("\r\n");
+  mdk.saveMdkTextFile(file, "settings.toml", settings);
+  project = mdk.renameMdkResource(
+    file,
+    "resources/font/custom.otf",
+    "renamed.otf",
+    mdk.fileRevision(file),
+  );
+  project = mdk.renameMdkResource(
+    file,
+    "resources/image/resource-cover.png",
+    "cover.png",
+    project.revision,
+  );
+  assert.equal(
+    mdk.readMdkTextFile(file, "settings.toml").content,
+    settings
+      .replace("custom.otf", "renamed.otf")
+      .replace("resource-cover.png", "cover.png"),
   );
 });

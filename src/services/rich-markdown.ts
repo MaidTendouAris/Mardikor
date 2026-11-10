@@ -1,6 +1,8 @@
-import type { Editor } from "@tiptap/core";
+import { t } from "../../shared/i18n";
+import type { Editor, JSONContent, MarkdownParseResult } from "@tiptap/core";
 import type { InsertionDraft } from "../../shared/resources";
 import StarterKit from "@tiptap/starter-kit";
+import { BulletList, OrderedList } from "@tiptap/extension-list";
 import { Markdown } from "@tiptap/markdown";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
@@ -17,11 +19,80 @@ import {
   markdownTitle,
   codeFence,
 } from "../../shared/markdown-editing";
+import { createMarkdownParser } from "../../shared/markdown-parser";
+import { MdkContainer } from "./rich-container";
+
+const listParser = createMarkdownParser(false, false);
+
+function listSpacing(result: MarkdownParseResult, loose: unknown) {
+  if (!Array.isArray(result) && loose === true)
+    return { ...result, attrs: { ...result.attrs, loose: true } };
+  return result;
+}
+
+const listSpacingAttribute = {
+  default: false,
+  parseHTML: (element: HTMLElement) => element.hasAttribute("data-loose-list"),
+  renderHTML: (attrs: JSONContent["attrs"]) =>
+    attrs?.loose ? { "data-loose-list": "" } : {},
+};
 
 export const editorExtensions = (
   resolveResource?: (src: string) => Promise<string>,
+  paged = false,
 ) => [
-  StarterKit.configure({ link: false, codeBlock: false, underline: false }),
+  StarterKit.configure({
+    link: false,
+    codeBlock: false,
+    underline: false,
+    bulletList: false,
+    orderedList: false,
+    ...(paged ? { trailingNode: false as const } : {}),
+  }),
+  MdkContainer,
+  BulletList.extend({
+    addAttributes() {
+      return { ...this.parent?.(), loose: listSpacingAttribute };
+    },
+    parseMarkdown(token, helpers) {
+      return listSpacing(this.parent?.(token, helpers) ?? [], token.loose);
+    },
+    renderMarkdown(node, helpers) {
+      return helpers.renderChildren(
+        node.content ?? [],
+        node.attrs?.loose ? "\n\n" : "\n",
+      );
+    },
+  }),
+  OrderedList.extend({
+    addAttributes() {
+      return { ...this.parent?.(), loose: listSpacingAttribute };
+    },
+    parseMarkdown(token, helpers) {
+      const raw = token.raw ?? "";
+      // The ordered-list tokenizer also supports Roman numerals, but doesn't
+      // supply the CommonMark loose flag for standard numeric lists.
+      const loose =
+        token.loose ??
+        (token.ordered &&
+          /\n[\t ]*\n/.test(raw) &&
+          listParser
+            .parse(raw, {})
+            .some(
+              (part) =>
+                part.type === "paragraph_open" &&
+                part.level === 2 &&
+                !part.hidden,
+            ));
+      return listSpacing(this.parent?.(token, helpers) ?? [], loose);
+    },
+    renderMarkdown(node, helpers) {
+      return helpers.renderChildren(
+        node.content ?? [],
+        node.attrs?.loose ? "\n\n" : "\n",
+      );
+    },
+  }),
   Link.extend({
     renderMarkdown: (node, h) =>
       "[" +
@@ -57,7 +128,7 @@ export const editorExtensions = (
               if (live && src) image.src = src;
             })
             .catch(() => {
-              if (live) image.alt = "资源不可用：" + node.attrs.src;
+              if (live) image.alt = t("资源不可用：") + node.attrs.src;
             });
         return {
           dom: image,
@@ -168,7 +239,20 @@ export function richDropDraft(
   y: number,
   marker: string,
 ): InsertionDraft {
-  if (!editor.markdown) throw new Error("Markdown 编辑器尚未就绪。");
+  const transaction = richDropTransaction(editor, x, y, marker);
+  return {
+    content: editor.markdown!.serialize(transaction.doc.toJSON()),
+    marker,
+  };
+}
+
+export function richDropTransaction(
+  editor: Editor,
+  x: number,
+  y: number,
+  marker: string,
+) {
+  if (!editor.markdown) throw new Error(t("Markdown 编辑器尚未就绪。"));
   const coords = editor.view.posAtCoords({ left: x, top: y }),
     from = coords?.pos ?? editor.state.selection.from,
     to = coords ? from : editor.state.selection.to;
@@ -176,9 +260,5 @@ export function richDropDraft(
     null,
     editor.schema.text(marker),
   );
-  const transaction = editor.state.tr.replaceRangeWith(from, to, paragraph);
-  return {
-    content: editor.markdown.serialize(transaction.doc.toJSON()),
-    marker,
-  };
+  return editor.state.tr.replaceRangeWith(from, to, paragraph);
 }

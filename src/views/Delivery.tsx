@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useState } from "react";
 import {
   CheckCircle2,
@@ -38,7 +39,7 @@ export function Delivery({
       const directory = await desktop().dialog("directory");
       if (!directory) return;
       await desktop().invoke("unpack", source, directory);
-      notify("工程已解包。");
+      notify(t("工程已解包。"));
     } catch (error) {
       notify(String(error), true);
     } finally {
@@ -66,15 +67,15 @@ export function Delivery({
         setExportPlan(plan);
       }
       if (exporting) {
-        if (!result.valid) throw new Error("请先修复校验错误。");
+        if (!result.valid) throw new Error(t("请先修复校验错误。"));
         if (
           plan?.confirmation_required &&
           !(await ask({
-            title: "确认本次交付剔除 meta 数据？",
+            title: t("确认本次交付剔除 meta 数据？"),
             description:
-              "交付副本将剔除以下持久或未知数据，源工程仍保留：\n" +
+              t("交付副本将剔除以下持久或未知数据，源工程仍保留：\n") +
               plan.excluded_meta.join("\n"),
-            confirm: "确认剔除并交付",
+            confirm: t("确认剔除并交付"),
             danger: true,
           }))
         )
@@ -92,7 +93,7 @@ export function Delivery({
           );
           setReport(result);
           setExportPlan(plan);
-          notify("工程已导出。");
+          notify(t("工程已导出。"));
         }
       }
     } catch (error) {
@@ -105,7 +106,7 @@ export function Delivery({
     <section className="delivery-page page-scroll">
       <div className="delivery-heading">
         <div>
-          <h1>校验与导出</h1>
+          <h1>{t("校验与导出")}</h1>
         </div>
       </div>
       <div className="delivery-file">
@@ -113,8 +114,8 @@ export function Delivery({
           <FileCheck2 size={24} />
         </span>
         <div>
-          <strong>{input.split(/[\\/]/).pop() || "未选择工程"}</strong>
-          <span>{input || "支持 .mdk / .md 文件"}</span>
+          <strong>{input.split(/[\\/]/).pop() || t("未选择工程")}</strong>
+          <span>{input || t("支持 .mdk / .md 文件")}</span>
         </div>
         <button
           className="button"
@@ -132,7 +133,7 @@ export function Delivery({
           }
         >
           <FolderOpen size={16} />
-          选择文件
+          {t("选择文件")}
         </button>
       </div>
       <PublicationExport
@@ -148,7 +149,7 @@ export function Delivery({
       {!isMarkdownFile(input) && (
         <>
           <div className="section-heading">
-            <h2>MDK 工程容器交付</h2>
+            <h2>{t("MDK 工程容器交付")}</h2>
           </div>
           <div className="delivery-cards">
             <div className="validation-status">
@@ -160,14 +161,21 @@ export function Delivery({
               <h2>
                 {report
                   ? report.valid
-                    ? "工程校验通过"
-                    : "校验未通过"
-                  : "未校验"}
+                    ? t("工程校验通过")
+                    : t("校验未通过")
+                  : t("未校验")}
               </h2>
               <p>
                 {report
-                  ? `${report.issues.filter((i) => i.severity === "error").length} 个错误 · ${report.issues.filter((i) => i.severity === "warning").length} 个警告 · ${report.issues.filter((i) => i.severity === "info").length} 条提示`
-                  : "检查容器、目录结构与资源引用是否完整。"}
+                  ? t(
+                      "{0} 个错误 · {1} 个警告 · {2} 条提示",
+                      report.issues.filter((i) => i.severity === "error")
+                        .length,
+                      report.issues.filter((i) => i.severity === "warning")
+                        .length,
+                      report.issues.filter((i) => i.severity === "info").length,
+                    )
+                  : t("检查容器、目录结构与资源引用是否完整。")}
               </p>
               <div className="button-row">
                 <button
@@ -175,30 +183,30 @@ export function Delivery({
                   disabled={busy}
                   onClick={() => void unpack()}
                 >
-                  解包工程目录
+                  {t("解包工程目录")}
                 </button>
                 <button
                   className="button"
                   disabled={busy}
                   onClick={() => void perform()}
                 >
-                  校验工程
+                  {t("校验工程")}
                 </button>
                 <button
                   className="button primary"
                   disabled={busy}
                   onClick={() => void perform(true)}
                 >
-                  导出 .mdk
+                  {t("导出 .mdk")}
                 </button>
               </div>
             </div>
             <dl className="validation-summary">
               {[
-                ["工程模式", report?.mode ?? "—"],
-                ["目录项", report?.summary?.entries ?? "—"],
-                ["文件总数", report?.summary?.files ?? "—"],
-                ["资源数量", report?.summary?.resources ?? "—"],
+                [t("工程模式"), report?.mode ?? "—"],
+                [t("目录项"), report?.summary?.entries ?? "—"],
+                [t("文件总数"), report?.summary?.files ?? "—"],
+                [t("资源数量"), report?.summary?.resources ?? "—"],
               ].map(([name, value]) => (
                 <div key={name}>
                   <dt>{name}</dt>
@@ -208,13 +216,19 @@ export function Delivery({
             </dl>
           </div>
           <div className="section-heading">
-            <h2>MDK 容器校验详情</h2>
+            <h2>{t("MDK 容器校验详情")}</h2>
           </div>
           {exportPlan && (
             <div className="export-meta-plan">
-              <strong>本次交付的 meta 范围</strong>
-              <p>保留：{exportPlan.included_meta.join("、") || "无"}</p>
-              <p>剔除：{exportPlan.excluded_meta.join("、") || "无"}</p>
+              <strong>{t("本次交付的 meta 范围")}</strong>
+              <p>
+                {t("保留：")}
+                {exportPlan.included_meta.join("、") || t("无")}
+              </p>
+              <p>
+                {t("剔除：")}
+                {exportPlan.excluded_meta.join("、") || t("无")}
+              </p>
             </div>
           )}
           <div className="issues-list">
@@ -224,7 +238,7 @@ export function Delivery({
                   <TriangleAlert size={18} />
                   <div>
                     <strong>
-                      {issue.path ?? "工程容器"}
+                      {issue.path ?? t("工程容器")}
                       <code>{issue.code}</code>
                     </strong>
                     <p>{issue.message}</p>
@@ -233,7 +247,7 @@ export function Delivery({
               ))
             ) : (
               <div className="no-issues">
-                <p>{report ? "未发现问题。" : "暂无校验结果。"}</p>
+                <p>{report ? t("未发现问题。") : t("暂无校验结果。")}</p>
               </div>
             )}
           </div>

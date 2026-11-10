@@ -128,10 +128,10 @@ try {
     "markdown/second.md",
   );
   await expect(
-    page.getByRole("tab", { name: "可视化", exact: true }),
+    page.getByRole("tab", { name: "预览", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".document-body h1")).toHaveText("右侧文稿");
-  await page.getByRole("tab", { name: "预览", exact: true }).click();
+  await expect(page.locator(".reading-preview h1")).toHaveText("右侧文稿");
+  await page.getByRole("tab", { name: "源码", exact: true }).click();
   await tree.locator('[data-path="markdown/001.md"]').click();
   await expect(page.locator(".document-title")).toContainText(
     "markdown/001.md",
@@ -177,9 +177,9 @@ try {
     "markdown/second.md",
   );
   await expect(
-    right.getByRole("tab", { name: "可视化", exact: true }),
+    right.getByRole("tab", { name: "预览", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
-  await expect(right.locator(".document-body h1")).toHaveText("右侧文稿");
+  await expect(right.locator(".reading-preview h1")).toHaveText("右侧文稿");
   await expect(
     left.getByRole("tab", { name: "源码", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -211,6 +211,7 @@ try {
     page.getByLabel("右栏文件", { exact: true }),
     "markdown/001.md",
   );
+  await right.getByRole("tab", { name: "源码", exact: true }).click();
   await append(page, left, "共享修改与撤销");
   await expect(right.locator(".view-lines")).toContainText("共享修改与撤销");
   await right.getByRole("textbox", { name: "源码编辑器", exact: true }).focus();
@@ -300,6 +301,7 @@ try {
     "data-value",
     "markdown/renamed.md",
   );
+  await right.getByRole("tab", { name: "源码", exact: true }).click();
   await append(page, left, "左栏恢复草稿");
   await append(page, right, "右栏恢复草稿");
   await expect

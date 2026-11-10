@@ -92,5 +92,5 @@ test("chapter splitting follows parsed headings and preserves source bytes", () 
     "::::note\n:::tip\n正文\n:::\n::::",
     "> ::: note\n> 内容\n> :::",
   ])
-    assert(requiresSourceMode(source));
+    assert(!requiresSourceMode(source));
 });

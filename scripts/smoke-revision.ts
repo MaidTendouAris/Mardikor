@@ -88,7 +88,7 @@ try {
     path.basename(file, ".mdk"),
   );
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
-  await page.getByRole("switch").uncheck();
+  await page.getByRole("switch", { name: /^自动保存/ }).uncheck();
   await page.getByRole("button", { name: "保存偏好", exact: true }).click();
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
   await page.getByRole("tab", { name: "预览", exact: true }).click();
@@ -167,7 +167,7 @@ try {
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.press("ControlOrMeta+v");
   await expect(page.locator(".document-title")).toContainText("未保存");
-  await page.getByRole("button", { name: "保存源码", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+s");
   await expect(page.locator('.toast[role="alert"]')).toContainText(
     "schema_version",
   );

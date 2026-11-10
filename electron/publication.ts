@@ -1,7 +1,10 @@
+import { t } from "../shared/i18n";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import fontkit from "@pdf-lib/fontkit";
+import katex from "katex";
+import math from "@vscode/markdown-it-katex";
 import Token from "markdown-it/lib/token.mjs";
 import { DOMParser } from "@xmldom/xmldom";
 import { createMarkdownParser } from "../shared/markdown-parser";
@@ -15,7 +18,6 @@ import { isMarkdownFile } from "../shared/workspace";
 import { resolveSettings, merge, type Table } from "../shared/schema";
 import {
   bundledFontHash,
-  bundledFontPath,
   configurationFrom,
   defaultPublication,
   inspectPublication,
@@ -84,6 +86,7 @@ export interface PublicationChapter {
   unit: ReadingUnit;
   file: string;
   html: string;
+  hasMath: boolean;
   title: string;
   anchors: Map<string, string>;
   headings: { id: string; title: string; level: number }[];
@@ -152,12 +155,14 @@ function fontBytes(
       path.join(runtime.assetDirectory, "NotoSansCJKsc-Regular.otf"),
     );
     if (sha256(bytes) !== bundledFontHash)
-      throw new Error("内置导出字体的完整性检查未通过。");
+      throw new Error(t("内置导出字体的完整性检查未通过。"));
     return bytes;
   }
   if (!name.startsWith("resources/font/") || !source.files.has(name))
     throw new Error(
-      "PDF 需要工程内的字体资源。请选择内置 Noto 字体，或导入字体后选择其 resources/font 路径；不使用本机字体替代。",
+      t(
+        "PDF 需要工程内的字体资源。请选择内置 Noto 字体，或导入字体后选择其 resources/font 路径；不使用本机字体替代。",
+      ),
     );
   const bytes = source.files.get(name)!;
   checkMedia(name, bytes);
@@ -166,14 +171,14 @@ function fontBytes(
     bytes.subarray(0, 4).toString() === "ttcf"
   )
     throw new Error(
-      "出版导出支持独立 OTF / TTF 字体，不支持字体集合或压缩字体。",
+      t("出版导出支持独立 OTF / TTF 字体，不支持字体集合或压缩字体。"),
     );
   return bytes;
 }
 function parsedFont(data: Buffer) {
   const font = fontkit.create(data);
   if (!("hasGlyphForCodePoint" in font))
-    throw new Error("字体集合不能用于固定导出。");
+    throw new Error(t("字体集合不能用于固定导出。"));
   // OS/2 embedding restrictions: restricted license / no subsetting / bitmap-only.
   const restriction = (
     font as unknown as {
@@ -192,7 +197,7 @@ function parsedFont(data: Buffer) {
     restriction?.bitmapOnly
   )
     throw new Error(
-      "字体的嵌入许可或子集限制不允许此导出，请换用可嵌入的字体。",
+      t("字体的嵌入许可或子集限制不允许此导出，请换用可嵌入的字体。"),
     );
   return font;
 }
@@ -237,17 +242,18 @@ export function configurePublication(
   runtime: PublicationRuntime,
   format: PublicationFormat = "pdf",
 ) {
-  if (format !== "pdf" && format !== "epub") throw new Error("出版格式无效。");
+  if (format !== "pdf" && format !== "epub")
+    throw new Error(t("出版格式无效。"));
   const source = snapshot(file, runtime);
   if (source.project.revision !== revision)
-    throw new Error("工程已变化，请重新读取导出配置。");
+    throw new Error(t("工程已变化，请重新读取导出配置。"));
   const previous = publicationFrom(source.project.settings);
   if (previous !== undefined) inspectPublication(previous);
   const publication = inspectPublication(value?.publication);
   const configuration = { ...value, publication };
   applyConfiguration(source.project, configuration);
   if (!["00", "01", "02"].includes(source.project.mode))
-    throw new Error("未知 mode 不支持出版转换。");
+    throw new Error(t("未知 mode 不支持出版转换。"));
   const font = fontBytes(source, runtime);
   parsedFont(font);
   publication.metadata.identifier ||= "urn:uuid:" + randomUUID();
@@ -256,13 +262,6 @@ export function configurePublication(
   if (isMarkdownFile(file)) runtime.localConfiguration(file, configuration);
   else {
     const assets = [];
-    if (format === "pdf" && configuration.appearance.font_family === "system") {
-      configuration.appearance = {
-        ...configuration.appearance,
-        font_family: bundledFontPath,
-      };
-      assets.push({ path: bundledFontPath, data: font });
-    }
     if (
       sha256(font) === bundledFontHash &&
       configuration.appearance.font_family !== "system"
@@ -316,7 +315,8 @@ export function preparePublication(
     "engine" | "assetDirectory" | "localConfiguration" | "verifyImages"
   >,
 ): PreparedPublication {
-  if (!["pdf", "epub"].includes(format)) throw new Error("不支持的出版格式。");
+  if (!["pdf", "epub"].includes(format))
+    throw new Error(t("不支持的出版格式。"));
   const source = snapshot(file, runtime),
     { project } = source;
   const issues = [...project.issues];
@@ -332,13 +332,13 @@ export function preparePublication(
   )
     issue(
       "E_CONVERSION_MODE",
-      "EPUB 仅支持 book / comic；default 与单 Markdown 仅支持 PDF。",
+      t("EPUB 仅支持 book / comic；default 与单 Markdown 仅支持 PDF。"),
     );
   const stored = publicationFrom(project.settings);
   if (stored === undefined)
     issue(
       "E_EXPORT_UNSAVED",
-      "请先保存完整导出配置，以便设置和字体随工程分发。",
+      t("请先保存完整导出配置，以便设置和字体随工程分发。"),
       "settings.toml",
     );
   const publication =
@@ -349,17 +349,19 @@ export function preparePublication(
     { pdf, epub, metadata } = publication;
   const labels = publicationLabels(metadata.language);
   if (!metadata.identifier)
-    issue("E_IDENTIFIER", "请保存导出配置以生成稳定的出版物标识。");
+    issue("E_IDENTIFIER", t("请保存导出配置以生成稳定的出版物标识。"));
   if (format === "pdf" && pdf.engine !== runtime.engine)
     issue(
       "E_PDF_ENGINE",
-      "此工程固定的 PDF 渲染版本与当前应用不同。请使用相同版本，或明确保存配置采用当前引擎；不能保证跨版本生成相同 PDF。",
+      t(
+        "此工程固定的 PDF 渲染版本与当前应用不同。请使用相同版本，或明确保存配置采用当前引擎；不能保证跨版本生成相同 PDF。",
+      ),
       "settings.toml",
     );
   if (!source.units.length)
     issue(
       "E_NO_CHAPTERS",
-      "没有已编排文稿，不能导出空出版物。",
+      t("没有已编排文稿，不能导出空出版物。"),
       "contents.toml",
     );
   if (
@@ -369,7 +371,7 @@ export function preparePublication(
   )
     issue(
       "E_CONVERSION_LIMIT",
-      "出版转换最多支持 1,000 个目录项、8 MiB Markdown 正文。",
+      t("出版转换最多支持 1,000 个目录项、8 MiB Markdown 正文。"),
     );
   if (
     project.mode === "02" &&
@@ -378,7 +380,7 @@ export function preparePublication(
   )
     issue(
       "E_COMIC_LAYOUT",
-      "漫画 EPUB 必须使用固定版式，一篇文稿对应一个展示页。",
+      t("漫画 EPUB 必须使用固定版式，一篇文稿对应一个展示页。"),
     );
   const { layout, appearance } = project.settings;
   const paperWidth = pdf.page_width ?? layout.page_width;
@@ -397,7 +399,7 @@ export function preparePublication(
   )
     issue(
       "E_RENDER_RANGE",
-      "页面可用空间或字号/行距超出出版渲染范围；原设置未改写。",
+      t("页面可用空间或字号/行距超出出版渲染范围；原设置未改写。"),
     );
   if (
     format === "pdf" &&
@@ -406,7 +408,10 @@ export function preparePublication(
       (layout.margin_bottom < pdf.furniture_size * 2 &&
         (pdf.footer || pdf.page_numbers)))
   )
-    issue("E_FURNITURE_MARGIN", "页眉或页脚所在边距至少应为页眉字号的两倍。");
+    issue(
+      "E_FURNITURE_MARGIN",
+      t("页眉或页脚所在边距至少应为页眉字号的两倍。"),
+    );
   const assets: PreparedPublication["assets"] = new Map(),
     resourceNames = new Map<string, string>();
   let font: Buffer = Buffer.alloc(0),
@@ -415,12 +420,6 @@ export function preparePublication(
   try {
     font = fontBytes(source, runtime);
     fontType = detectMediaType(font)!;
-    if (
-      format === "pdf" &&
-      !isMarkdownFile(file) &&
-      project.settings.appearance.font_family === "system"
-    )
-      issue("E_PDF_PORTABLE_FONT", "请保存 PDF 导出配置，将固定字体存入 MDK。");
     if (
       format === "epub" &&
       (epub.embed_font || epub.layout === "pre-paginated") &&
@@ -436,7 +435,7 @@ export function preparePublication(
         if (!fontLicense?.equals(bundledLicense))
           issue(
             "E_FONT_LICENSE",
-            "内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。",
+            t("内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。"),
             "resources/other/Mardikor-Noto-OFL.txt",
           );
       }
@@ -444,7 +443,7 @@ export function preparePublication(
     if (pdf.font_sha256 !== sha256(font))
       issue(
         "E_FONT_CHANGED",
-        "字体内容与保存的摘要不一致，请检查资源后重新保存导出配置。",
+        t("字体内容与保存的摘要不一致，请检查资源后重新保存导出配置。"),
         project.settings.appearance.font_family,
       );
     parsedFont(font);
@@ -460,13 +459,15 @@ export function preparePublication(
           readMarkdownResource(file, name).split(",")[1],
           "base64",
         );
-      if (!data) throw new Error("资源不存在。");
+      if (!data) throw new Error(t("资源不存在。"));
       checkMedia(name, data);
       assertPassiveSvg(data);
       const type = detectMediaType(data);
       if (!["image/png", "image/jpeg", "image/svg+xml"].includes(type ?? ""))
         throw new Error(
-          "出版转换当前支持 PNG、JPEG 和纯图形 SVG；请先转换其他媒体，不能静默丢弃。",
+          t(
+            "出版转换当前支持 PNG、JPEG 和纯图形 SVG；请先转换其他媒体，不能静默丢弃。",
+          ),
         );
       if (
         type === "image/svg+xml" &&
@@ -475,7 +476,9 @@ export function preparePublication(
         )
       )
         throw new Error(
-          "SVG 含文本、样式、动画或实体，不能保证便携排版。请转换为 PNG 或路径图形。",
+          t(
+            "SVG 含文本、样式、动画或实体，不能保证便携排版。请转换为 PNG 或路径图形。",
+          ),
         );
       if (type === "image/svg+xml") {
         const svg = new DOMParser({
@@ -513,7 +516,7 @@ export function preparePublication(
               !/^fe[A-Z][A-Za-z]+$/.test(element.localName!))
           )
             throw new Error(
-              "SVG 含不支持的元素或命名空间：" + element.nodeName,
+              t("SVG 含不支持的元素或命名空间：") + element.nodeName,
             );
         }
       }
@@ -539,6 +542,16 @@ export function preparePublication(
   const parser = createMarkdownParser(
     project.settings.preview.render_containers,
   );
+  const mathPlugin = math as typeof math | { default: typeof math };
+  parser.use(
+    typeof mathPlugin === "function" ? mathPlugin : mathPlugin.default,
+  );
+  const formulaTokens = ["math_inline", "math_inline_block", "math_block"];
+  const formulas = new WeakMap<Token, string>();
+  for (const type of formulaTokens)
+    parser.renderer.rules[type] = (tokens, index) =>
+      formulas.get(tokens[index]) ?? "";
+  let formulaCount = 0;
   parser.options.xhtmlOut = true;
   parser.validateLink = () => true;
   const rawParser = createMarkdownParser(
@@ -559,11 +572,11 @@ export function preparePublication(
   source.units.forEach((unit, index) => {
     const markdown = unit.markdown ?? "";
     if (unit.markdown === null)
-      issue("E_CHAPTER_MISSING", "目录项的 Markdown 文件缺失。", unit.path);
+      issue("E_CHAPTER_MISSING", t("目录项的 Markdown 文件缺失。"), unit.path);
     if (!validXmlText(markdown))
       issue(
         "E_XML_CHARACTERS",
-        "正文含不能写入出版文档的控制字符。",
+        t("正文含不能写入出版文档的控制字符。"),
         unit.path,
       );
     if (format === "epub") {
@@ -575,7 +588,7 @@ export function preparePublication(
       if (containsHtml)
         issue(
           "W_EPUB_HTML_TEXT",
-          "原始 HTML 将以文本显示，与 Markdown 预览一致。",
+          t("原始 HTML 将以文本显示，与 Markdown 预览一致。"),
           unit.path,
           "warning",
         );
@@ -583,7 +596,51 @@ export function preparePublication(
     const tokens = parser.parse(markdown, {}),
       anchors = new Map<string, string>(),
       headings: PublicationChapter["headings"] = [];
+    let hasMath = false;
+    let formulaError = false;
     walk(tokens, (token) => {
+      if (formulaTokens.includes(token.type)) {
+        hasMath = true;
+        try {
+          if (++formulaCount > 5000 || token.content.length > 4000)
+            throw new Error(
+              t("公式超过出版限额（单个 4000 字符，合计 5000 个）。"),
+            );
+          const inline = token.type === "math_inline";
+          const expression =
+            inline &&
+            token.content.startsWith("`") &&
+            token.content.endsWith("`") &&
+            token.content.length > 2
+              ? token.content.slice(1, -1)
+              : token.content;
+          const markup = katex.renderToString(expression, {
+            output: format === "pdf" ? "htmlAndMathml" : "mathml",
+            displayMode: !inline,
+            trust: false,
+            strict: "ignore",
+            maxExpand: 100,
+            maxSize: 20,
+            throwOnError: true,
+          });
+          // Text inside a formula can need the same fixed body font as prose.
+          // Math operators themselves use the separate KaTeX/math font.
+          for (const [, text] of markup.matchAll(
+            format === "pdf"
+              ? /<span class="[^"]*\b\w+_fallback\b[^"]*"[^>]*>([^<]*)<\/span>/g
+              : /<mtext(?:\s[^>]*)?>([^<]*)<\/mtext>/g,
+          ))
+            renderedText.push(text);
+          formulas.set(
+            token,
+            inline ? markup : `<p class="katex-block">${markup}</p>\n`,
+          );
+        } catch (error) {
+          if (!formulaError)
+            issue("E_MATH", t("公式无法排版：") + String(error), unit.path);
+          formulaError = true;
+        }
+      }
       if (["text", "code_inline", "code_block", "fence"].includes(token.type))
         renderedText.push(token.content);
       if (token.type === "footnote_anchor") renderedText.push("[]:^");
@@ -633,6 +690,7 @@ export function preparePublication(
       unit,
       file: "chapter-" + String(index + 1).padStart(4, "0") + ".xhtml",
       html: "",
+      hasMath,
       title:
         firstTitle ||
         (numbered ? unit.position + " " : "") +
@@ -656,7 +714,7 @@ export function preparePublication(
       if (media) {
         issue(
           "E_REMOTE_MEDIA",
-          "展示资源必须在工程内，转换不访问网络。",
+          t("展示资源必须在工程内，转换不访问网络。"),
           chapter.unit.path,
         );
         return "";
@@ -664,14 +722,14 @@ export function preparePublication(
       return target.url;
     }
     if (target.suffix.startsWith("?")) {
-      issue("E_LINK_QUERY", "内部引用不能带查询参数。", chapter.unit.path);
+      issue("E_LINK_QUERY", t("内部引用不能带查询参数。"), chapter.unit.path);
       return "";
     }
     if (media) {
       if (target.suffix)
         issue(
           "E_IMAGE_FRAGMENT",
-          "图片引用不能带片段或查询参数。",
+          t("图片引用不能带片段或查询参数。"),
           chapter.unit.path,
         );
       return resource(target.path);
@@ -683,7 +741,7 @@ export function preparePublication(
     if (!referenced) {
       issue(
         "E_LINK_NOT_EXPORTED",
-        "内部超链接指向未编排文稿或附件，无法在出版物中保留：" + target.path,
+        t("内部超链接指向未编排文稿或附件，无法在出版物中保留：") + target.path,
         chapter.unit.path,
       );
       return "";
@@ -693,7 +751,8 @@ export function preparePublication(
       try {
         const key = decodeURIComponent(target.suffix.slice(1)),
           id = referenced.anchors.get(key);
-        if (!id) throw new Error("找不到标题锚点：" + target.path + "#" + key);
+        if (!id)
+          throw new Error(t("找不到标题锚点：") + target.path + "#" + key);
         fragment = "#" + id;
       } catch (error) {
         issue("E_ANCHOR_MISSING", String(error), chapter.unit.path);
@@ -716,7 +775,7 @@ export function preparePublication(
     if (!alt.trim())
       issue(
         "W_IMAGE_ALT",
-        "图片缺少替代文字，建议补充后再分发。",
+        t("图片缺少替代文字，建议补充后再分发。"),
         chapters[renderIndex].unit.path,
         "warning",
       );
@@ -754,7 +813,7 @@ export function preparePublication(
     metadata.cover &&
     !coverFile
   )
-    issue("E_COVER", "所选封面不可转换。", metadata.cover);
+    issue("E_COVER", t("所选封面不可转换。"), metadata.cover);
   const headingItems = (chapter: PublicationChapter) => {
     type Node = {
       heading: PublicationChapter["headings"][number];
@@ -847,7 +906,7 @@ export function preparePublication(
           path.join(runtime.assetDirectory, emojiFontFile),
         );
         if (sha256(bytes) !== emojiFontHash)
-          throw new Error("应用内置表情字体校验失败。");
+          throw new Error(t("应用内置表情字体校验失败。"));
         const face = parsedFont(bytes);
         const covered = new Set(
           emoji.filter((char) =>
@@ -871,14 +930,14 @@ export function preparePublication(
       )
         issue(
           "E_FONT_GLYPHS",
-          "固定字体缺少字形：" +
+          t("固定字体缺少字形：") +
             missing
               .slice(0, 24)
               .map(
                 (c) => c + " U+" + c.codePointAt(0)!.toString(16).toUpperCase(),
               )
               .join("、") +
-            "。请换用覆盖这些字符的字体，不能回退到本机字体。",
+            t("。请换用覆盖这些字符的字体，不能回退到本机字体。"),
           project.settings.appearance.font_family,
         );
       if (format === "pdf") pdfCjkAliases(font, fontText);
@@ -898,7 +957,7 @@ export function preparePublication(
   if (format === "epub" && !epub.embed_font)
     issue(
       "W_READER_FONT",
-      "EPUB 未嵌入字体，阅读器可能使用自己的字体和排版。",
+      t("EPUB 未嵌入字体，阅读器可能使用自己的字体和排版。"),
       undefined,
       "warning",
     );
@@ -982,15 +1041,15 @@ export async function exportPublication(
     path.extname(output).toLowerCase() !== "." + format ||
     path.resolve(output).toLowerCase() === path.resolve(file).toLowerCase()
   )
-    throw new Error("请选择对应格式的新输出路径，不能覆盖源工程。");
+    throw new Error(t("请选择对应格式的新输出路径，不能覆盖源工程。"));
   const previous = runtime.outputRevision(output);
   if ((await publicationRevision(output, true)) !== previous)
-    throw new Error("输出路径在确认后发生变化，请重新选择文件，未覆盖。");
+    throw new Error(t("输出路径在确认后发生变化，请重新选择文件，未覆盖。"));
   runtime.progress?.("prepare");
   const prepared = await (runtime.prepare?.(file, format) ??
     preparePublication(file, format, runtime));
   if (prepared.fingerprint !== fingerprint)
-    throw new Error("工程、资源或配置在预检后已变化，请重新严格校验。");
+    throw new Error(t("工程、资源或配置在预检后已变化，请重新严格校验。"));
   if (prepared.issues.some((i) => i.severity === "error"))
     throw new Error(
       prepared.issues
@@ -1006,13 +1065,13 @@ export async function exportPublication(
       ? await runtime.pdf(prepared)
       : { bytes: await runtime.epub(prepared), pages: undefined };
   if (result.bytes.length > 256 * 1024 * 1024)
-    throw new Error("导出结果超过 256 MiB，未写入文件。");
+    throw new Error(t("导出结果超过 256 MiB，未写入文件。"));
   runtime.progress?.("write");
   const temporary = output + "." + randomUUID() + ".tmp";
   if (previous) {
     const stat = await fs.promises.lstat(output);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1)
-      throw new Error("输出路径不能是链接或特殊文件。");
+      throw new Error(t("输出路径不能是链接或特殊文件。"));
   }
   const fd = await fs.promises.open(temporary, "wx");
   try {
@@ -1025,10 +1084,10 @@ export async function exportPublication(
     if (
       (await publicationRevision(file)) !== prepared.snapshot.project.revision
     )
-      throw new Error("生成期间源工程已改变，未发布过期导出文件。");
+      throw new Error(t("生成期间源工程已改变，未发布过期导出文件。"));
     if (previous) {
       if ((await publicationRevision(output)) !== previous)
-        throw new Error("输出文件已被外部修改，未覆盖。");
+        throw new Error(t("输出文件已被外部修改，未覆盖。"));
       await fs.promises.rename(temporary, output);
     } else {
       await fs.promises.link(temporary, output);

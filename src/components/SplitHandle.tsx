@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import type { RefObject } from "react";
 
 export function SplitHandle({
@@ -24,7 +25,7 @@ export function SplitHandle({
       aria-valuemin={20}
       aria-valuemax={80}
       aria-valuenow={Math.round(value * 100)}
-      title="拖动调整大小，双击恢复均分"
+      title={t("拖动调整大小，双击恢复均分")}
       onDoubleClick={() => onChange(0.5)}
       onKeyDown={(event) => {
         const backward = axis === "horizontal" ? "ArrowUp" : "ArrowLeft";

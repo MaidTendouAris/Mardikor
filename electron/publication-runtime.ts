@@ -1,3 +1,4 @@
+import { appLocale, t } from "../shared/i18n";
 import { app, BrowserWindow, nativeImage, session } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -19,10 +20,10 @@ const publicationTimeout = 300_000;
 function runWorker<T>(work: PublicationWork): Promise<T> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, "publication-worker.cjs"), {
-      workerData: serialize(work),
+      workerData: serialize({ work, locale: appLocale() }),
     });
     const timer = setTimeout(() => {
-      reject(new Error("后台出版任务超过 5 分钟，已终止。"));
+      reject(new Error(t("后台出版任务超过 5 分钟，已终止。")));
       void worker.terminate();
     }, publicationTimeout);
     worker.once("message", (bytes: Uint8Array) => {
@@ -39,7 +40,7 @@ function runWorker<T>(work: PublicationWork): Promise<T> {
     });
     worker.once("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error("出版任务意外结束：" + code));
+      reject(new Error(t("出版任务意外结束：") + code));
     });
   });
 }
@@ -70,6 +71,23 @@ async function withRenderer<T>(
       data: prepared.emojiFont.bytes,
       type: "font/ttf",
     });
+  if (
+    prepared.format === "pdf" &&
+    prepared.chapters.some(({ hasMath }) => hasMath)
+  ) {
+    const math = path.join(app.getAppPath(), "node_modules", "katex", "dist");
+    resources.set("/math/katex.min.css", {
+      data: fs.readFileSync(path.join(math, "katex.min.css")),
+      type: "text/css",
+    });
+    const fonts = path.join(math, "fonts");
+    for (const name of fs.readdirSync(fonts))
+      if (name.endsWith(".woff2"))
+        resources.set("/math/fonts/" + name, {
+          data: fs.readFileSync(path.join(fonts, name)),
+          type: "font/woff2",
+        });
+  }
   ses.protocol.handle(scheme, (request) => {
     const url = new URL(request.url),
       entry =
@@ -121,27 +139,33 @@ async function withRenderer<T>(
         );
         const errors = await window.webContents.executeJavaScript(`(async()=>{
           ${prepared.emojiFont ? `await document.fonts.load('16px PublicationEmoji', ${JSON.stringify(prepared.emojiFont.text)});` : ""}
+          const bodyFonts = await document.fonts.load('16px PublicationFont');
           await document.fonts.ready;
-          if (![...document.fonts].length || [...document.fonts].some(font=>font.status !== 'loaded')) throw new Error('工程字体无法解码或加载');
-          await Promise.all([...document.images].map(async image=>{await image.decode();if(!image.naturalWidth || image.naturalWidth*image.naturalHeight>40000000)throw new Error('图片无法解码或超过四千万像素');}));
+          if (!bodyFonts.length || [...document.fonts].some(font=>font.status === 'error')) throw new Error(${JSON.stringify(t("出版字体无法解码或加载"))});
+          if (document.querySelector('.katex-html') && ![...document.fonts].some(font=>font.family.startsWith('KaTeX_') && font.status === 'loaded')) throw new Error(${JSON.stringify(t("公式字体未加载"))});
+          await Promise.all([...document.images].map(async image=>{await image.decode();if(!image.naturalWidth || image.naturalWidth*image.naturalHeight>40000000)throw new Error(${JSON.stringify(t("图片无法解码或超过四千万像素"))});}));
           const errors=[];
           if(${prepared.format === "pdf"}){
             const context=document.createElement('canvas').getContext('2d');context.font='${pdf.furniture_size}px ${publicationFontFamily(prepared)}';
-            for(const text of ${JSON.stringify(samples)})if(context.measureText(text).width>${prepared.width - prepared.configuration.layout.margin_left - prepared.configuration.layout.margin_right})errors.push('页眉或页脚过长，请缩短文字或调整字号');
+            for(const text of ${JSON.stringify(samples)})if(context.measureText(text).width>${prepared.width - prepared.configuration.layout.margin_left - prepared.configuration.layout.margin_right})errors.push(${JSON.stringify(t("页眉或页脚过长，请缩短文字或调整字号"))});
           }
           for(const unit of document.querySelectorAll('.unit')){
-            if(${prepared.format === "pdf" ? prepared.snapshot.project.mode === "02" : prepared.configuration.publication.epub.layout === "pre-paginated"} && (unit.scrollHeight>unit.clientHeight+2 || unit.scrollWidth>unit.clientWidth+2)) errors.push('文稿 '+unit.dataset.unit+' 超出固定页面，请调整页高、字号或拆分文稿');
+            if(${prepared.format === "pdf" ? prepared.snapshot.project.mode === "02" : prepared.configuration.publication.epub.layout === "pre-paginated"} && (unit.scrollHeight>unit.clientHeight+2 || unit.scrollWidth>unit.clientWidth+2)) {
+              const labels = ${JSON.stringify({ 封面: t("封面"), 目录: t("目录") })};
+              errors.push(${JSON.stringify(t("文稿 {0} 超出固定页面，请调整页高、字号或拆分文稿"))}.replace("{0}", () => labels[unit.dataset.unit] ?? unit.dataset.unit));
+            }
           }
-          for(const element of document.querySelectorAll('pre,table')) if(element.scrollWidth>element.clientWidth+2) errors.push('代码或表格超出正文宽度');
+          for(const element of document.querySelectorAll('pre,table,.katex-block')) if(element.scrollWidth>element.clientWidth+2) errors.push(${JSON.stringify(t("代码、表格或公式超出正文宽度"))});
           return errors;
         })()`);
         if ((errors as string[]).length)
-          throw new Error((errors as string[]).join("；"));
+          throw new Error((errors as string[]).join(t("；")));
         return action(window);
       })(),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error("出版渲染超过 5 分钟，已终止，未发布文件。")),
+          () =>
+            reject(new Error(t("出版渲染超过 5 分钟，已终止，未发布文件。"))),
           publicationTimeout,
         );
       }),
@@ -184,7 +208,7 @@ async function renderPdf(
         const labels = ${JSON.stringify(labels)};
         for (const node of document.querySelectorAll(".toc-page")) {
           const page = labels[node.dataset.destination];
-          if (typeof page !== "number") throw new Error("无法确定 PDF 目录页码。");
+          if (typeof page !== "number") throw new Error(${JSON.stringify(t("无法确定 PDF 目录页码。"))});
           node.textContent = String(page);
         }
       })()`);
@@ -197,7 +221,7 @@ async function renderPdf(
       );
       if (maximum > complete.count)
         throw new Error(
-          "页码范围超过实际总页数 " + complete.count + "，未导出。",
+          t("页码范围超过实际总页数 ") + complete.count + t("，未导出。"),
         );
     }
     if (pdf.include_toc || pdf.page_ranges) {
@@ -233,7 +257,7 @@ export function publicationRuntime(
     fs.readFileSync(path.join(assets, "renderer.json"), "utf8"),
   );
   if (manifest.version !== 1 || !/^[0-9a-f]{64}$/.test(manifest.sha256))
-    throw new Error("出版渲染器版本清单损坏，请重新安装应用。");
+    throw new Error(t("出版渲染器版本清单损坏，请重新安装应用。"));
   const engine = `mardikor-pdf-1/${manifest.sha256}/electron-${process.versions.electron}/chromium-${process.versions.chrome}/${process.platform}-${process.arch}`;
   return {
     outputRevision,
@@ -257,9 +281,9 @@ export function publicationRuntime(
           const decoded = nativeImage.createFromBuffer(image.data),
             size = decoded.getSize();
           if (decoded.isEmpty() || size.width * size.height > 40000000)
-            throw new Error("无法解码或超过四千万像素。");
+            throw new Error(t("无法解码或超过四千万像素。"));
         } catch (error) {
-          throw new Error(image.path + "：" + String(error));
+          throw new Error(image.path + t("：") + String(error));
         }
       }
     },

@@ -2,8 +2,12 @@ import { markdownHeadings } from "../../shared/markdown";
 import { renderPreview } from "./preview";
 import { paginateMarkdown } from "./document-pages";
 import type { MarkdownTask } from "./markdown-tasks";
+import { setAppLocale, type AppLocale } from "../../shared/i18n";
 
-self.onmessage = ({ data }: MessageEvent<MarkdownTask>) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<MarkdownTask & { locale: AppLocale }>) => {
+  setAppLocale(data.locale);
   try {
     const result =
       data.kind === "headings"

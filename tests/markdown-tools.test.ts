@@ -14,7 +14,18 @@ import {
 } from "../shared/markdown-editing";
 import math from "@vscode/markdown-it-katex";
 import { enablePreviewMath, renderPreview } from "../src/services/preview";
-import { paginateMarkdown, replacePage } from "../src/services/document-pages";
+import {
+  paginateMarkdown,
+  replacePage,
+  replacePages,
+  type DocumentPages,
+} from "../src/services/document-pages";
+import {
+  loadRichPages,
+  richPageChanges,
+  richPageParts,
+  RichPages,
+} from "../src/services/rich-pages";
 
 const window = new Window();
 Object.assign(globalThis, {
@@ -63,6 +74,138 @@ test("visual Markdown round trips headings, nested lists, marks, links, escapes,
   roundtrip(
     '# 一\n\n## 二\n\n### 三\n\n#### 四\n\n##### 五\n\n###### 六\n\n**加粗** *斜体* ***组合*** ~~删除~~ `code`\\*字面标点\\*\n\n> 引用\n>\n> - 子项目\n\n- 项目\n  - 嵌套\n\n3. 三\n4. 四\n\n- [ ] 待办\n- [x] 完成\n\n[链接](<https://example.com/a%20b> "标题")\n\n---\n\n上一行  \n下一行\n',
   );
+});
+
+test("visual editor keeps tight and loose bullet and ordered lists distinct", () => {
+  for (const [first, second] of [
+    ["- one", "- two"],
+    ["1. one", "2. two"],
+  ]) {
+    assert.doesNotMatch(roundtrip(first + "\n" + second), /one\n\n/);
+    assert.doesNotMatch(editor.getHTML(), /data-loose-list/);
+    assert.match(roundtrip(first + "\n\n" + second), /one\n\n/);
+    assert.match(editor.getHTML(), /data-loose-list/);
+  }
+});
+
+test("visual editing round trips MDK containers and treats code fence markers as literal text", () => {
+  const source =
+    "## Title\n\n:::: note\nFirst **body**.\n\n:::tip\nNested text.\n:::\n\n```md\n::::\n```\n::::\n\nNext paragraph.";
+  const output = roundtrip(source);
+  assert.match(editor.getHTML(), /<aside[^>]+class="mdk-note"/);
+  assert.match(editor.getHTML(), /<aside[^>]+class="mdk-tip"/);
+  assert.match(output, /:::: note/);
+  assert.match(output, /```md\n::::\n```/);
+  assert.match(renderPreview(output), /<aside class="mdk-note">/);
+  const quoted = roundtrip("> :::tip\n> 引用内提示。\n> :::");
+  assert.match(quoted, /> :::tip/);
+  assert.match(renderPreview(quoted), /<blockquote>[\s\S]*<aside class="mdk-tip">/);
+  assert.equal(
+    paginateMarkdown(source, 50).pages.some(({ readOnly }) => readOnly),
+    false,
+  );
+});
+
+test("visual page window preserves history and never inserts a paragraph at an internal heading boundary", () => {
+  const paged = new Editor({
+    extensions: [...editorExtensions(undefined, true), RichPages],
+    contentType: "markdown",
+  });
+  try {
+    const heading = { index: 0, text: "## First\n\n" };
+    const body = { index: 1, text: "Second paragraph.\n\n" };
+    loadRichPages(paged, [heading], new Map());
+    assert.equal(paged.state.doc.childCount, 1);
+    loadRichPages(paged, [heading, body], new Map([[0, heading.text]]));
+    assert.deepEqual(
+      richPageParts(paged.state).map(
+        ({ fragment }) => fragment.firstChild?.type.name,
+      ),
+      ["heading", "paragraph"],
+    );
+    const before = paged.state;
+    paged.view.dispatch(paged.state.tr.insertText(" edited", 6));
+    const changes = richPageChanges(
+      paged,
+      before,
+      paged.state.doc,
+      richPageParts(paged.state),
+    );
+    assert.deepEqual(
+      changes.map(({ index }) => index),
+      [0],
+    );
+    loadRichPages(
+      paged,
+      [
+        { ...heading, text: changes[0].text },
+        body,
+        { index: 2, text: "## End", final: true },
+      ],
+      new Map([
+        [0, changes[0].text],
+        [1, body.text],
+      ]),
+    );
+    assert.equal(paged.state.doc.lastChild?.type.name, "paragraph");
+    assert.ok(paged.commands.undo());
+    assert.equal(paged.state.doc.firstChild?.textContent, "First");
+    assert.equal(richPageParts(paged.state).length, 3);
+  } finally {
+    paged.destroy();
+  }
+});
+
+test("joining across an internal page boundary and undoing restores the original CRLF source", () => {
+  const paged = new Editor({
+    extensions: [...editorExtensions(undefined, true), RichPages],
+    contentType: "markdown",
+  });
+  try {
+    const first = "alpha\r\n\r\n";
+    const second = "beta\r\n\r\n";
+    const source = first + second + "untouched";
+    const layout: DocumentPages = {
+      length: 2000,
+      pages: [
+        { start: 0, line: 1 },
+        { start: first.length, line: 3 },
+        { start: first.length + second.length, line: 5 },
+      ],
+    };
+    loadRichPages(
+      paged,
+      [
+        { index: 0, text: first },
+        { index: 1, text: second },
+      ],
+      new Map(),
+    );
+    const before = paged.state;
+    const [, boundary] = richPageParts(before);
+    paged.view.dispatch(before.tr.delete(boundary.pos - 1, boundary.pos + 1));
+    const merged = paged.state;
+    const joined = replacePages(
+      source,
+      layout,
+      richPageChanges(paged, before, merged.doc, richPageParts(merged)),
+    );
+    assert.equal(joined.content, "alphabeta\r\n\r\nuntouched");
+    assert.ok(paged.commands.undo());
+    const restored = replacePages(
+      joined.content,
+      joined.pagination,
+      richPageChanges(
+        paged,
+        merged,
+        paged.state.doc,
+        richPageParts(paged.state),
+      ),
+    );
+    assert.equal(restored.content, source);
+  } finally {
+    paged.destroy();
+  }
 });
 test("GFM tables retain alignment, escaped pipes and inline formatting", () => {
   const result = roundtrip(
@@ -116,7 +259,7 @@ test("source-only detection allows tables and code examples but protects referen
     "Text <script>alert(1)</script>",
     "[name][id]\n\n[id]: https://example.com",
     "[^note]: 内容",
-    ":::note\n内容\n:::",
+    ":::note\n未闭合",
     "<br onclick=alert(1)>",
     "A<br>B",
   ])
@@ -197,9 +340,13 @@ test("very large lines and tables get bounded preview pages without editable fra
     ),
   );
   const table =
-    "| 项目 | 值 |\n| --- | --- |\n" + "| 表格数据 | 示例 |\n".repeat(3000);
+    "# 表格压力测试\n\n| 项目 | 值 |\n| --- | --- |\n" +
+    "| 表格数据 | 示例 |\n".repeat(3000);
   const paged = paginateMarkdown(table, 8000);
   assert.ok(paged.pages.length > 2);
   assert.ok(paged.pages.every(({ readOnly }) => readOnly));
+  const first = renderPreview(table.slice(0, paged.pages[1].start));
+  assert.match(first, /<h1[^>]*>表格压力测试<\/h1>/);
+  assert.match(first, /<tbody>.*表格数据/s);
   assert.match(paged.pages[1].tableHeader ?? "", /^\| 项目 \| 值 \|/);
 });

@@ -6,6 +6,14 @@ export interface MdkEntry {
   id: string;
   path: string;
   position: string;
+  extensions?: Record<string, unknown>;
+}
+
+export function entryDisplayName(entry: MdkEntry): string | undefined {
+  const extension = entry.extensions?.mardikor;
+  if (extension && typeof extension === "object" && "display_name" in extension &&
+    typeof extension.display_name === "string" && extension.display_name.trim())
+    return extension.display_name;
 }
 
 export interface MdkContents {

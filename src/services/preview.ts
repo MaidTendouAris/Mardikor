@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { createMarkdownParser } from "../../shared/markdown-parser";
 import { resolveReference } from "../../shared/references";
 import { chapterHeadingNumberer } from "../../shared/heading-numbering";
@@ -91,6 +92,7 @@ export type PreviewContext = {
   headingOffset: number;
   priorHeadingLevels: number[];
   continuedPage?: boolean;
+  pageNumber?: number;
   references?: DocumentPages["references"];
   notes?: string;
   literal?: boolean;
@@ -121,8 +123,11 @@ export function renderPreview(
       "</pre>"
     );
   const env = {
+    footnoteLabel: t("返回脚注引用"),
     sourcePath,
-    docId: prefix || "preview",
+    docId:
+      (prefix || "preview") +
+      (page?.pageNumber === undefined ? "" : "page-" + page.pageNumber),
     references: page?.references && { ...page.references },
     continuedPage: page?.continuedPage,
   };
@@ -192,13 +197,16 @@ export function renderPreview(
     settings?.preview.show_toc &&
     headings.length &&
     (!page || headings.length <= 1000)
-      ? `<nav class="preview-toc" aria-label="文稿目录"><strong>目录</strong>${headings
-          .filter((h) => h.level <= depth)
-          .map(
-            (h) =>
-              `<a href="#${h.id}" style="padding-left:${(h.level - 1) * 12}px">${parser.utils.escapeHtml(h.title)}</a>`,
-          )
-          .join("")}</nav>`
+      ? t(
+          '<nav class="preview-toc" aria-label="文稿目录"><strong>目录</strong>{0}</nav>',
+          headings
+            .filter((h) => h.level <= depth)
+            .map(
+              (h) =>
+                `<a href="#${h.id}" style="padding-left:${(h.level - 1) * 12}px">${parser.utils.escapeHtml(h.title)}</a>`,
+            )
+            .join(""),
+        )
       : "";
   if (tokens.length < 800 || page)
     return toc + parser.renderer.render(tokens, parser.options, env);

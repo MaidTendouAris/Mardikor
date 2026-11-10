@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { defaultSettings } from "./defaults";
 import { parse, stringify } from "smol-toml";
 import type { MdkContents, MdkSettings } from "./mdk";
@@ -15,7 +16,7 @@ export function containsControl(value: string) {
 }
 export function normalizeMode(mode: string) {
   if (typeof mode !== "string" || !/^[0-9a-f]{2}$/i.test(mode))
-    throw new Error("mode 必须是两位 ASCII 十六进制字符。");
+    throw new Error(t("mode 必须是两位 ASCII 十六进制字符。"));
   return mode.toUpperCase();
 }
 export function validatePath(name: string) {
@@ -27,7 +28,7 @@ export function validatePath(name: string) {
     name.startsWith("/") ||
     name.split("/").some((part) => !part || part === "." || part === "..")
   )
-    throw new Error(`不安全的工程内部路径：${name}`);
+    throw new Error(t("不安全的工程内部路径：{0}", name));
 }
 export function validateContents(
   value: unknown,
@@ -35,10 +36,10 @@ export function validateContents(
 ): asserts value is MdkContents {
   if (!isTable(value) || value.schema_version !== 1)
     throw new Error(
-      "contents.toml 的 schema_version 必须为整数 1；更高版本需要升级应用。",
+      t("contents.toml 的 schema_version 必须为整数 1；更高版本需要升级应用。"),
     );
   if (value.entries === undefined) value.entries = [];
-  if (!Array.isArray(value.entries)) throw new Error("entries 必须为数组。");
+  if (!Array.isArray(value.entries)) throw new Error(t("entries 必须为数组。"));
   for (const key of [
     "appearance",
     "layout",
@@ -49,27 +50,27 @@ export function validateContents(
   ])
     if (key in value)
       throw new Error(
-        `contents.toml 只控制目录；${key} 应写入 settings.toml。`,
+        t("contents.toml 只控制目录；{0} 应写入 settings.toml。", key),
       );
   const ids = new Set<string>(),
     positions = new Set<string>();
   for (const entry of value.entries) {
     if (!isTable(entry) || typeof entry.id !== "string" || !entry.id.trim())
-      throw new Error("目录项必须包含非空稳定 id。");
+      throw new Error(t("目录项必须包含非空稳定 id。"));
     if (
       typeof entry.position !== "string" ||
       !/^[1-9][0-9]*(\.[1-9][0-9]*){0,5}$/.test(entry.position)
     )
-      throw new Error(`无效的目录位置：${entry.position}`);
+      throw new Error(t("无效的目录位置：{0}", entry.position));
     if (
       typeof entry.path !== "string" ||
       !entry.path.startsWith("markdown/") ||
       !entry.path.endsWith(".md")
     )
-      throw new Error("目录项必须指向 markdown/ 下的 .md 文件。");
+      throw new Error(t("目录项必须指向 markdown/ 下的 .md 文件。"));
     validatePath(entry.path);
     if (ids.has(entry.id) || positions.has(entry.position))
-      throw new Error("目录项 id 或 position 重复。");
+      throw new Error(t("目录项 id 或 position 重复。"));
     ids.add(entry.id);
     positions.add(entry.position);
   }
@@ -145,7 +146,9 @@ export function inspectSettings(value: unknown): {
   if (!isTable(value) || value.schema_version !== 1) {
     problem(
       "schema_version",
-      "settings.toml 的 schema_version 必须为整数 1；整份设置临时使用默认值，原文件保持不变。",
+      t(
+        "settings.toml 的 schema_version 必须为整数 1；整份设置临时使用默认值，原文件保持不变。",
+      ),
     );
     return {
       settings: defaults,
@@ -165,7 +168,7 @@ export function inspectSettings(value: unknown): {
       if (isTable(fallback)) {
         if (!isTable(current)) {
           target[key] = structuredClone(fallback);
-          problem(path, `${path} 必须为表；该表临时使用默认值。`);
+          problem(path, t("{0} 必须为表；该表临时使用默认值。", path));
         } else visit(fallback, current, target[key] as Table, path);
         continue;
       }
@@ -218,7 +221,7 @@ export function inspectSettings(value: unknown): {
         target[key] = fallback;
         problem(
           path,
-          `${path} 的类型或取值无效；临时使用 ${String(fallback)}。`,
+          t("{0} 的类型或取值无效；临时使用 {1}。", path, String(fallback)),
         );
       }
     }
@@ -233,7 +236,9 @@ export function inspectSettings(value: unknown): {
       settings.layout[key] = defaults.layout[key];
     problem(
       "layout",
-      "左右边距之和必须小于页宽；页宽与左右边距临时使用 720 / 32 / 32，其他字段保持有效值。",
+      t(
+        "左右边距之和必须小于页宽；页宽与左右边距临时使用 720 / 32 / 32，其他字段保持有效值。",
+      ),
     );
   }
   return { settings, problems, readonly: false };
@@ -292,7 +297,7 @@ export function validateSourceText(
   _paths?: Set<string>,
 ) {
   if (path === "mimetype" && content !== "application/vnd.mardikor.mdk+zip")
-    throw new Error("mimetype 必须保持规范中的固定值。");
+    throw new Error(t("mimetype 必须保持规范中的固定值。"));
   if (/\.toml$/i.test(path)) {
     const value = parseToml(content);
     if (path === "contents.toml") validateContents(value);

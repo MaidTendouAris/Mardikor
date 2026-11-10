@@ -7,6 +7,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import AdmZip from "adm-zip";
 import {
   decodePDFRawStream,
   PDFDict,
@@ -18,6 +19,7 @@ import {
 } from "pdf-lib";
 import * as mdk from "../electron/mdk";
 import { AppState } from "../electron/state";
+import type { AppLocale } from "../shared/i18n";
 import { validateGeneratedEpub } from "../electron/epub";
 import { selectOption } from "./select-option.mjs";
 
@@ -42,7 +44,7 @@ mdk.createTextFile(
 mdk.saveMdkTextFile(
   file,
   "markdown/001.md",
-  "# 第一章\n\n可复现 PDF 与 EPUB 出版验证。\n\n正文包含 **加粗**、*斜体*、~~删除线~~ 和 `代码`。\n\n[转到第二章](002.md#第二章)\n\n## 内容\n\n> 引用内容\n\n- [x] 已完成\n- [ ] 待完成\n\n| 项目 | 值 |\n| --- | ---: |\n| 标准 | EPUB 3 |\n\n```ts\nconst answer = 42;\n```\n\n![示例图片](../resources/image/icon.png)\n\n脚注示例[^1]。\n\n[^1]: 第一章的脚注。",
+  "# 第一章\n\n可复现 PDF 与 EPUB 出版验证。\n\n正文包含 **加粗**、*斜体*、~~删除线~~ 和 `代码`。\n\n行内公式 $E=mc^2$。\n\n$$\n\\int_0^1 x^2 dx = \\frac{1}{3}\n$$\n\n[转到第二章](002.md#第二章)\n\n## 内容\n\n> 引用内容\n\n- [x] 已完成\n- [ ] 待完成\n\n| 项目 | 值 |\n| --- | ---: |\n| 标准 | EPUB 3 |\n\n```ts\nconst answer = 42;\n```\n\n![示例图片](../resources/image/icon.png)\n\n脚注示例[^1]。\n\n[^1]: 第一章的脚注。",
 );
 mdk.saveMdkTextFile(
   file,
@@ -66,12 +68,17 @@ for (const name of ["001", "002", "003"])
     `markdown/${name}.md`,
     `![漫画第 ${name} 页](../resources/image/icon.png)`,
   );
-async function launch(file: string, profileName: string) {
+async function launch(
+  file: string,
+  profileName: string,
+  language: AppLocale = "zh-CN",
+) {
   const profile = path.join(run, profileName);
   new AppState(profile).preferences({
     autosave: false,
     autosaveInterval: 30,
     directorySyncThreshold: 200,
+    language,
   });
   const env = {
     ...process.env,
@@ -90,11 +97,11 @@ async function launch(file: string, profileName: string) {
   const page = await app.firstWindow();
   page.setDefaultTimeout(60000);
   try {
-    // Distributed projects include the 16 MiB embedded font as well as text.
     await expect(page.locator(".document-title")).toContainText(
       "markdown/001.md",
       { timeout: 30000 },
     );
+    await expect(page.locator("html")).toHaveAttribute("lang", language);
   } catch (error) {
     await page.evaluate(() => window.mardikor?.setDirty(false)).catch(() => {});
     await app.close();
@@ -168,6 +175,7 @@ try {
   await expect(
     section.getByRole("button", { name: "严格预检", exact: true }),
   ).toBeEnabled({ timeout: 30000 });
+  expect((await fs.stat(file)).size).toBeLessThan(100_000);
   await section.getByRole("button", { name: "严格预检", exact: true }).click();
   await expect(
     section.getByRole("region", { name: "出版转换校验结果", exact: true }),
@@ -224,6 +232,12 @@ try {
   const pdf = await PDFDocument.load(await fs.readFile(pdfA));
   expect(pdf.getTitle()).toBe("出版导出验证");
   expect(pdf.getAuthor()).toBe("Mardikor");
+  const fonts = pdf.context.enumerateIndirectObjects().flatMap(([, value]) => {
+    if (!(value instanceof PDFDict)) return [];
+    const font = value.lookupMaybe(PDFName.of("BaseFont"), PDFName);
+    return font ? [font.decodeText()] : [];
+  });
+  expect(fonts.some((font) => /KaTeX/i.test(font))).toBe(true);
   expect(pdf.getPages()[0].getWidth()).toBeCloseTo((148 / 25.4) * 72, 0);
   const titles = pdf.context.enumerateIndirectObjects().flatMap(([, value]) => {
     if (!(value instanceof PDFDict) || !value.has(PDFName.of("Dest")))
@@ -239,14 +253,18 @@ try {
   expect(titles).not.toContain("1 第一章1 第一章");
   const bookEpub = path.join(run, "book.epub");
   await output(app, page, file, "epub", bookEpub);
-  validateGeneratedEpub(await fs.readFile(bookEpub));
+  const epubBytes = await fs.readFile(bookEpub);
+  validateGeneratedEpub(epubBytes);
+  const epub = new AdmZip(epubBytes);
+  expect(epub.readAsText("EPUB/chapter-0001.xhtml")).toContain("<mfrac>");
+  expect(epub.readAsText("EPUB/package.opf")).toContain('properties="mathml"');
   await page.screenshot({ path: path.join(root, "export-options.png") });
   console.log(
     "Book PDF typography, pagination, metadata, exact repeated bytes and EPUB conversion passed.",
   );
   const distributed = path.join(run, "分发副本.mdk");
   await fs.copyFile(file, distributed);
-  const other = await launch(distributed, "profile-b");
+  const other = await launch(distributed, "profile-b", "en");
   try {
     const result = await output(
       other.app,

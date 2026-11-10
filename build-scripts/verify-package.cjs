@@ -21,6 +21,12 @@ exports.default = async (context) => {
     bundled.push(`assets/export/${file}`);
   for (const file of fs.readdirSync(path.join(root, "dist/assets")))
     bundled.push(`dist/assets/${file}`);
+  bundled.push("node_modules/katex/dist/katex.min.css");
+  for (const file of fs.readdirSync(
+    path.join(root, "node_modules/katex/dist/fonts"),
+  ))
+    if (file.endsWith(".woff2"))
+      bundled.push(`node_modules/katex/dist/fonts/${file}`);
   for (const file of bundled)
     assert.deepEqual(
       extractFile(archive, path.normalize(file)),

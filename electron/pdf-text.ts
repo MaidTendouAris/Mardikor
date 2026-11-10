@@ -1,3 +1,4 @@
+import { t } from "../shared/i18n";
 import fontkit from "@pdf-lib/fontkit";
 import {
   PDFDocument,
@@ -13,7 +14,7 @@ import {
 // this changes neither glyphs nor page geometry. Never guess an ambiguous map.
 export function pdfCjkAliases(font: Buffer, text: string) {
   const face = fontkit.create(font);
-  if (!("glyphForCodePoint" in face)) throw new Error("不支持字体集合。");
+  if (!("glyphForCodePoint" in face)) throw new Error(t("不支持字体集合。"));
   const used = new Map<number, Set<number>>();
   for (const character of new Set(text)) {
     const point = character.codePointAt(0)!;
@@ -30,7 +31,9 @@ export function pdfCjkAliases(font: Buffer, text: string) {
     if (!points?.size) continue;
     if (points.size > 1)
       throw new Error(
-        "固定字体将不同的源字符映射到同一 CJK 字形，无法保证 PDF 搜索文本无损；请换用能区分这些字符的字体。",
+        t(
+          "固定字体将不同的源字符映射到同一 CJK 字形，无法保证 PDF 搜索文本无损；请换用能区分这些字符的字体。",
+        ),
       );
     const actual = points.values().next().value!;
     if (actual !== point) aliases.set(point, actual);
@@ -98,7 +101,7 @@ export function restorePdfSourceCharacters(
           const start = parseInt(match[1], 16),
             end = parseInt(match[2], 16);
           if (end - start > 65535)
-            throw new Error("PDF CMap 范围超出支持范围。");
+            throw new Error(t("PDF CMap 范围超出支持范围。"));
           const array = match[4]
             ? [...match[4].matchAll(/<([a-f\d]+)>/gi)].map((item) => item[1])
             : null;
@@ -108,7 +111,7 @@ export function restorePdfSourceCharacters(
               : (BigInt("0x" + match[3]) + BigInt(value - start))
                   .toString(16)
                   .padStart(match[3].length, "0");
-            if (!target) throw new Error("PDF CMap 数组不完整。");
+            if (!target) throw new Error(t("PDF CMap 数组不完整。"));
             entries.push(
               `<${value.toString(16).padStart(match[1].length, "0")}> <${destination(target)}>`,
             );

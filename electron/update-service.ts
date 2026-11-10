@@ -1,5 +1,6 @@
+import { t } from "../shared/i18n";
 import type { AppUpdater } from "electron-updater";
-import { releasePage, type UpdateStatus } from "../shared/updates";
+import { releasePage, repositoryUrl, type UpdateStatus } from "../shared/updates";
 
 export const updateInterval = 24 * 60 * 60 * 1000;
 export interface UpdateStore {
@@ -43,7 +44,7 @@ export class UpdateService {
       currentVersion: version,
       lastChecked: store.lastChecked(),
       percent: 0,
-      message: "尚未检查更新。",
+      message: t("尚未检查更新。"),
       releaseNotes: "",
       releaseUrl: releasePage,
       canInstall,
@@ -52,17 +53,16 @@ export class UpdateService {
       const notes =
         typeof info.releaseNotes === "string"
           ? info.releaseNotes
-          : (info.releaseNotes ?? [])
-              .map((note) => `${note.version}\n${note.note ?? ""}`)
-              .join("\n\n");
+          : info.releaseNotes?.find((note) => note.version === info.version)?.note ?? "";
       const downloaded = this.downloadedVersion === info.version;
       this.set({
         phase: downloaded ? "downloaded" : "available",
         latestVersion: info.version,
+        releaseUrl: `${repositoryUrl}/releases/tag/v${encodeURIComponent(info.version)}`,
         releaseNotes: notes.slice(0, 12000),
         message: downloaded
-          ? "更新已下载，等待手动安装。"
-          : `发现新版本 ${info.version}，请手动下载。`,
+          ? t("更新已下载，等待手动安装。")
+          : t("发现新版本 {0}，请手动下载。", info.version),
       });
     });
     client.on("update-not-available", () =>
@@ -70,14 +70,15 @@ export class UpdateService {
         phase: "current",
         latestVersion: undefined,
         releaseNotes: "",
-        message: "当前已是最新版本。",
+        releaseUrl: releasePage,
+        message: t("当前已是最新版本。"),
       }),
     );
     client.on("download-progress", (info) =>
       this.set({
         phase: "downloading",
         percent: Math.max(0, Math.min(100, info.percent)),
-        message: "正在下载更新。",
+        message: t("正在下载更新。"),
       }),
     );
     client.on("update-downloaded", () => {
@@ -85,7 +86,9 @@ export class UpdateService {
       this.set({
         phase: "downloaded",
         percent: 100,
-        message: "更新已下载。点击安装并重启后，将沿用当前安装设置并自动重启。",
+        message: t(
+          "更新已下载。点击安装并重启后，将沿用当前安装设置并自动重启。",
+        ),
       });
     });
     client.on("error", (error) => this.fail(error));
@@ -101,7 +104,7 @@ export class UpdateService {
     const message = error instanceof Error ? error.message : String(error);
     this.set({
       phase: "error",
-      message: `更新操作失败：${message.slice(0, 1200)}`,
+      message: t("更新操作失败：{0}", message.slice(0, 1200)),
     });
   }
   async automatic() {
@@ -127,13 +130,16 @@ export class UpdateService {
           lastChecked: at,
           latestVersion: undefined,
           releaseNotes: "",
-          message: "正在检查 GitHub Releases…",
+          releaseUrl: releasePage,
+          message: t("正在检查 GitHub Releases…"),
         });
         const result = await this.client.checkForUpdates();
         if (!result)
           this.set({
             phase: "idle",
-            message: "当前运行环境不支持在线检查，请在正式安装版中检查更新。",
+            message: t(
+              "当前运行环境不支持在线检查，请在正式安装版中检查更新。",
+            ),
           });
       } catch (error) {
         this.fail(error);
@@ -147,13 +153,17 @@ export class UpdateService {
   download(): Promise<UpdateStatus> {
     if (this.downloading) return this.downloading;
     if (!this.value.canInstall)
-      throw new Error("此版本请从发布页下载对应安装包或便携版。");
+      throw new Error(t("此版本请从发布页下载对应安装包或便携版。"));
     if (
       !this.value.latestVersion ||
       !["available", "error"].includes(this.value.phase)
     )
-      throw new Error("请先检查并选择可用更新。");
-    this.set({ phase: "downloading", percent: 0, message: "正在下载更新。" });
+      throw new Error(t("请先检查并选择可用更新。"));
+    this.set({
+      phase: "downloading",
+      percent: 0,
+      message: t("正在下载更新。"),
+    });
     this.downloading = (async () => {
       try {
         await this.client.downloadUpdate();
@@ -169,17 +179,17 @@ export class UpdateService {
   async install(prepare: () => Promise<boolean>) {
     if (this.installing) return this.status();
     if (!this.value.canInstall || this.value.phase !== "downloaded")
-      throw new Error("请先手动下载更新。");
+      throw new Error(t("请先手动下载更新。"));
     this.installing = true;
     this.set({
       phase: "preparing",
-      message: "正在准备安装并处理所有窗口的未保存内容…",
+      message: t("正在准备安装并处理所有窗口的未保存内容…"),
     });
     try {
       if (!(await prepare())) {
         this.set({
           phase: "downloaded",
-          message: "已取消安装。更新文件保留，文档仍保持打开。",
+          message: t("已取消安装。更新文件保留，文档仍保持打开。"),
         });
         return this.status();
       }
@@ -187,7 +197,7 @@ export class UpdateService {
     } catch (error) {
       this.set({
         phase: "downloaded",
-        message: `安装未开始：${String(error).slice(0, 1000)}`,
+        message: t("安装未开始：{0}", String(error).slice(0, 1000)),
       });
     } finally {
       this.installing = false;
