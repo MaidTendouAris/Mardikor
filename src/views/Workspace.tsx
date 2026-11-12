@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { stringify } from "smol-toml";
 import { HeadingOutline } from "../components/HeadingOutline";
+import { findHeadings, type SearchHit, type SearchResults } from "../services/document-find";
 import { Select } from "../components/Select";
 import { EditorGroup, type EditorGroupHandle } from "../components/EditorGroup";
 import { SplitHandle } from "../components/SplitHandle";
@@ -58,6 +59,7 @@ import {
   editorFileKind,
   editorView,
   newEditorGroup,
+  supportsReadingMode,
   textSnapshot,
   type EditorGroupState,
   type EditorTab as Tab,
@@ -75,6 +77,7 @@ import {
   type ResolvedAppTheme,
 } from "../../shared/desktop";
 import type { Ask, Notify } from "../App";
+import type { ReadingChange, ReadingPreferences } from "../../shared/reading";
 import { previewTextLimit } from "../services/document-size";
 import { replacePages } from "../services/document-pages";
 import { useMarkdownHeadings } from "../services/markdown-tasks";
@@ -107,6 +110,8 @@ export const Workspace = forwardRef<
     initialView?: Tab;
     initialFragment?: string;
     preferences: Preferences;
+    reading: ReadingPreferences;
+    changeReading: (change: ReadingChange) => Promise<ReadingPreferences>;
     shortcutsEnabled: boolean;
     theme: ResolvedAppTheme;
     ask: Ask;
@@ -123,6 +128,8 @@ export const Workspace = forwardRef<
     initialView = "preview",
     initialFragment,
     preferences,
+    reading,
+    changeReading,
     shortcutsEnabled,
     theme,
     ask,
@@ -179,6 +186,10 @@ export const Workspace = forwardRef<
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const [activeId, setActiveId] = useState(groups[0].id);
+  const [findStates, setFindStates] = useState<Record<string, {
+    results?: SearchResults;
+    hit?: SearchHit;
+  }>>({});
   const activeGroup = groups.find((g) => g.id === activeId) ?? groups[0];
   const activePath = activeGroup.path,
     tab = activeGroup.tab,
@@ -256,8 +267,14 @@ export const Workspace = forwardRef<
   const isMarkdown = !!buffer && isManuscript(project, buffer.path);
   const markdown = isMarkdown ? buffer.content : "";
   const followOutline = preferences.followOutline !== false;
+  const currentFind = findStates[activeGroup.id];
+  const findPaths = useMemo(() => currentFind?.results &&
+    new Set(currentFind.results.matches.map(({ document }) => document.path)),
+    [currentFind?.results]);
   const outlinePath =
-    followOutline && tab === "preview"
+    (tab === "preview" || tab === "reader") && currentFind?.hit
+      ? currentFind.hit.path
+      : followOutline && (tab === "preview" || tab === "reader")
       ? (activeGroup.outlinePath ?? activePath)
       : activePath;
   const outlineBuffer = buffers[outlinePath];
@@ -294,6 +311,12 @@ export const Workspace = forwardRef<
       : (outlineBuffer?.content ??
         (outlineText?.path === outlinePath ? outlineText.text : ""));
   const headings = useMarkdownHeadings(outlinePath, outlineSource);
+  const findOutline = useMemo(() => {
+    const match = currentFind?.results?.matches.find(({ document }) => document.path === outlinePath);
+    if (match?.document.content !== outlineSource) return;
+    return findHeadings(outlineSource, headings, match.offsets, currentFind?.hit?.path === outlinePath
+      ? currentFind.hit.start : undefined);
+  }, [currentFind, outlinePath, outlineSource, headings]);
   const groupPaths = groups.map((group) => group.path).join("\0");
   useEffect(() => {
     const open = new Set(groupPaths.split("\0"));
@@ -414,7 +437,7 @@ export const Workspace = forwardRef<
       groupEditors.current[activeId]?.jumpHeading(heading);
       return;
     }
-    if (tab === "preview") {
+    if (tab === "preview" || tab === "reader") {
       patchGroup(activeId, {
         heading: { path: outlinePath, index: heading.index, key: Date.now() },
       });
@@ -550,6 +573,7 @@ export const Workspace = forwardRef<
     loaded: MdkProject,
     view: Tab = "source",
     groupId = activeId,
+    entryId?: string,
   ) {
     const item = loaded.files.find((f) => f.path === path);
     if (item?.kind === "directory") return;
@@ -581,9 +605,12 @@ export const Workspace = forwardRef<
       view,
       current?.content,
       loaded.format === "markdown",
+      supportsReadingMode(loaded),
     );
     patchGroup(groupId, (g) => ({
       path,
+      entryId,
+      keepVisual: undefined,
       tab:
         tab === "write" &&
         current &&
@@ -1029,10 +1056,22 @@ export const Workspace = forwardRef<
     }, preferences.autosaveInterval * 1000);
     return () => clearInterval(timer);
   }, [file, preferences.autosave, preferences.autosaveInterval]);
-  async function openFile(path: string, groupId = activeId) {
+  async function openFile(path: string, groupId = activeId, entryId?: string) {
     if (!project) return;
-    if (groupsRef.current.find((group) => group.id === groupId)?.path === path)
+    const group = groupsRef.current.find(({ id }) => id === groupId);
+    if (group?.path === path) {
+      if (entryId && entryId !== group.entryId) patchGroup(groupId, { entryId });
+      if (group.tab === "reader")
+        patchGroup(groupId, {
+          heading: { path, index: -1, key: Date.now() },
+        });
       return;
+    }
+    if (group?.tab === "reader") {
+      const view = editorFileKind(project, path) === "markdown" ? "reader" : "preview";
+      await loadFile(path, project, view, groupId, entryId);
+      return;
+    }
     if (path === "contents.toml" && directoryDirty) {
       if (
         !(await ask({
@@ -1053,22 +1092,25 @@ export const Workspace = forwardRef<
         contents: { ...loaded.contents, entries: project.contents.entries },
       };
     setProject(loaded);
-    await loadFile(path, loaded, "preview", groupId);
+    await loadFile(path, loaded, "preview", groupId, entryId);
   }
   async function changeTab(next: Tab, groupId = activeId) {
     if (standalone && next === "settings")
       throw new Error(t("单 Markdown 工程没有 settings.toml。"));
-    if (!(await flush(false))) return;
     const target = groupsRef.current.find((g) => g.id === groupId)!;
+    if (next !== "reader" && target.tab !== "reader" && !(await flush(false)))
+      return;
     const targetBuffer = buffersRef.current[target.path];
     next = editorView(
       editorFileKind(project, target.path),
       next,
       targetBuffer?.content,
       standalone,
+      supportsReadingMode(project),
     );
     patchGroup(groupId, (g) => ({
       tab: next,
+      keepVisual: undefined,
       outlinePath: undefined,
       revision: g.revision + 1,
     }));
@@ -1367,6 +1409,21 @@ export const Workspace = forwardRef<
         target?.closest('dialog, [role="dialog"], [role="listbox"]')
       )
         return;
+      const mac = /Mac/i.test(navigator.platform);
+      if (
+        event.key.toLowerCase() === "f" && !event.altKey && !event.shiftKey &&
+        (mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
+      ) {
+        const groupId = target?.closest<HTMLElement>("[data-editor-group]")?.dataset.editorGroup;
+        const editable = target?.closest("input,textarea,select,[contenteditable=true]");
+        if ((editable && !target?.closest(".monaco-editor,.document-body,.document-find-bar")) ||
+          (!groupId && target !== document.body)) return;
+        if (groupEditors.current[groupId ?? activeId]?.find(target)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
       const key = shortcutFromEvent(event);
       if (!key) return;
       const action = bindings.get(key);
@@ -1401,7 +1458,7 @@ export const Workspace = forwardRef<
     };
     window.addEventListener("keydown", keydown, true);
     return () => window.removeEventListener("keydown", keydown, true);
-  }, [shortcutsEnabled, preferences.shortcuts]);
+  }, [shortcutsEnabled, preferences.shortcuts, activeId]);
   function startResize(event: React.MouseEvent) {
     const start = event.clientX,
       width = sidebarWidth;
@@ -1428,7 +1485,7 @@ export const Workspace = forwardRef<
     );
   return (
     <div
-      className={`editor-workspace ${project?.mode === "00" ? "mode-default" : ""} ${busy ? "is-busy" : ""}`}
+      className={`editor-workspace ${project?.mode === "00" ? "mode-default" : ""} ${busy ? "is-busy" : ""} ${tab === "reader" && supportsReadingMode(project) && reading.style.hideSidebars ? "reader-hide-sidebars" : ""}`}
     >
       <aside className="outline-panel" style={{ width: sidebarWidth }}>
         <div className="project-heading">
@@ -1563,15 +1620,17 @@ export const Workspace = forwardRef<
               view={treeView}
               entries={project?.contents.entries ?? []}
               files={project?.files ?? []}
-              selected={activePath}
+              selected={tab === "reader" ? outlinePath : activePath}
               query={query}
+              findPaths={findPaths}
+              findPath={currentFind?.hit?.path}
               busy={busy}
               readOnly={standalone || project?.readonly}
               showResources={!!project && !standalone}
               fileSelection={fileSelection}
               onFileSelection={setFileSelection}
               onExtractSelection={(paths) => void execute(() => extractResources(paths, true))}
-              onOpen={(path) => void execute(() => openFile(path))}
+              onOpen={(path, entryId) => void execute(() => openFile(path, activeId, entryId))}
               onMove={(id, parent, index) =>
                 void execute(() =>
                   applyOutline(
@@ -1598,6 +1657,8 @@ export const Workspace = forwardRef<
           />
           <HeadingOutline
             headings={headings}
+            findMatches={findOutline?.matching}
+            findActive={findOutline?.active}
             active={activeHeading}
             enabled={isMarkdown}
             follow={followOutline}
@@ -1677,7 +1738,7 @@ export const Workspace = forwardRef<
         <div className="document-topbar">
           <div className="document-title">
             <FileCode2 size={17} />
-            <strong>{activePath || t("未选择文件")}</strong>
+            <strong>{(tab === "reader" ? outlinePath : activePath) || t("未选择文件")}</strong>
             <span>
               {dirty
                 ? t("未保存")
@@ -1827,6 +1888,7 @@ export const Workspace = forwardRef<
                 }}
                 group={group}
                 buffer={buffers[group.path] ?? null}
+                buffers={buffers}
                 project={project}
                 file={file}
                 initialFragment={index === 0 ? initialFragment : undefined}
@@ -1844,6 +1906,9 @@ export const Workspace = forwardRef<
                 theme={theme}
                 pageLength={pageLength}
                 showPageMarkers={preferences.showPageMarkers !== false}
+                reading={reading}
+                changeReading={changeReading}
+                ask={ask}
                 headings={outlinePath === group.path ? headings : undefined}
                 split={groups.length === 2}
                 label={index === 0 ? t("左栏") : t("右栏")}
@@ -1856,6 +1921,34 @@ export const Workspace = forwardRef<
                 flush={() => flushRef.current()}
                 saveDocument={saveDocument}
                 openFile={(path) => openFile(path, group.id)}
+                onFindState={(results, hit) => {
+                  setFindStates((previous) => {
+                    if (previous[group.id]?.results === results && previous[group.id]?.hit === hit)
+                      return previous;
+                    const next = { ...previous };
+                    if (results || hit) next[group.id] = { results, hit };
+                    else delete next[group.id];
+                    return next;
+                  });
+                }}
+                revealSearch={({ path, content }, view) => {
+                  if (operation === "work") return false;
+                  const current = buffersRef.current[path];
+                  if (current && current.content !== content) return false;
+                  if (!current) putBuffer({ path, content, saved: content });
+                  if (path === group.path) return true;
+                  patchGroup(group.id, {
+                    path,
+                    entryId: undefined,
+                    tab: view,
+                    keepVisual: view === "write",
+                    outlinePath: view === "reader" ? path : undefined,
+                    activeHeading: -1,
+                    reveal: undefined,
+                    heading: undefined,
+                  });
+                  return true;
+                }}
                 changeTab={(tab) => changeTab(tab, group.id)}
                 updateContent={(content) => updateContent(group.path, content)}
                 setPagination={(content, pagination) => {

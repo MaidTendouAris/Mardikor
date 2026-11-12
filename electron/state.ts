@@ -13,6 +13,13 @@ import {
 import type { PublicationConfiguration } from "../shared/publication";
 import { migrateShortcuts, shortcutError } from "../shared/shortcuts";
 import { t, languagePreferences } from "../shared/i18n";
+import {
+  defaultReadingPreferences,
+  maxReadingPresets,
+  normalizeReadingPreferences,
+  type ReadingChange,
+  type ReadingPreferences,
+} from "../shared/reading";
 
 const defaults: Preferences = {
   autosave: true,
@@ -43,6 +50,7 @@ export class AppState {
   private value: {
     recent: RecentProject[];
     preferences: Preferences;
+    reading: ReadingPreferences;
     updateLastChecked?: number;
     windowSize?: WindowSize;
   };
@@ -50,9 +58,14 @@ export class AppState {
   private recoveryClaims = new Map<string, string>();
   constructor(directory: string) {
     this.file = path.join(directory, "workspace.json");
-    this.value = { recent: [], preferences: { ...defaults } };
+    this.value = {
+      recent: [],
+      preferences: { ...defaults },
+      reading: defaultReadingPreferences,
+    };
     if (fs.existsSync(this.file)) {
       const saved = JSON.parse(fs.readFileSync(this.file, "utf8"));
+      this.value.reading = normalizeReadingPreferences(saved.reading);
       if (!Array.isArray(saved.recent))
         throw new Error(t("应用状态损坏，无法读取最近工程。"));
       this.value.recent = saved.recent
@@ -264,6 +277,55 @@ export class AppState {
       this.save();
     }
     return this.value.preferences;
+  }
+  readingPreferences(change?: ReadingChange) {
+    const previous = this.value.reading;
+    if (change === undefined) return previous;
+    if (!change || typeof change !== "object")
+      throw new Error(t("阅读设置无效。"));
+    const next = { ...previous, presets: [...previous.presets] };
+    const index = "id" in change
+      ? next.presets.findIndex(({ id }) => id === change.id)
+      : -1;
+    if (["rename", "update", "apply", "remove"].includes(change.kind) && index < 0)
+      throw new Error(t("阅读预设不存在。"));
+    if ((change.kind === "create" || change.kind === "rename") &&
+      (typeof change.name !== "string" || !change.name.trim() || change.name.trim().length > 48))
+      throw new Error(t("请输入 1 至 48 个字符的预设名称。"));
+    switch (change.kind) {
+      case "style":
+        next.style = change.style;
+        break;
+      case "create":
+        if (next.presets.length >= maxReadingPresets)
+          throw new Error(t("最多可保存 {0} 个阅读预设。", maxReadingPresets));
+        next.style = change.style;
+        next.presets.push({ id: randomUUID(), name: change.name, style: change.style });
+        break;
+      case "rename":
+        next.presets[index] = { ...next.presets[index], name: change.name };
+        break;
+      case "update":
+        next.style = change.style;
+        next.presets[index] = { ...next.presets[index], style: change.style };
+        break;
+      case "apply":
+        next.style = next.presets[index].style;
+        break;
+      case "remove":
+        next.presets.splice(index, 1);
+        break;
+      default:
+        throw new Error(t("阅读设置无效。"));
+    }
+    this.value.reading = normalizeReadingPreferences(next);
+    try {
+      this.save();
+    } catch (error) {
+      this.value.reading = previous;
+      throw error;
+    }
+    return this.value.reading;
   }
   private save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });

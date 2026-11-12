@@ -11,7 +11,7 @@ Windows 安装版自动关联 `.mdk`，可选择关联 `.md`；便携版无需�
 
 [下载最新版本](<https://github.com/MaidTendouAris/Mardikor/releases/latest>)。安装版默认每日检查更新，下载与安装由用户手动发起。
 
-许可证：[GPLv3](<LICENSE>)（GPL-3.0-only）。
+许可证为 [MIT](LICENSE)。
 
 ## 关于MDK文件
 

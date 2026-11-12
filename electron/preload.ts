@@ -135,6 +135,17 @@ const api: DesktopApi = {
     return locale;
   },
   preferences: (value) => ipcRenderer.invoke("app:preferences", value),
+  readingPreferences: (change) =>
+    ipcRenderer.invoke("app:reading-preferences", change),
+  onReadingPreferencesChanged: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      value: Parameters<typeof callback>[0],
+    ) => callback(value);
+    ipcRenderer.on("app:reading-preferences-changed", listener);
+    return () =>
+      ipcRenderer.removeListener("app:reading-preferences-changed", listener);
+  },
   onPreferencesChanged: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,

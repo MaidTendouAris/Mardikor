@@ -3,7 +3,14 @@ import { isManuscript } from "../../shared/workspace";
 import { canEditVisually } from "./document-size";
 import type { DocumentPages } from "./document-pages";
 
-export type EditorTab = "source" | "write" | "preview" | "settings";
+export type EditorTab = "source" | "write" | "preview" | "reader" | "settings";
+export function supportsReadingMode(project: MdkProject | null) {
+  return (
+    !!project &&
+    project.format !== "markdown" &&
+    (project.mode === "01" || project.mode === "02")
+  );
+}
 export function editorFileKind(project: MdkProject | null, path: string) {
   const file = project?.files.find((item) => item.path === path);
   if (file?.kind === "directory") return;
@@ -17,11 +24,13 @@ export function editorView(
   requested: EditorTab,
   text = "",
   standalone = false,
+  readingAvailable = false,
 ): EditorTab {
   if (kind === "media") return "preview";
   if (kind !== "markdown") return "source";
   if (requested === "write" && !canEditVisually(text)) return "preview";
   if (requested === "settings" && standalone) return "source";
+  if (requested === "reader" && !readingAvailable) return "preview";
   return requested;
 }
 export interface TextBuffer {
@@ -34,6 +43,8 @@ export interface EditorGroupState {
   id: string;
   path: string;
   tab: EditorTab;
+  entryId?: string;
+  keepVisual?: boolean;
   revision: number;
   zoom: number;
   cursor: { line: number; column: number };

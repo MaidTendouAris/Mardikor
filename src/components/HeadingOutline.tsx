@@ -9,6 +9,8 @@ export function HeadingOutline({
   enabled,
   follow,
   emptyMessage,
+  findMatches,
+  findActive = -1,
 }: {
   headings: MarkdownHeading[];
   active: number;
@@ -16,6 +18,8 @@ export function HeadingOutline({
   enabled: boolean;
   follow: boolean;
   emptyMessage?: string;
+  findMatches?: ReadonlySet<number>;
+  findActive?: number;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const list = useRef<HTMLDivElement>(null);
@@ -43,9 +47,10 @@ export function HeadingOutline({
   }, [collapsed]);
   useLayoutEffect(() => {
     const node = list.current;
-    if (!follow || !node || active < 0) return;
+    const focused = findActive >= 0 ? findActive : follow ? active : -1;
+    if (!node || focused < 0) return;
     if (virtual) {
-      const offset = active * rowHeight;
+      const offset = focused * rowHeight;
       if (
         offset < node.scrollTop ||
         offset + rowHeight > node.scrollTop + node.clientHeight
@@ -54,7 +59,7 @@ export function HeadingOutline({
         setTop(node.scrollTop);
       }
     } else {
-      const row = node.children[active] as HTMLElement | undefined;
+      const row = node.children[focused] as HTMLElement | undefined;
       if (
         row &&
         (row.offsetTop < node.scrollTop ||
@@ -64,7 +69,7 @@ export function HeadingOutline({
           row.offsetTop -
           Math.max(0, (node.clientHeight - row.offsetHeight) / 2);
     }
-  }, [active, follow, virtual, collapsed]);
+  }, [active, follow, virtual, collapsed, findActive]);
   return (
     <section
       className={`heading-outline ${collapsed ? "collapsed" : ""}`}
@@ -111,6 +116,8 @@ export function HeadingOutline({
               onClick={() => onSelect(heading)}
               title={heading.title}
               data-heading-line={heading.line}
+              data-find-match={findMatches?.has(heading.index) ? "" : undefined}
+              data-find-current={findActive === heading.index ? "" : undefined}
             >
               <span className="heading-level">H{heading.level}</span>
               <span>{heading.title || t("无标题")}</span>

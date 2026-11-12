@@ -2,19 +2,23 @@ import type { MouseEvent } from "react";
 import { resolveReference } from "../../shared/references";
 import { desktop } from "./desktop";
 
-export function scrollToFragment(root: ParentNode, fragment: string) {
+export function findPreviewFragment(root: ParentNode, fragment: string) {
   let id = fragment;
   try {
     id = decodeURIComponent(fragment);
   } catch {
     /* Keep literal fragments. */
   }
-  const target = Array.from(root.querySelectorAll<HTMLElement>("[id]")).find(
+  return Array.from(root.querySelectorAll<HTMLElement>("[id]")).find(
     (node) =>
       node.id === id ||
       node.dataset.fragment === id ||
       node.id.endsWith(`-${id}`),
   );
+}
+
+export function scrollToFragment(root: ParentNode, fragment: string) {
+  const target = findPreviewFragment(root, fragment);
   target?.scrollIntoView({ block: "start" });
   return !!target;
 }

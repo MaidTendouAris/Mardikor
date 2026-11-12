@@ -53,6 +53,8 @@ interface TreeActions {
   busy: boolean;
   selection?: ReadonlyMap<string, { checked: boolean; mixed: boolean }>;
   toggleSelection?: (item: TreeItem) => void;
+  findPaths?: ReadonlySet<string>;
+  findPath?: string;
 }
 const Actions = createContext<TreeActions>({
   open() {},
@@ -76,6 +78,8 @@ function Row({ node, style, dragHandle }: NodeRendererProps<TreeItem>) {
       className={`project-tree-row ${node.isSelected ? "selected" : ""} ${node.willReceiveDrop ? "drop-target" : ""}`}
       data-entry-id={data.entry?.id}
       data-path={data.path}
+      data-find-match={data.path && actions.findPaths?.has(data.path) ? "" : undefined}
+      data-find-current={data.path && data.path === actions.findPath ? "" : undefined}
       data-position={data.position}
       onClick={(event) => {
         if (actions.busy) return;
@@ -174,6 +178,8 @@ export function ProjectTree({
   files,
   selected,
   query,
+  findPaths,
+  findPath,
   busy,
   readOnly = false,
   showResources = false,
@@ -189,13 +195,15 @@ export function ProjectTree({
   files: ProjectFile[];
   selected: string;
   query: string;
+  findPaths?: ReadonlySet<string>;
+  findPath?: string;
   busy: boolean;
   readOnly?: boolean;
   showResources?: boolean;
   fileSelection?: ReadonlySet<string>;
   onFileSelection?: (selection: Set<string>) => void;
   onExtractSelection?: (paths: string[]) => void;
-  onOpen: (path: string) => void;
+  onOpen: (path: string, entryId?: string) => void;
   onMove: (id: string, parentPosition: string | null, index: number) => void;
   onAction: (action: TreeAction, path: string, entry?: MdkEntry) => void;
 }) {
@@ -307,10 +315,12 @@ export function ProjectTree({
     view === "files" ? selected : entries.find((e) => e.path === selected)?.id;
   const actions: TreeActions = {
     busy,
+    findPaths,
+    findPath,
     selection,
     toggleSelection,
     open: (item) => {
-      if (item.path) onOpen(item.path);
+      if (item.path) onOpen(item.path, view === "outline" ? item.id : undefined);
     },
     menu: (item, x, y) =>
       setMenu({

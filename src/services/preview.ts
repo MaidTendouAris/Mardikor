@@ -10,6 +10,8 @@ import type { DocumentPages } from "./document-pages";
 
 function createPreviewParser(containers: boolean, standalone = false) {
   const parser = createMarkdownParser(containers);
+  parser.renderer.rules.mdk_heading_prefix = (tokens, index) =>
+    '<span data-find-generated>' + parser.utils.escapeHtml(tokens[index].content) + "</span>";
   if (standalone) {
     const validate = parser.validateLink;
     parser.validateLink = (href) => /^file:\/\//i.test(href) || validate(href);
@@ -108,6 +110,8 @@ export function renderPreview(
   standalone = false,
   reservedSections?: ReadonlySet<string>,
   page?: PreviewContext,
+  headingFragments = standalone,
+  mapSource = false,
 ) {
   const parser = standalone
     ? settings?.preview.render_containers === false
@@ -118,7 +122,7 @@ export function renderPreview(
       : md;
   if (page?.literal)
     return (
-      '<pre class="preview-literal">' +
+      '<pre class="preview-literal"' + (mapSource ? ' data-source-lines="0:-1"' : '') + '>' +
       parser.utils.escapeHtml(markdown) +
       "</pre>"
     );
@@ -143,6 +147,11 @@ export function renderPreview(
   let headingNumber = page?.headingOffset ?? 0;
   const fragments = new Set<string>(),
     counts = new Map<string, number>();
+  if (mapSource) {
+    for (const token of tokens)
+      if (token.map && token.tag && token.type !== "inline" && !token.hidden)
+        token.attrSet("data-source-lines", token.map.join(":"));
+  }
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.type !== "heading_open") continue;
@@ -150,7 +159,7 @@ export function renderPreview(
       inline = tokens[index + 1],
       id = `${prefix}mdk-heading-${++headingNumber}`;
     token.attrSet("id", id);
-    if (standalone) {
+    if (headingFragments) {
       const base = parser.renderer
         .renderInlineAsText(inline.children ?? [], parser.options, env)
         .trim()
@@ -185,7 +194,7 @@ export function renderPreview(
     );
     if (settings?.mode.book.chapter_numbering && mode === "01") {
       const prefix = numberHeading(level);
-      const text = new Token("text", "", 0);
+      const text = new Token(mapSource && prefix ? "mdk_heading_prefix" : "text", "", 0);
       text.content = prefix ? prefix + " " : "";
       inline.children?.unshift(text);
       title = text.content + title;

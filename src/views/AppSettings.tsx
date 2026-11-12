@@ -1,8 +1,8 @@
 import { appLocale, t, type LanguagePreference } from "../../shared/i18n";
 import { useState } from "react";
 import { Check, ChevronRight, ExternalLink, Keyboard } from "lucide-react";
-import { version } from "../../package.json";
-import license from "../../LICENSE?raw";
+import { license, version } from "../../package.json";
+import licenseText from "../../LICENSE?raw";
 import cliGuide from "../../docs/CLI.md?raw";
 import cliGuideEnglish from "../../docs/CLI.en.md?raw";
 import {
@@ -22,6 +22,7 @@ import { ShortcutSettings } from "./ShortcutSettings";
 const cliGuideHtml = renderPreview(
   appLocale() === "en" ? cliGuideEnglish : cliGuide,
 );
+const licenseHtml = renderPreview("# " + licenseText);
 
 export function AppSettings({
   value,
@@ -316,22 +317,29 @@ export function AppSettings({
           <span>{t("版本号")}</span>
           <code>{update?.currentVersion ?? version}</code>
         </div>
-        <details className="update-notes app-license">
-          <summary>{t("许可证（GPL-3.0-only）")}</summary>
-          <pre tabIndex={0} aria-label={t("GPLv3 许可证全文")}>
-            {license}
-          </pre>
-        </details>
-        <details className="app-license">
-          <summary>{t("命令行使用指南")}</summary>
-          <div
-            className="preview-body cli-guide"
-            role="region"
-            tabIndex={0}
-            aria-label={t("命令行指南全文")}
-            dangerouslySetInnerHTML={{ __html: cliGuideHtml }}
-          />
-        </details>
+        {[
+          {
+            title: t("许可证（{0}）", license),
+            label: t("许可证全文"),
+            html: licenseHtml,
+          },
+          {
+            title: t("命令行使用指南"),
+            label: t("命令行指南全文"),
+            html: cliGuideHtml,
+          },
+        ].map(({ title, label, html }) => (
+          <details key={label} className="app-document">
+            <summary>{title}</summary>
+            <div
+              className="preview-body app-document-body"
+              role="region"
+              tabIndex={0}
+              aria-label={label}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          </details>
+        ))}
         <div className="button-row">
           {[
             { label: t("GitHub 仓库"), url: repositoryUrl },

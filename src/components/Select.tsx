@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import * as Primitive from "@radix-ui/react-select";
-import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
 interface Item {
   value: string;
@@ -115,9 +115,6 @@ export function Select({
             }
           }}
         >
-          <Primitive.ScrollUpButton className="select-scroll-button">
-            <ChevronUp size={13} />
-          </Primitive.ScrollUpButton>
           <Primitive.Viewport className="select-viewport">
             {options.map((group, index) => (
               <Primitive.Group key={index}>
@@ -148,9 +145,6 @@ export function Select({
               group.items.some((item) => item.value !== ""),
             ) && <div className="select-empty">{t("暂无可选项")}</div>}
           </Primitive.Viewport>
-          <Primitive.ScrollDownButton className="select-scroll-button">
-            <ChevronDown size={13} />
-          </Primitive.ScrollDownButton>
         </Primitive.Content>
       </Primitive.Portal>
     </Primitive.Root>

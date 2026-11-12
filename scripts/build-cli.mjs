@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 
 const root = "build-output/cli";
 const destination = path.join(root, "package");
-const { version, engines, repository } = JSON.parse(
+const { version, license, engines, repository } = JSON.parse(
   await fs.readFile("package.json", "utf8"),
 );
 await fs.mkdir(path.join(destination, "bin"), { recursive: true });
@@ -27,7 +27,7 @@ await fs.writeFile(
       name: "mardikor-cli",
       version,
       description: "Headless command-line editor for Mardikor MDK projects",
-      license: "GPL-3.0-only",
+      license,
       repository: repository ?? "https://github.com/MaidTendouAris/Mardikor",
       engines,
       bin: { mardikor: "bin/mardikor.cjs" },

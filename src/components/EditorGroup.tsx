@@ -12,18 +12,20 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { Braces, Eye, Pencil, Settings2, Columns2, X } from "lucide-react";
+import { BookOpen, Braces, Eye, Pencil, Search, Settings2, Columns2, X } from "lucide-react";
 import type { Editor } from "@tiptap/react";
 import { RichEditor, RichToolbar, richDropDraft } from "./RichEditor";
 import { Select } from "./Select";
 import { ProjectSettings } from "./ProjectSettings";
 import { ReadingPreview } from "./ReadingPreview";
+import { DocumentReader, type DocumentReaderHandle } from "./DocumentReader";
 import {
   PagedPreview,
   type PagePoint,
   type PagedPreviewHandle,
 } from "./PagedPreview";
 import { PageNavigation } from "./PageNavigation";
+import { DocumentFindBar } from "./DocumentFindBar";
 import { MediaPreview } from "./MediaPreview";
 import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
 import { desktop } from "../services/desktop";
@@ -33,6 +35,11 @@ import {
   settingsToCss,
 } from "../services/preview";
 import { usePreviewMath } from "../services/preview-math";
+import { useSourceFind } from "../services/use-source-find";
+import type { FindMatches, SearchHit, SearchResults } from "../services/document-find";
+import { findLocations, projectFindHit } from "../services/find-mapping";
+import { revealFindRect, useMappedFind, useMappedMatches } from "../services/use-mapped-find";
+import type { PreviewArgs } from "../services/preview-page";
 import { followPreviewLink } from "../services/document-links";
 import { resolveReference } from "../../shared/references";
 import { isManuscript } from "../../shared/workspace";
@@ -64,11 +71,13 @@ import type { InsertionDraft } from "../../shared/resources";
 import {
   editorFileKind,
   editorView,
+  supportsReadingMode,
   type EditorGroupState,
   type EditorTab,
   type TextBuffer,
 } from "../services/editor-groups";
-import type { Notify } from "../App";
+import type { Ask, Notify } from "../App";
+import type { ReadingChange, ReadingPreferences } from "../../shared/reading";
 import type { ResolvedAppTheme } from "../../shared/desktop";
 import type { ShortcutOverrides, VisualShortcut } from "../../shared/shortcuts";
 
@@ -80,6 +89,7 @@ const SourceEditor = lazy(async () => {
   return { default: module.SourceEditor };
 });
 export interface EditorGroupHandle {
+  find: (target?: Element | null) => boolean;
   scrollTo: (ratio: number) => void;
   jumpHeading: (heading: MarkdownHeading) => void;
   dropDraft: (x: number, y: number, marker: string) => InsertionDraft;
@@ -90,6 +100,7 @@ export interface EditorGroupHandle {
 interface Props {
   group: EditorGroupState;
   buffer: TextBuffer | null;
+  buffers: Record<string, TextBuffer>;
   project: MdkProject | null;
   file: string;
   initialFragment?: string;
@@ -101,6 +112,9 @@ interface Props {
   theme: ResolvedAppTheme;
   pageLength: number;
   showPageMarkers: boolean;
+  reading: ReadingPreferences;
+  changeReading: (change: ReadingChange) => Promise<ReadingPreferences>;
+  ask: Ask;
   headings?: MarkdownHeading[];
   split: boolean;
   label: string;
@@ -113,6 +127,8 @@ interface Props {
   flush: () => Promise<boolean>;
   saveDocument: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  revealSearch: (hit: SearchHit, view: EditorTab) => boolean;
+  onFindState: (results?: SearchResults, hit?: SearchHit) => void;
   changeTab: (tab: EditorTab) => Promise<void>;
   updateContent: (content: string) => void;
   setPagination: (content: string, layout: DocumentPages) => void;
@@ -134,6 +150,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     {
       group,
       buffer,
+      buffers,
       project,
       file,
       initialFragment,
@@ -145,6 +162,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       theme,
       pageLength,
       showPageMarkers,
+      reading,
+      changeReading,
+      ask,
       headings,
       split,
       label,
@@ -157,6 +177,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       flush,
       saveDocument,
       openFile,
+      revealSearch,
+      onFindState,
       changeTab,
       updateContent,
       setPagination,
@@ -187,7 +209,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const markdown = isMarkdown ? buffer.content : "";
     const visualAvailable = isMarkdown && canEditVisually(markdown);
     const standalone = project?.format === "markdown";
-    const tab = editorView(fileKind, selectedTab, markdown, standalone);
+    const readingAvailable = supportsReadingMode(project);
+    const tab = editorView(fileKind, selectedTab, group.keepVisual ? "" : markdown, standalone, readingAvailable);
     useEffect(() => {
       if (tab !== selectedTab) patch({ tab, outlinePath: undefined });
     }, [selectedTab, tab]);
@@ -205,6 +228,70 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const host = useRef<HTMLElement>(null);
     const previewRef = useRef<HTMLElement>(null);
     const pagedPreview = useRef<PagedPreviewHandle>(null);
+    const reader = useRef<DocumentReaderHandle>(null);
+    const returnFindFocus = useRef<HTMLElement | null>(null);
+    const findDestination = useRef<string | undefined>(undefined);
+    const findScroll = useRef(0);
+    const [findFocus, setFindFocus] = useState(0);
+    const find = useSourceFind(file, project, buffers, (hit) => {
+      if (!revealSearch(hit, tab)) return false;
+      findDestination.current = hit.path;
+      findScroll.current = performance.now() + 350;
+      return true;
+    });
+    const findDocuments = useMemo(() => {
+      const result = new Map<string, FindMatches>();
+      if (find.results)
+        for (const match of find.results.matches)
+          result.set(match.document.path, { ...match, length: find.results.length });
+      return result;
+    }, [find.results]);
+    const documentMatches = findDocuments.get(activePath);
+    const publishFind = useRef(onFindState);
+    publishFind.current = onFindState;
+    useEffect(() => publishFind.current(find.results, find.hit), [find.results, find.hit]);
+    useEffect(() => () => publishFind.current(), []);
+    const searchReveal = useRef<SearchHit | undefined>(undefined);
+    searchReveal.current = tab === "source" && find.hit?.path === activePath
+      ? find.hit
+      : undefined;
+    useEffect(() => {
+      if (!find.anchor || (findDestination.current === activePath && !group.entryId)) return;
+      findDestination.current = undefined;
+      find.setAnchor({ path: activePath, id: group.entryId });
+    }, [activePath, group.entryId]);
+    useEffect(() => {
+      findDestination.current = undefined;
+      find.close();
+    }, [file]);
+    useEffect(() => {
+      if (tab === "settings") find.close();
+    }, [tab]);
+    function openFind(target?: Element | null) {
+      if (!project || tab === "settings" || (standalone && !isMarkdown)) return false;
+      if (!find.anchor) {
+        const focused = target ?? document.activeElement;
+        returnFindFocus.current = focused instanceof HTMLElement && host.current?.contains(focused)
+          ? focused : null;
+        findDestination.current = undefined;
+        find.open(
+          (tab === "reader" ? reader.current?.currentDocument() : undefined) ??
+          { path: activePath, id: group.entryId },
+        );
+      }
+      setFindFocus((value) => value + 1);
+      return true;
+    }
+    function closeFind() {
+      const jumped = findDestination.current === activePath;
+      find.close();
+      requestAnimationFrame(() => {
+        if (jumped && tab === "source") sourceEditor.current?.focus();
+        else if (returnFindFocus.current?.isConnected) returnFindFocus.current.focus();
+        else if (tab === "source") sourceEditor.current?.focus();
+        else host.current?.focus();
+      });
+    }
     const outlineFrame = useRef(0);
     const sourceCursorMoved = useRef(0);
     const lastSourceLine = useRef<{ path: string; line: number } | undefined>(
@@ -213,7 +300,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const expectedSourceScroll = useRef<number | null>(null);
     const expectedScroll = useRef(new WeakMap<HTMLElement, number>());
     function scrollTo(ratio: number, origin?: HTMLElement | "source") {
+      if (!origin && performance.now() < findScroll.current) return;
       ratio = Math.max(0, Math.min(1, ratio));
+      if (tab === "reader") {
+        reader.current?.scrollTo(ratio);
+        return;
+      }
       if (tab === "source" && origin !== "source") {
         expectedSourceScroll.current = ratio;
         sourceEditor.current?.scrollTo(ratio);
@@ -235,7 +327,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     }
     const viewportReady = () =>
       requestAnimationFrame(() => {
-        scrollTo(getScrollProgress());
+        if (!find.hit) scrollTo(getScrollProgress());
         if (tab === "preview") {
           const viewport = host.current?.querySelector<HTMLElement>(
             ".reading-preview,.paged-preview-viewport",
@@ -254,6 +346,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       viewportReady();
     }, [tab, activePath]);
     function reportScroll(ratio: number, origin: HTMLElement | "source") {
+      if (performance.now() < findScroll.current) return;
       const expected =
         origin === "source"
           ? expectedSourceScroll.current
@@ -356,7 +449,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     );
     const currentPage = paged ? layout?.pages[editingPage] : undefined;
     const editWindow =
-      layout && tab === "write" && currentPage && !currentPage.readOnly
+      layout && tab === "write" && visualAvailable && currentPage && !currentPage.readOnly
         ? windowSelection &&
           windowSelection.last < layout.pages.length &&
           !layout.pages
@@ -402,10 +495,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const unsupported = useMemo(
       () =>
         tab === "write" &&
-        (paged
+        (!visualAvailable || (paged
           ? !!currentPage?.readOnly
-          : requiresSourceMode(buffer?.saved ?? "")),
-      [tab, paged, currentPage?.readOnly, buffer?.saved],
+          : requiresSourceMode(buffer?.saved ?? ""))),
+      [tab, visualAvailable, paged, currentPage?.readOnly, buffer?.saved],
     );
     const layoutReady = useRef(setPagination);
     layoutReady.current = setPagination;
@@ -476,6 +569,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       }),
       [settings, project?.mode, tab],
     );
+    const previewArgs = useMemo<PreviewArgs>(() => [
+      layoutText, previewSettings, activeEntry?.position, project?.mode,
+      group.id + "-", activePath, standalone, reserved.get(activeEntry?.position ?? ""),
+      undefined, undefined, true,
+    ], [layoutText, previewSettings, activeEntry?.position, project?.mode,
+      group.id, activePath, standalone, reserved]);
     const previewHtml = useMemo(() => {
       if (
         !isMarkdown ||
@@ -492,6 +591,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         activePath,
         standalone,
         reserved.get(activeEntry?.position ?? ""),
+        undefined,
+        undefined,
+        true,
       );
     }, [
       tab,
@@ -509,6 +611,50 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       standalone,
       reserved,
     ]);
+    const inlineFind = useMemo(() =>
+      !paged && previewHtml && find.hit?.path === activePath
+        ? projectFindHit(find.hit, previewMarkdown)
+        : undefined, [paged, previewHtml, find.hit, activePath, previewMarkdown]);
+    const inlineMatches = useMemo(() => !paged && previewHtml
+      ? findLocations(documentMatches, previewMarkdown) : [],
+      [paged, previewHtml, documentMatches, previewMarkdown]);
+    const richFind = useMemo(() => {
+      if (tab !== "write" || unsupported || find.hit?.path !== activePath) return;
+      if (!paged) return projectFindHit(find.hit, markdown);
+      if (!layout || !editWindow) return;
+      const start = layout.pages[editWindow.first].start;
+      const end = layout.pages[editWindow.last + 1]?.start ?? markdown.length;
+      const location = projectFindHit(find.hit, markdown);
+      if (location.start >= start && location.start < end)
+        return { ...location, start: location.start - start, end: location.end - start };
+    }, [tab, unsupported, find.hit, activePath, paged, markdown, layout, editWindow?.first, editWindow?.last]);
+    const richMatches = useMemo(() => {
+      if (tab !== "write" || unsupported) return [];
+      if (!paged) return findLocations(documentMatches, markdown);
+      if (!layout || !editWindow) return [];
+      const start = layout.pages[editWindow.first].start;
+      const end = layout.pages[editWindow.last + 1]?.start ?? markdown.length;
+      return findLocations(documentMatches, markdown, start, end, -start);
+    }, [tab, unsupported, documentMatches, paged, markdown, layout, editWindow?.first, editWindow?.last]);
+    function revealBodyFind(rect: DOMRect, anchor: HTMLElement) {
+      findScroll.current = performance.now() + 100;
+      if (paged) {
+        pagedPreview.current?.revealFind(rect);
+        return;
+      }
+      const viewport = anchor.closest<HTMLElement>(".inline-preview,.document-canvas");
+      if (viewport) {
+        revealFindRect(viewport, rect);
+        followViewport(viewport);
+      }
+    }
+    const richBody = useRef<HTMLElement | null>(null);
+    richBody.current = richEditor && !richEditor.isDestroyed ? richEditor.view.dom : null;
+    useMappedFind(previewRef, previewMarkdown, inlineFind, previewHtml, revealBodyFind);
+    useMappedMatches(previewRef, previewMarkdown, inlineMatches, previewHtml);
+    useMappedFind(richBody, paged ? windowText : markdown, richFind,
+      richEditor?.state.doc, revealBodyFind, true);
+    useMappedMatches(richBody, paged ? windowText : markdown, richMatches, richEditor?.state.doc, true);
     useEffect(() => {
       let live = true;
       previewRef.current?.querySelectorAll("img").forEach((image) => {
@@ -664,7 +810,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           .run();
     }
     useLayoutEffect(() => {
-      if (!richEditor) return;
+      if (!richEditor || richEditor.isDestroyed) return;
       if (queuedRichHeading.current) {
         const heading = queuedRichHeading.current;
         queuedRichHeading.current = null;
@@ -691,6 +837,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     useImperativeHandle(
       ref,
       () => ({
+        find: openFind,
         scrollTo,
         jumpHeading(heading) {
           if (tab === "write" && layout && paged) {
@@ -765,7 +912,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           else richEditor.commands.setParagraph();
         },
       }),
-      [richEditor, tab, layout, editWindow, offset, paged, markdown],
+      [richEditor, tab, layout, editWindow, offset, paged, markdown,
+        find.anchor, project, activePath, group.entryId],
     );
     const setCursor = (cursor: { line: number; column: number }) =>
       patch({ cursor });
@@ -851,8 +999,11 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           sourceCursorMoved.current = 0;
           onActivate();
         }}
-        onFocusCapture={onActivate}
+        onFocusCapture={() => {
+          onActivate();
+        }}
         onWheelCapture={() => {
+          findScroll.current = 0;
           sourceCursorMoved.current = 0;
           onActivate();
         }}
@@ -915,6 +1066,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               { id: "source", name: t("源码"), icon: Braces },
               { id: "write", name: t("可视化"), icon: Pencil },
               { id: "preview", name: t("预览"), icon: Eye },
+              ...(readingAvailable ? [{ id: "reader", name: t("阅读"), icon: BookOpen }] : []),
               { id: "settings", name: t("工程设置"), icon: Settings2 },
             ].map((item) => (
               <button
@@ -938,6 +1090,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     item.id as EditorTab,
                     markdown,
                     standalone,
+                    readingAvailable,
                   ) !== item.id
                 }
                 onClick={() =>
@@ -950,6 +1103,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             ))}
           </div>
           <div className="document-view-actions">
+            {(project && tab !== "settings" && (isMarkdown || project.format !== "markdown")) && (
+              <button type="button" className="icon-button" aria-label={t("查找")}
+                aria-expanded={!!find.anchor}
+                onMouseDown={(event) => event.preventDefault()}
+                title={t("查找")} onClick={() => openFind()}><Search size={16} /></button>
+            )}
             {tab === "source" && isMarkdown && (
               <button
                 aria-label={t("切换源码与预览分栏")}
@@ -976,7 +1135,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 {t("切换到源码")}
               </button>
             )}
-            <PageNavigation
+            {tab !== "reader" && <PageNavigation
               key={activePath}
               page={paged ? page : 0}
               count={
@@ -994,9 +1153,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 if (tab === "write") selectEditingPage(index);
                 pagedPreview.current?.showPage(index);
               }}
-            />
+            />}
           </div>
         </div>
+        {find.anchor && (
+          <div className="document-find-anchor">
+            <DocumentFindBar find={find} focus={findFocus} close={closeFind} />
+          </div>
+        )}
         {project && !["00", "01", "02"].includes(project.mode) && (
           <p className="source-warning">
             {t("未知 mode")} {project.mode}
@@ -1005,7 +1169,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             )}
           </p>
         )}
-        {project &&
+        {tab !== "reader" && project &&
           project.issues.filter((issue) => issue.severity === "error").length >
             0 && (
             <details className="project-diagnostics">
@@ -1061,7 +1225,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           />
         )}
         <div
-          className={`document-canvas ${tab === "source" ? "source-canvas" : ""}`}
+          className={`document-canvas ${tab === "source" ? "source-canvas" : ""} ${tab === "reader" ? "reader-canvas" : ""}`}
           onPasteCapture={(event) => {
             if (!isMarkdown || !["source", "write"].includes(tab)) return;
             if (tab === "write" && !richEditor) return;
@@ -1166,6 +1330,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                           : undefined
                       }
                       reveal={headingReveal}
+                      findReveal={searchReveal.current}
+                      findMatches={tab === "source" ? documentMatches : undefined}
                       path={codeBuffer.path}
                       value={codeBuffer.content}
                       files={project?.files ?? []}
@@ -1193,7 +1359,28 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 </section>
               </div>
             )}
-          {tab === "settings" ? (
+          {tab === "reader" && project ? (
+            <DocumentReader
+              ref={reader}
+              file={file}
+              revision={project.revision}
+              activePath={activePath}
+              comic={project.mode === "02"}
+              value={reading}
+              change={changeReading}
+              ask={ask}
+              notify={notify}
+              heading={previewHeading}
+              findHit={find.hit}
+              findDocuments={findDocuments}
+              onHeading={(path, index) => {
+                if (active && followOutline && (path !== group.outlinePath || index !== group.activeHeading))
+                  patch({ outlinePath: path, activeHeading: index });
+              }}
+              onScroll={onScroll}
+              openFile={(path) => void execute(() => openFile(path))}
+            />
+          ) : tab === "settings" ? (
             <ProjectSettings
               value={settings}
               fonts={
@@ -1218,16 +1405,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               key={activePath + ":" + pageLength}
               ref={pagedPreview}
               className={tab === "source" ? "inline-preview paged-inline" : ""}
-              args={[
-                layoutText,
-                previewSettings,
-                activeEntry?.position,
-                project?.mode,
-                group.id + "-",
-                activePath,
-                standalone,
-                reserved.get(activeEntry?.position ?? ""),
-              ]}
+              args={previewArgs}
+              findHit={find.hit?.path === activePath ? find.hit : undefined}
+              findMatches={documentMatches}
+              onFindPage={tab === "write" && visualAvailable ? selectEditingPage : undefined}
               layout={layout}
               onPage={setPageIndex}
               headings={sourceHeadings}
@@ -1285,6 +1466,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                   : undefined
               }
               heading={previewHeading}
+              findHit={find.hit}
+              findDocuments={findDocuments}
             />
           ) : buffer ? (
             <>
@@ -1293,6 +1476,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                   {unsupported ? (
                     <article
                       className="document-paper preview-body"
+                      tabIndex={0}
                       style={style}
                       ref={previewRef}
                       onClick={(event) =>
@@ -1319,6 +1503,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 >
                   <article
                     className="document-paper preview-body"
+                    tabIndex={0}
                     style={style}
                     ref={previewRef}
                     onClick={(event) =>

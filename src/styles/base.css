@@ -1449,16 +1449,13 @@ kbd {
 .app-information {
   margin-top: 20px;
 }
-.app-license {
+.app-document {
   padding: 16px 0;
 }
-.app-license summary {
+.app-document summary {
   cursor: pointer;
 }
-.app-license pre {
-  max-height: 320px;
-}
-.app-license .cli-guide {
+.app-document-body {
   max-height: 480px;
   overflow: auto;
   margin-top: 12px;
@@ -3093,6 +3090,22 @@ kbd {
   min-height: 0;
   padding: 4px;
 }
+/* Radix hides the viewport scrollbar for its scroll buttons. */
+.select-content .select-viewport {
+  scrollbar-width: auto;
+}
+.select-content .select-viewport::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+}
+.select-viewport::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: light-dark(#9eacc1, #666) padding-box;
+}
+.select-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: light-dark(#7c8da7, #858585);
+}
 .select-option {
   display: flex;
   align-items: center;
@@ -3132,15 +3145,6 @@ kbd {
   padding: 8px 10px 4px;
   font-size: 10px;
   color: var(--theme-muted, #7e8ba0);
-}
-.select-scroll-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 18px;
-  flex-shrink: 0;
-  color: var(--theme-muted, #7a8ca8);
-  background: var(--secondary-surface, #fafbfe);
 }
 .select-empty {
   padding: 12px 10px;

@@ -11,6 +11,24 @@ import type { MdkProject, MdkSettings, ReadingUnit } from "../../shared/mdk";
 import { desktop } from "../services/desktop";
 import { mayContainMath, renderPreview } from "../services/preview";
 import { usePreviewMath } from "../services/preview-math";
+import type { FindMatches, SearchHit } from "../services/document-find";
+import { findLocations, projectFindHit } from "../services/find-mapping";
+import { revealFindRect, useMappedFind, useMappedMatches } from "../services/use-mapped-find";
+
+function ReadingPreviewBody({ markdown, html, matches, hit, reveal }: {
+  markdown: string;
+  html: string;
+  matches?: FindMatches;
+  hit?: SearchHit;
+  reveal: (rect: DOMRect) => void;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const location = useMemo(() => hit && projectFindHit(hit, markdown), [hit, markdown]);
+  const locations = useMemo(() => findLocations(matches, markdown), [matches, markdown]);
+  useMappedFind(root, markdown, location, html, reveal);
+  useMappedMatches(root, markdown, locations, html);
+  return <div ref={root} dangerouslySetInnerHTML={{ __html: html }} />;
+}
 import { resolveReference } from "../../shared/references";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import {
@@ -29,6 +47,8 @@ export function ReadingPreview({
   onLayout,
   onError,
   initialFragment,
+  findHit,
+  findDocuments,
 }: {
   file: string;
   project: MdkProject;
@@ -40,6 +60,8 @@ export function ReadingPreview({
   onLayout?: () => void;
   onError: (error: string) => void;
   initialFragment?: string;
+  findHit?: SearchHit;
+  findDocuments: ReadonlyMap<string, FindMatches>;
 }) {
   const [units, setUnits] = useState<ReadingUnit[]>([]),
     [error, setError] = useState("");
@@ -67,6 +89,8 @@ export function ReadingPreview({
     };
   }, [file, project.revision, project.mode]);
   const fluid = project.mode === "00";
+  const single = fluid || (!!activeDocument &&
+    !project.contents.entries.some(({ path }) => path === activeDocument.path));
   const standalone = project.format === "markdown";
   const initialJump = useRef(false);
   useEffect(() => {
@@ -85,7 +109,7 @@ export function ReadingPreview({
   useEffect(() => {
     onLayout?.();
   }, [units, activeDocument?.path, activeDocument?.markdown, project.mode]);
-  const displayed = fluid
+  const displayed = single
     ? activeDocument
       ? [
           {
@@ -117,7 +141,7 @@ export function ReadingPreview({
         show_title: fluid || settings.preview.show_title,
       },
     };
-    const currentUnits = fluid
+    const currentUnits = single
       ? activeDocument
         ? [{ ...activeDocument, id: "current", position: "" }]
         : []
@@ -136,6 +160,9 @@ export function ReadingPreview({
               unit.path,
               standalone,
               reserved.get(unit.position),
+              undefined,
+              undefined,
+              true,
             ),
       ]),
     );
@@ -143,6 +170,7 @@ export function ReadingPreview({
     activeDocument?.path,
     activeDocument?.markdown,
     fluid,
+    single,
     namespace,
     previewMath,
     project.mode,
@@ -150,6 +178,7 @@ export function ReadingPreview({
     standalone,
     units,
   ]);
+  const matching = displayed.find(({ path }) => path === findHit?.path);
   useEffect(() => {
     let live = true;
     host.current
@@ -230,10 +259,12 @@ export function ReadingPreview({
                   {unit.path}
                 </p>
               ) : (
-                <div
-                  dangerouslySetInnerHTML={{
-                    __html: rendered.get(unit.id) ?? "",
-                  }}
+                <ReadingPreviewBody
+                  markdown={unit.markdown}
+                  html={rendered.get(unit.id) ?? ""}
+                  matches={findDocuments.get(unit.path)}
+                  hit={unit.id === matching?.id ? findHit : undefined}
+                  reveal={(rect) => { if (host.current) revealFindRect(host.current, rect); }}
                 />
               )}
             </article>

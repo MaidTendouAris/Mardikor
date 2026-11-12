@@ -24,9 +24,10 @@ import {
   scrollToFragment,
 } from "../services/document-links";
 import { markdownTask } from "../services/markdown-tasks";
-import type { renderPreview } from "../services/preview";
-
-type PreviewArgs = Parameters<typeof renderPreview>;
+import { previewPageArgs, type PreviewArgs } from "../services/preview-page";
+import { findLocations, projectFindHit, type FindLocation } from "../services/find-mapping";
+import { useMappedFind, useMappedMatches } from "../services/use-mapped-find";
+import { lowerBound, type FindMatches, type SearchHit } from "../services/document-find";
 type PageAnchor = { index: number; fraction: number };
 export type PagePoint = {
   x: number;
@@ -44,6 +45,7 @@ export interface PagedPreviewHandle {
   scrollTo: (ratio: number) => void;
   jump: (fragment: string) => void;
   showPage: (page: number) => void;
+  revealFind: (rect: DOMRect) => void;
   preserve: () => void;
 }
 
@@ -109,6 +111,10 @@ function PreviewSlice({
   headings,
   ready,
   resolveResource,
+  find,
+  matches,
+  projectedMatches,
+  revealFind,
 }: {
   args: PreviewArgs;
   layout: DocumentPages;
@@ -116,60 +122,24 @@ function PreviewSlice({
   headings: { line: number; level: number }[];
   ready: (value: boolean) => void;
   resolveResource: (source: string) => Promise<string>;
+  find?: FindLocation;
+  matches?: FindMatches;
+  projectedMatches?: FindLocation[];
+  revealFind: (rect: DOMRect) => void;
 }) {
-  const [
-    text,
-    settings,
-    position,
-    mode,
-    namespace,
-    path,
-    standalone,
-    reserved,
-  ] = args;
-  const page = layout.pages[index];
-  const markdown =
-    (page.tableHeader ?? "") +
-    text.slice(page.start, layout.pages[index + 1]?.start);
-  const headingOffset = headingOffsetAtLine(headings, page.line);
-  const priorHeadingLevels = useMemo(() => {
-    if (mode === "01" && settings?.mode.book.chapter_numbering)
-      return headings.slice(0, headingOffset).map(({ level }) => level);
-    return settings?.preview.show_title === false &&
-      headings.some(({ level }, index) => index < headingOffset && level === 1)
-      ? [1]
-      : [];
-  }, [headings, headingOffset, mode, settings]);
-  const { notes, references } = layout;
-  const [output, setOutput] = useState<{ html?: string; error?: string }>();
+  const renderArgs = useMemo(() => previewPageArgs(args, layout, index, headings),
+    [args, layout, index, headings]);
+  const [output, setOutput] = useState<{ args: PreviewArgs; html?: string; error?: string }>();
   const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const timer = setTimeout(() => {
       stop = markdownTask<string>(
         {
           kind: "preview",
-          args: [
-            markdown,
-            settings,
-            position,
-            mode,
-            namespace,
-            path,
-            standalone,
-            reserved,
-            {
-              headingOffset,
-              priorHeadingLevels,
-              continuedPage: index > 0,
-              pageNumber: index + 1,
-              literal: page.literal,
-              references,
-              notes,
-            },
-          ],
+          args: renderArgs,
         },
-        (html) => setOutput({ html }),
-        (error) => setOutput({ error }),
+        (html) => setOutput({ args: renderArgs, html }),
+        (error) => setOutput({ args: renderArgs, error }),
       );
     }, 80);
     let stop: (() => void) | undefined;
@@ -177,22 +147,7 @@ function PreviewSlice({
       clearTimeout(timer);
       stop?.();
     };
-  }, [
-    markdown,
-    settings,
-    position,
-    mode,
-    namespace,
-    path,
-    standalone,
-    reserved,
-    headingOffset,
-    priorHeadingLevels,
-    index,
-    page.literal,
-    references,
-    notes,
-  ]);
+  }, [renderArgs]);
   useLayoutEffect(() => {
     ready(!!output);
     return () => ready(false);
@@ -215,6 +170,20 @@ function PreviewSlice({
       live = false;
     };
   }, [output?.html, resolveResource]);
+  useMappedFind(element, renderArgs[0], find, output?.args === renderArgs && output.html, revealFind);
+  const locations = useMemo(() => {
+    const page = layout.pages[index];
+    const from = page.start;
+    const to = layout.pages[index + 1]?.start ?? args[0].length + 1;
+    const shift = (page.tableHeader?.length ?? 0) - from;
+    if (!projectedMatches) return findLocations(matches, args[0], from, to, shift);
+    const first = lowerBound(projectedMatches.length, (i) => projectedMatches[i].start >= from);
+    const end = lowerBound(projectedMatches.length, (i) => projectedMatches[i].start >= to);
+    return projectedMatches.slice(first, end).map((location) => ({
+      ...location, start: location.start + shift, end: location.end + shift,
+    }));
+  }, [matches, projectedMatches, args[0], index, layout]);
+  useMappedMatches(element, renderArgs[0], locations, output?.args === renderArgs && output.html);
 
   return output?.error ? (
     <p role="alert">{output.error}</p>
@@ -239,6 +208,10 @@ function PageSlice({
   onMeasure,
   onReady,
   resolveResource,
+  find,
+  matches,
+  projectedMatches,
+  revealFind,
 }: {
   args: PreviewArgs;
   layout: DocumentPages;
@@ -251,6 +224,10 @@ function PageSlice({
   onMeasure: (index: number, height: number) => void;
   onReady: (index: number) => void;
   resolveResource: (source: string) => Promise<string>;
+  find?: FindLocation;
+  matches?: FindMatches;
+  projectedMatches?: FindLocation[];
+  revealFind: (rect: DOMRect) => void;
 }) {
   const node = useRef<HTMLDivElement>(null);
   const editing = editor?.range?.first === index && !!editor.content;
@@ -343,6 +320,10 @@ function PageSlice({
           headings={headings}
           ready={setReady}
           resolveResource={resolveResource}
+          find={find}
+          matches={matches}
+          projectedMatches={projectedMatches}
+          revealFind={revealFind}
         />
       )}
     </div>
@@ -355,6 +336,9 @@ export const PagedPreview = forwardRef<
   PagedPreviewHandle,
   {
     args: PreviewArgs;
+    findHit?: SearchHit;
+    findMatches?: FindMatches;
+    onFindPage?: (page: number) => void;
     layout?: DocumentPages;
     onPage: (page: number) => void;
     headings?: MarkdownHeading[];
@@ -377,6 +361,9 @@ export const PagedPreview = forwardRef<
 >(function PagedPreview(
   {
     args,
+    findHit,
+    findMatches,
+    onFindPage,
     layout,
     onPage,
     headings,
@@ -561,13 +548,23 @@ export const PagedPreview = forwardRef<
         programmatic,
       );
   }
-  function showPage(index: number) {
+  function showPage(index: number, programmatic = false) {
     if (index < 0 || index >= count) return;
     pendingFragment.current = undefined;
     readingAnchor.current = undefined;
     const target = { index, fraction: 0 };
     place(target);
-    publish(target, false);
+    publish(target, programmatic);
+  }
+  function revealFind(rect: DOMRect) {
+    const node = viewport.current;
+    if (!node) return;
+    const bounds = node.getBoundingClientRect();
+    if (rect.top < bounds.top + 8 || rect.bottom > bounds.bottom - 8)
+      setTop(node.scrollTop + rect.top - bounds.top - node.clientHeight / 3);
+    anchor.current = anchorAt(node.scrollTop);
+    preserve();
+    publish(anchor.current, true);
   }
   function scrollTo(ratio: number) {
     if (!count) {
@@ -651,7 +648,7 @@ export const PagedPreview = forwardRef<
       queuedFragment.current = fragment;
     }
   }
-  useImperativeHandle(ref, () => ({ jump, scrollTo, showPage, preserve }));
+  useImperativeHandle(ref, () => ({ jump, scrollTo, showPage, preserve, revealFind }));
   useLayoutEffect(() => {
     const node = viewport.current;
     const paper = content.current;
@@ -688,6 +685,23 @@ export const PagedPreview = forwardRef<
     queuedFragment.current = undefined;
     jump(fragment);
   }, [layout, fullHeadings]);
+  const target = useMemo(() => {
+    if (!findHit || !layout) return;
+    const location = projectFindHit(findHit, args[0]);
+    const index = pageAtOffset([...layout.pages.map(({ start }) => start), Infinity], location.start);
+    const page = layout.pages[index];
+    const delta = (page.tableHeader?.length ?? 0) - page.start;
+    return { index, location: { ...location, start: location.start + delta, end: location.end + delta } };
+  }, [findHit, layout, args[0]]);
+  const projectedMatches = useMemo(() =>
+    findMatches && findMatches.document.content !== args[0]
+      ? findLocations(findMatches, args[0]).sort((a, b) => a.start - b.start)
+      : undefined, [findMatches, args[0]]);
+  useLayoutEffect(() => {
+    if (!target) return;
+    showPage(target.index, true);
+    onFindPage?.(target.index);
+  }, [target]);
 
   const localTop = Math.max(0, (scrollTop - contentTop()) / zoom);
   const overscan = height / zoom;
@@ -710,6 +724,7 @@ export const PagedPreview = forwardRef<
     <div className={"paged-preview " + className}>
       <div
         className="paged-preview-viewport"
+        tabIndex={0}
         ref={viewport}
         onInputCapture={() => {
           readingAnchor.current = undefined;
@@ -790,6 +805,10 @@ export const PagedPreview = forwardRef<
                       onMeasure={measure}
                       onReady={onSliceReady}
                       resolveResource={resolveResource}
+                      find={target?.index === index ? target.location : undefined}
+                      matches={findMatches}
+                      projectedMatches={projectedMatches}
+                      revealFind={revealFind}
                     />
                   </Fragment>
                 );

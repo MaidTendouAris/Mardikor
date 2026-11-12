@@ -91,6 +91,7 @@ export interface MdkCommands {
     insertion: ResourceInsertion,
   ) => ResourceInsertionResult;
   readText: (path: string, internalPath: string) => TextFileContent;
+  readDocuments: (path: string, internalPaths: string[]) => Pick<TextFileContent, "path" | "content">[];
   saveText: (
     path: string,
     internalPath: string,
@@ -173,6 +174,12 @@ export interface DesktopApi {
   recent(): Promise<RecentProject[]>;
   locale(): Promise<import("./i18n").AppLocale>;
   preferences(value?: Preferences): Promise<Preferences>;
+  readingPreferences(
+    change?: import("./reading").ReadingChange,
+  ): Promise<import("./reading").ReadingPreferences>;
+  onReadingPreferencesChanged(
+    callback: (value: import("./reading").ReadingPreferences) => void,
+  ): () => void;
   onPreferencesChanged(
     callback: (preferences: Preferences) => void,
   ): () => void;

@@ -1,0 +1,174 @@
+.document-find-anchor {
+  position: relative;
+  flex: 0 0 0;
+  z-index: 15;
+}
+
+.document-find-bar,
+.document-find-settings {
+  position: absolute;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-surface, #fff);
+  box-shadow: 0 4px 16px #0002;
+}
+
+.document-find-bar {
+  inset-block-start: 4px;
+  inset-inline-end: 6px;
+  display: flex;
+  align-items: center;
+  width: max-content;
+  max-width: calc(100% - 12px);
+  gap: 3px;
+  padding: 4px;
+}
+
+.document-find-input {
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--panel-surface, #fff);
+  font: inherit;
+}
+
+.document-find-query {
+  width: 172px;
+  min-width: 0;
+}
+
+.document-find-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 42px;
+  margin-inline: 3px;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.document-find-number {
+  width: auto;
+  min-width: 42px;
+  padding-inline: 4px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.document-find-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.project-tree-row[data-find-match],
+.heading-outline-list [data-find-match] {
+  box-shadow: inset 3px 0 light-dark(#cf852f, #bb843f);
+}
+
+.project-tree-row[data-find-current],
+.heading-outline-list [data-find-current] {
+  background: light-dark(#fff0d8, #453523);
+  box-shadow: inset 3px 0 light-dark(#c16c22, #f0aa61);
+}
+
+.document-find-bar > button {
+  flex-shrink: 0;
+}
+
+.document-find-settings {
+  inset-block-start: calc(100% + 4px);
+  inset-inline-end: 0;
+  padding: 8px;
+}
+
+.document-find-settings fieldset {
+  margin: 0 0 8px;
+  border: 0;
+  padding: 0;
+}
+
+.document-find-settings legend {
+  margin-bottom: 3px;
+  padding-inline: 6px;
+  color: var(--muted);
+}
+
+.document-find-settings label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.document-find-settings label:hover {
+  background: var(--hover-surface, #f8faff);
+}
+
+.document-find-settings label:has(input[type="radio"]:checked) {
+  color: var(--accent-text, #174a9f);
+  background: var(--accent-surface, #eaf1ff);
+}
+
+.document-find-settings label:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text, #174a9f);
+  outline-offset: -2px;
+}
+
+.document-find-settings label > input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+
+.document-find-settings input[type="radio"] {
+  appearance: none;
+  border: 1px solid var(--theme-muted, #7a8ca8);
+  border-radius: 50%;
+}
+
+.document-find-settings input[type="radio"]:checked {
+  border-color: var(--accent-text, #174a9f);
+  background: var(--accent-text, #174a9f);
+  box-shadow: inset 0 0 0 3px var(--panel-surface, #fff);
+}
+
+.document-find-settings .document-find-case {
+  border-radius: 0 0 4px 4px;
+  border-top: 1px solid var(--line);
+}
+
+.monaco-editor .document-find-match,
+::highlight(mardikor-document-find-matches) {
+  background-color: light-dark(#fff0a8, #625326);
+}
+
+.monaco-editor .document-find-current {
+  background-color: light-dark(#ffae56, #a75523);
+}
+
+::highlight(mardikor-document-find) {
+  background-color: light-dark(#ffae56, #a75523);
+}
+
+[data-document-find-anchor] {
+  outline: 2px solid light-dark(#c26a25, #e5a26c);
+  outline-offset: 2px;
+}
+
+[data-document-find-match]:not([data-document-find-anchor]) {
+  outline: 1px solid light-dark(#ba9b42, #b6a269);
+  outline-offset: 1px;
+}

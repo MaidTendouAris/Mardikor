@@ -1,4 +1,10 @@
 !include "nsDialogs.nsh"
+!include "${PROJECT_DIR}\build-scripts\shellnew.nsh"
+
+LangString NewMarkdownDocument 1033 "Markdown Document"
+LangString NewMarkdownDocument 2052 "Markdown 文档"
+LangString NewMdkProject 1033 "MDK Project"
+LangString NewMdkProject 2052 "MDK 工程"
 
 !define MD_ASSOC_KEY "Software\Mardikor\FileAssociations"
 !define MD_PROGID "Mardikor.Markdown"
@@ -85,6 +91,8 @@
   File "${PROJECT_DIR}\build-output\cli\mardikor.exe"
   File "${PROJECT_DIR}\build-output\cli\package\bin\mardikor.cjs"
   Pop $2
+  SetOutPath "$INSTDIR\resources\shellnew"
+  File "${PROJECT_DIR}\build-output\shellnew\Blank.mdk"
   SetOutPath "$2"
   nsExec::ExecToStack '"$INSTDIR\bin\mardikor.exe" --register-path "$installMode"'
   Pop $0
@@ -103,6 +111,16 @@
     !insertmacro RemoveMarkdownAssociation
   ${EndIf}
   WriteRegDWORD SHELL_CONTEXT "${MD_ASSOC_KEY}" "Markdown" $MarkdownAssociation
+  # A previously unregistered extension needs a file type for Explorer's New
+  # menu. This fallback contains a description only, with no open command.
+  ReadRegStr $0 HKCR ".md" ""
+  ${If} $0 == ""
+    WriteRegStr SHELL_CONTEXT "${SHELLNEW_CLASSES}\.md" "" "${MARKDOWN_FILE_TYPE}"
+    WriteRegStr SHELL_CONTEXT "${SHELLNEW_CLASSES}\${MARKDOWN_FILE_TYPE}" "" "$(NewMarkdownDocument)"
+  ${EndIf}
+  !insertmacro RegisterShellNew "md" "NullFile" "" "$(NewMarkdownDocument)" "markdown.ico"
+  !insertmacro EnsureMarkdownShellNewTypeName "$(NewMarkdownDocument)"
+  !insertmacro RegisterShellNew "mdk" "FileName" "$INSTDIR\resources\shellnew\Blank.mdk" "$(NewMdkProject)" "mdk-default.ico"
   !insertmacro UPDATEFILEASSOC
 !macroend
 
@@ -117,6 +135,19 @@
       ${EndIf}
     ${EndIf}
     !insertmacro RemoveMarkdownAssociation
+    !insertmacro RemoveShellNew "md" "NullFile" "" "markdown.ico"
+    ReadRegStr $0 HKCR ".md\ShellNew" "MardikorInstallDir"
+    ${If} $0 == ""
+      !insertmacro RestoreMarkdownShellNewTypeName
+    ${EndIf}
+    !insertmacro RemoveShellNew "mdk" "FileName" "$INSTDIR\resources\shellnew\Blank.mdk" "mdk-default.ico"
+    ReadRegStr $0 SHELL_CONTEXT "${SHELLNEW_CLASSES}\.md" ""
+    ${If} $0 == "${MARKDOWN_FILE_TYPE}"
+      DeleteRegValue SHELL_CONTEXT "${SHELLNEW_CLASSES}\.md" ""
+    ${EndIf}
+    DeleteRegValue SHELL_CONTEXT "${SHELLNEW_CLASSES}\${MARKDOWN_FILE_TYPE}" ""
+    DeleteRegKey /ifempty SHELL_CONTEXT "${SHELLNEW_CLASSES}\${MARKDOWN_FILE_TYPE}"
+    DeleteRegKey /ifempty SHELL_CONTEXT "${SHELLNEW_CLASSES}\.md"
     DeleteRegKey SHELL_CONTEXT "${MD_ASSOC_KEY}"
     !insertmacro UPDATEFILEASSOC
   ${EndIf}

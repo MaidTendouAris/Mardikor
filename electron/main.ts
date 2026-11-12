@@ -222,6 +222,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
         : mdk.insertMdkResources(file, files.sources, insertion);
     },
     readText: mdk.readMdkTextFile,
+    readDocuments: mdk.readMdkDocuments,
     saveText: mdk.saveMdkTextFile,
     updateSettings: mdk.updateMdkSettings,
     export: mdk.exportMdk,
@@ -320,6 +321,7 @@ const counts: Record<keyof MdkCommands, [number, number]> = {
   extractProjectFiles: [3, 3],
   insertResources: [3, 3],
   readText: [2, 2],
+  readDocuments: [2, 2],
   saveText: [3, 3],
   updateSettings: [2, 2],
   export: [2, 3],
@@ -579,7 +581,7 @@ function registerIpc() {
           return;
         if (index === 2 && command === "addEntry" && arg === undefined) return;
         if (index === 2 && command === "insertResources") return;
-        if (index === 1 && (command === "extractResources" || command === "extractProjectFiles")) {
+        if (index === 1 && (command === "extractResources" || command === "extractProjectFiles" || command === "readDocuments")) {
           if (!Array.isArray(arg) || arg.length > 10000 ||
               arg.some((item) => typeof item !== "string" || item.length > 65535))
             throw new Error(t("IPC 参数类型或大小无效。"));
@@ -777,6 +779,18 @@ function registerIpc() {
     }
     return result;
   });
+  ipcMain.handle(
+    "app:reading-preferences",
+    (event, change?: import("../shared/reading").ReadingChange) => {
+      verifySender(event);
+      const value = state.readingPreferences(change);
+      if (change !== undefined)
+        for (const { window } of windows.values())
+          if (!window.isDestroyed() && window.webContents.id !== event.sender.id)
+            window.webContents.send("app:reading-preferences-changed", value);
+      return value;
+    },
+  );
   ipcMain.handle("app:window", (event, action: string) => {
     const { window } = verifySender(event);
     if (action === "minimize") window.minimize();

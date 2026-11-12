@@ -897,6 +897,14 @@ export function readMdkTextFile(file: string, internalPath: string) {
     revision: doc.revision!,
   };
 }
+export function readMdkDocuments(file: string, paths: string[]) {
+  const doc = load(file);
+  return [...new Set(paths)].map((path) => {
+    if (!path.startsWith("markdown/") || !/\.md$/i.test(path))
+      throw new Error(t("工程中没有文件：{0}", path));
+    return { path, content: readText(doc, path) };
+  });
+}
 export function saveMdkTextFile(
   file: string,
   internalPath: string,

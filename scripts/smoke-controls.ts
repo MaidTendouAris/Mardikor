@@ -125,16 +125,25 @@ try {
   await expect(about.locator(".setting-row > code")).toHaveText(
     await app.evaluate(({ app }) => app.getVersion()),
   );
-  await about.getByText("许可证（GPL-3.0-only）", { exact: true }).click();
-  const license = about.getByLabel("GPLv3 许可证全文");
+  await about.getByText("许可证（MIT）", { exact: true }).click();
+  const license = about.getByRole("region", { name: "许可证全文" });
   await expect(license).toBeVisible();
-  expect((await license.textContent())?.replace(/\r\n/g, "\n")).toBe(
-    (await fs.readFile("LICENSE", "utf8")).replace(/\r\n/g, "\n"),
+  await expect(license.getByRole("heading")).toHaveText("MIT License");
+  const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+  expect(normalize(await license.innerText())).toBe(
+    normalize(await fs.readFile("LICENSE", "utf8")),
   );
   await about.getByText("命令行使用指南", { exact: true }).click();
   const cliGuide = about.getByRole("region", { name: "命令行指南全文" });
   await expect(cliGuide).toBeVisible();
   await expect(cliGuide).toContainText("mardikor list");
+  for (const document of [license, cliGuide]) {
+    await expect(document).toHaveCSS("overflow-y", "auto");
+    await expect(document).toHaveCSS("max-height", "480px");
+  }
+  const licenseBox = (await license.boundingBox())!;
+  const guideBox = (await cliGuide.boundingBox())!;
+  expect(licenseBox.y + licenseBox.height).toBeLessThan(guideBox.y);
   const opened: string[] = [];
   await app.evaluate(({ shell }) => {
     shell.showItemInFolder = (file) => {
@@ -181,6 +190,50 @@ try {
     "background-color",
     "rgb(20, 20, 20)",
   );
+  await page
+    .getByRole("toolbar", { name: "正文格式", exact: true })
+    .getByRole("button", { name: "Markdown 语法", exact: true })
+    .click();
+  const syntax = page.getByRole("dialog", { name: "Markdown 语法", exact: true });
+  const syntaxType = syntax.getByLabel("Markdown 语法类型", { exact: true });
+  const initialSyntax = await syntaxType.getAttribute("data-value");
+  await syntaxType.click();
+  const list = page.getByRole("listbox");
+  await expect(list).toHaveCSS("opacity", "1");
+  await expect(list.locator(".select-scroll-button")).toHaveCount(0);
+  const viewport = list.locator(".select-viewport");
+  await expect
+    .poll(() => viewport.evaluate((node) => node.offsetWidth - node.clientWidth))
+    .toBeGreaterThan(0);
+  const scrollbar = await viewport.evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    const range = node.scrollHeight - node.clientHeight;
+    const thumb = (node.clientHeight * node.clientHeight) / node.scrollHeight;
+    return {
+      x: bounds.left + (node.clientWidth + node.offsetWidth) / 2,
+      y:
+        bounds.top +
+        ((node.clientHeight - thumb) * node.scrollTop) / range +
+        thumb / 2,
+      bottom: bounds.bottom - 4,
+    };
+  });
+  await page.mouse.move(scrollbar.x, scrollbar.y);
+  await page.mouse.down();
+  await page.mouse.move(scrollbar.x, scrollbar.bottom, { steps: 6 });
+  await page.mouse.up();
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (node) => node.scrollTop / (node.scrollHeight - node.clientHeight),
+      ),
+    )
+    .toBeGreaterThan(0.8);
+  await page.keyboard.press("Escape");
+  await expect(syntaxType).toHaveAttribute("data-value", initialSyntax!);
+  await expect(syntaxType).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(syntax).toBeHidden();
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   const font = page.getByRole("combobox", { name: "字体", exact: true });
   await expect(font).toHaveValue("Custom Existing Font");
@@ -236,8 +289,12 @@ try {
   for (const name of ["可视化", "预览", "工程设置"])
     await expect(tab(name)).toBeDisabled();
   await tab("整体目录").click();
-  const openEntry = (entry: string) =>
-    page!.locator(`.project-tree-row[data-path="${entry}"]`).click();
+  const filter = page.getByPlaceholder("筛选目录…");
+  const openEntry = async (entry: string) => {
+    await filter.fill(path.posix.basename(entry));
+    await page!.locator(`.project-tree-row[data-path="${entry}"]`).click();
+    await filter.clear();
+  };
   await openEntry("meta/annotations.json");
   await expect(page.locator(".document-title")).toContainText(
     "meta/annotations.json",

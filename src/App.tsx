@@ -31,6 +31,10 @@ import { UpdateNotice, useAppUpdate } from "./components/AppUpdate";
 import type { Preferences, RecentProject } from "../shared/desktop";
 import type { MdkProject } from "../shared/mdk";
 import { isMarkdownFile } from "../shared/workspace";
+import {
+  defaultReadingPreferences,
+  type ReadingChange,
+} from "../shared/reading";
 import type { EditorTab } from "./services/editor-groups";
 
 export type Ask = (
@@ -75,6 +79,12 @@ export default function App() {
     externalOpenView: "preview",
   });
   const preferencesRef = useRef(preferences);
+  const [reading, setReading] = useState(defaultReadingPreferences);
+  const changeReading = useCallback(async (change: ReadingChange) => {
+    const value = await desktop().readingPreferences(change);
+    setReading(value);
+    return value;
+  }, []);
   const preferencesReady = useRef<Promise<void> | null>(null);
   const receivePreferences = useCallback((value: Preferences) => {
     preferencesRef.current = value;
@@ -155,16 +165,22 @@ export default function App() {
   useEffect(() => {
     if (!window.mardikor) return;
     const unsubscribe = desktop().onPreferencesChanged(receivePreferences);
+    const unsubscribeReading = desktop().onReadingPreferencesChanged(setReading);
     preferencesReady.current = Promise.all([
       desktop().recent(),
       desktop().preferences(),
+      desktop().readingPreferences(),
     ])
-      .then(([r, p]) => {
+      .then(([r, p, reader]) => {
         setRecent(r);
         receivePreferences(p);
+        setReading(reader);
       })
       .catch((error) => notify(String(error), true));
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      unsubscribeReading();
+    };
   }, [notify, receivePreferences]);
   useEffect(() => {
     window.mardikor?.setDirty(isDirty);
@@ -502,6 +518,8 @@ export default function App() {
               initialView={initialView}
               initialFragment={initialFragment}
               preferences={preferences}
+              reading={reading}
+              changeReading={changeReading}
               shortcutsEnabled={
                 page === "editor" && !request && update?.phase !== "preparing"
               }

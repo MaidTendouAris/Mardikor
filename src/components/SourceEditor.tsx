@@ -13,6 +13,7 @@ import {
   markdownSyntax,
 } from "../../shared/markdown-editing";
 import type { InsertionDraft } from "../../shared/resources";
+import { lineStarts, lowerBound, searchPosition, type FindMatches, type SearchHit } from "../services/document-find";
 import * as monaco from "monaco-editor/editor";
 import "monaco-editor/features/register.all.js";
 import "monaco-editor/languages/definitions/markdown/register.js";
@@ -214,6 +215,8 @@ export const SourceEditor = forwardRef<
     onScroll?: (ratio: number, firstLine: number) => void;
     onViewportReady?: () => void;
     reveal?: { path: string; line: number; key: number };
+    findReveal?: SearchHit;
+    findMatches?: FindMatches;
     modelPool?: SourceModelPool;
   }
 >(function SourceEditor(
@@ -230,6 +233,8 @@ export const SourceEditor = forwardRef<
     onScroll,
     onViewportReady,
     reveal,
+    findReveal,
+    findMatches,
     modelPool,
   },
   ref,
@@ -622,6 +627,76 @@ export const SourceEditor = forwardRef<
     instance.current.revealLineInCenter(line);
     instance.current.focus();
   }, [reveal, path]);
+  useEffect(() => {
+    const editor = instance.current;
+    const model = editor?.getModel();
+    if (
+      !editor || !model || findMatches?.document.path !== path ||
+      findMatches.document.content !== value
+    ) return;
+    const { offsets, length } = findMatches;
+    const lines = lineStarts(value);
+    const position = (offset: number) => {
+      const line = lowerBound(lines.length, (index) => lines[index] > offset);
+      const bom = line === 1 && value.charCodeAt(0) === 0xfeff ? 1 : 0;
+      return { lineNumber: line, column: offset - lines[line - 1] - bom + 1 };
+    };
+    const marks = editor.createDecorationsCollection();
+    let paintedFrom = -1, paintedTo = -1;
+    function paint(from: number, to: number) {
+      if (from === paintedFrom && to === paintedTo) return;
+      paintedFrom = from;
+      paintedTo = to;
+      marks.set(offsets.slice(from, to).map((offset) => ({
+        range: monaco.Range.fromPositions(position(offset), position(offset + length)),
+        options: { inlineClassName: "document-find-match" },
+      })));
+    }
+    let scroll: monaco.IDisposable | undefined;
+    let layout: monaco.IDisposable | undefined;
+    if (offsets.length > 4096) {
+      const update = () => {
+        if (editor.getModel() !== model) return;
+        const visible = editor.getVisibleRanges();
+        if (!visible.length) return;
+        const start = lines[Math.max(0, visible[0].startLineNumber - 25)];
+        const end = lines[visible.at(-1)!.endLineNumber + 24] ?? value.length;
+        paint(
+          lowerBound(offsets.length, (index) => offsets[index] + length > start),
+          lowerBound(offsets.length, (index) => offsets[index] >= end),
+        );
+      };
+      update();
+      scroll = editor.onDidScrollChange(update);
+      layout = editor.onDidLayoutChange(update);
+    } else paint(0, offsets.length);
+    return () => {
+      scroll?.dispose();
+      layout?.dispose();
+      if (editor.getModel()) marks.clear();
+    };
+  }, [findMatches, path, value]);
+  useEffect(() => {
+    const editor = instance.current;
+    const model = editor?.getModel();
+    if (!editor || !model || findReveal?.path !== path || findReveal.content !== value)
+      return;
+    const start = searchPosition(value, findReveal.start);
+    const end = searchPosition(value, findReveal.end);
+    const range = monaco.Range.fromPositions(start, end);
+    const marks = editor.createDecorationsCollection([{
+      range,
+      options: { inlineClassName: "document-find-current" },
+    }]);
+    const frame = requestAnimationFrame(() => {
+      editor.layout();
+      editor.revealRangeInCenter(range);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (editor.getModel()) marks.clear();
+    };
+  }, [findReveal, path, value]);
   useEffect(() => {
     if (readOnly) setPalette(false);
   }, [readOnly, path]);

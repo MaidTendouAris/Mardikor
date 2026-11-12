@@ -1,0 +1,291 @@
+.reader-hide-sidebars > :is(.outline-panel, .outline-resizer),
+.app-shell:has(.workspace-container:not([hidden]) .reader-hide-sidebars)
+  > .navigation {
+  display: none;
+}
+
+.app-shell:has(.workspace-container:not([hidden]) .reader-hide-sidebars)
+  > .main-area {
+  grid-column: 1 / -1;
+}
+
+.reader-canvas {
+  overflow: hidden;
+}
+
+.document-reader {
+  container: reader-stage / inline-size;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  padding: var(--reader-page-margin-block)
+    min(var(--reader-page-margin-inline), 12cqi) 0;
+  color: var(--reading-text, #222);
+  background: var(--reading-background, #fff);
+  --preview-link: var(--accent-text, var(--blue));
+  --preview-quote: var(--muted);
+}
+
+.reader-viewport {
+  --reader-columns: 1;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin-inline: auto;
+  margin-block-end: var(--reader-page-margin-block);
+  overflow-y: auto;
+  overflow-x: hidden;
+  outline-offset: -2px;
+  scroll-padding-block-start: 10px;
+}
+
+.reader-viewport:has(.reader-double) {
+  --reader-columns: 2;
+}
+
+.reader-width-limited .reader-viewport {
+  width: min(
+    100%,
+    calc(
+      var(--reader-text-width) * var(--reader-columns) +
+        var(--reader-page-gap) * (var(--reader-columns) - 1)
+    )
+  );
+}
+
+@container reader-stage (min-width: 840px) {
+  .reader-book-double .reader-viewport {
+    --reader-columns: 2;
+  }
+}
+
+@media (orientation: landscape) {
+  @container reader-stage (min-width: 1120px) {
+    .reader-book-auto .reader-viewport {
+      --reader-columns: 2;
+    }
+  }
+}
+
+.reader-viewport:focus-visible {
+  outline: 2px solid var(--blue);
+}
+
+.reader-paged-book .reader-viewport {
+  overflow: hidden;
+  position: relative;
+}
+
+/* Let an odd final page align on the left of a two-page spread. */
+.reader-paged-book .reader-viewport::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: var(--reader-track-width, 0px);
+  height: 1px;
+  pointer-events: none;
+}
+
+.reader-spread {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--reader-page-gap);
+}
+
+.reader-rtl .reader-spread,
+.reader-rtl .page-navigation {
+  flex-direction: row-reverse;
+}
+
+.reader-rtl .reader-chapter > button > svg,
+.reader-rtl .page-navigation-arrow > svg {
+  transform: scaleX(-1);
+}
+
+.reader-rtl .reader-chapter {
+  flex-direction: row-reverse;
+}
+
+.reader-manuscript.preview-body {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-family: var(--reader-font);
+  font-size: var(--reader-font-size);
+  line-height: var(--reader-line-height);
+  text-align: var(--reader-align);
+}
+
+.reader-markdown {
+  overflow-wrap: anywhere;
+}
+
+.reader-markdown p {
+  margin: 0 0 var(--reader-paragraph-spacing);
+}
+
+.reader-markdown > p,
+.reader-markdown > .preview-section > p {
+  text-indent: var(--reader-indent);
+}
+
+.reader-markdown p:has(> img:only-child) {
+  text-indent: 0;
+}
+
+.reader-paged-book .reader-spread {
+  display: block;
+  height: 100%;
+  column-count: var(--reader-columns);
+  column-gap: var(--reader-page-gap);
+  column-fill: auto;
+  orphans: 2;
+  widows: 2;
+}
+
+.reader-paged-book :is(.reader-manuscript, .reader-markdown, .preview-section) {
+  display: contents;
+  content-visibility: visible;
+}
+
+.reader-paged-book .reader-manuscript {
+  display: block;
+}
+
+.reader-paged-book :is(h1, h2, h3, h4, h5, h6) {
+  break-after: avoid;
+}
+
+.reader-paged-book :is(pre, table) {
+  display: block;
+  max-height: var(--reader-page-height);
+  overflow: auto;
+  break-inside: avoid;
+}
+
+.reader-paged-book img,
+.reader-paged-comic img {
+  max-height: calc(var(--reader-page-height, 600px) - 8px);
+  object-fit: contain;
+  break-inside: avoid;
+}
+
+.reader-fit-width:not(.reader-paged-book) img {
+  width: 100%;
+  height: auto;
+  max-height: none;
+}
+
+.reader-controls,
+.reader-chapter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reader-controls {
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 8px 54px 8px 0;
+}
+
+.reader-chapter .custom-select-trigger {
+  max-width: min(280px, 45cqi);
+}
+
+.reader-settings-ball {
+  position: absolute;
+  inset: auto 12px 8px auto;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: var(--accent-text, var(--blue));
+  background: var(--panel-surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  box-shadow: 0 2px 12px #0002;
+}
+
+.reader-settings-ball:is(:hover, [aria-expanded="true"]) {
+  background: var(--accent-surface, #eaf1ff);
+}
+
+.reader-settings-panel {
+  z-index: 180;
+  width: min(400px, calc(100vw - 24px));
+  max-height: min(640px, var(--radix-popover-content-available-height));
+  overflow: auto;
+  padding: 14px;
+  color: var(--text);
+  background: var(--panel-surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px #0003;
+}
+
+.reader-settings-panel header,
+.reader-settings-actions,
+.reader-checks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reader-settings-panel header {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.reader-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.reader-setting,
+.reader-presets {
+  display: grid;
+  gap: 4px;
+}
+
+.reader-setting :is(input, .custom-select-trigger) {
+  width: 100%;
+  min-width: 0;
+}
+
+.reader-setting input {
+  min-height: 30px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: var(--panel-surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.reader-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reader-checks,
+.reader-settings-actions {
+  margin-top: 10px;
+}
+
+.reader-presets {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.reader-presets strong span {
+  color: var(--muted);
+  font-weight: normal;
+}
