@@ -1,0 +1,9 @@
+format_version = 2
+project_id = "c8c3fd61-bf08-4dfd-b081-c4c6b9fce818"
+
+[features]
+required = []
+optional = ["org.example.review@1"]
+
+[extensions."org.example.review"]
+file = "meta/org.example.review/comments.json"

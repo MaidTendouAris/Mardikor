@@ -1,0 +1,47 @@
+[[documents]]
+id = "doc-intro"
+path = "markdown/intro.md"
+title = "前言"
+
+[[documents]]
+id = "doc-road"
+path = "markdown/road.md"
+title = "山路"
+
+[[documents]]
+id = "doc-home"
+path = "markdown/home.md"
+title = "归途"
+
+[[nodes]]
+id = "node-intro"
+kind = "document"
+order = 10
+document = "doc-intro"
+
+[[nodes]]
+id = "part-one"
+kind = "group"
+order = 20
+title = "第一部"
+
+[[nodes]]
+id = "node-road"
+kind = "document"
+parent = "part-one"
+order = 10
+document = "doc-road"
+
+[[nodes]]
+id = "node-home"
+kind = "document"
+parent = "part-one"
+order = 20
+document = "doc-home"
+
+[[nodes]]
+id = "node-intro-again"
+kind = "document"
+order = 30
+document = "doc-intro"
+title = "附录：再读前言"

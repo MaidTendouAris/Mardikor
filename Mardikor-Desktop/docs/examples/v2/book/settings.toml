@@ -1,0 +1,18 @@
+[body]
+font_family = "serif"
+font_size = 17
+line_height = 1.8
+paragraph_spacing = 0.8
+text_color = "#1f2933"
+background_color = "#ffffff"
+link_color = "#2563eb"
+
+[preview]
+max_width = 760
+
+[reading]
+show_toc = true
+chapter_numbering = true
+direction = "ltr"
+spread = "single"
+image_fit = "contain"

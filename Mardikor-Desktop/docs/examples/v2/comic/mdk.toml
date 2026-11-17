@@ -1,0 +1,8 @@
+format_version = 2
+project_id = "7d983cd7-676b-4f30-aea5-83dd42e11539"
+mode = "comic"
+
+[metadata]
+title = "图文片段"
+language = "zh-CN"
+identifier = "urn:uuid:22a09f6d-cf04-491e-96b1-7908aba0c052"

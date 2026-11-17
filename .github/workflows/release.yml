@@ -15,6 +15,9 @@ concurrency:
 jobs:
   cli-linux:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Mardikor-Desktop
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
@@ -26,6 +29,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: Mardikor-Desktop/package-lock.json
       - run: npm ci
       - run: node --import tsx --test tests/cli.test.ts
       - run: npm run dist:cli
@@ -36,6 +40,9 @@ jobs:
   release:
     needs: cli-linux
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: Mardikor-Desktop
     permissions:
       contents: write
     env:
@@ -51,6 +58,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: Mardikor-Desktop/package-lock.json
       - name: Verify version tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +87,8 @@ jobs:
           npm run test:updates
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:mdk-v2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/smoke-cli-windows.ps1
           exit $LASTEXITCODE

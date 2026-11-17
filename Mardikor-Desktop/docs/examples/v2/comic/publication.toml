@@ -1,0 +1,11 @@
+default_preset = "comic-fixed"
+
+[[presets]]
+id = "comic-fixed"
+name = "RTL 固定版式"
+format = "epub"
+
+[presets.epub]
+layout = "fixed"
+page_width = 800
+page_height = 1900

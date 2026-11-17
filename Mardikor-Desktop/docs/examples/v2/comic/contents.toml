@@ -1,0 +1,26 @@
+[[documents]]
+id = "doc-one"
+path = "markdown/one.md"
+
+[[documents]]
+id = "doc-two"
+path = "markdown/two.md"
+
+[[nodes]]
+id = "node-one"
+kind = "document"
+order = 1
+document = "doc-one"
+
+[[nodes]]
+id = "node-two"
+kind = "document"
+order = 2
+document = "doc-two"
+
+[[nodes]]
+id = "node-three"
+kind = "document"
+order = 3
+document = "doc-one"
+title = "回看"

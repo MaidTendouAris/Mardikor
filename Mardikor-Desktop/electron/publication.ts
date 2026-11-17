@@ -1,0 +1,1240 @@
+import { t } from "../shared/i18n";
+import { resolveV2Publication } from "../shared/publication-v2";
+import { v2HeadingAnchors, headingText } from "../shared/mdk-anchors";
+import { createMdkMarkdownParser } from "../shared/markdown-parser";
+import { entryDisplayName } from "../shared/mdk";
+import { applyV2Typography, imageStyleMarkup } from "../shared/v2-typography";
+import fs from "node:fs";
+import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import fontkit from "@pdf-lib/fontkit";
+import katex from "katex";
+import math from "@vscode/markdown-it-katex";
+import Token from "markdown-it/lib/token.mjs";
+import { DOMParser } from "@xmldom/xmldom";
+import { createMarkdownParser } from "../shared/markdown-parser";
+import {
+  chapterHeadingNumberer,
+  reservedSectionNumbers,
+} from "../shared/heading-numbering";
+import { resolveReference } from "../shared/references";
+import { buildOutline, type OutlineNode } from "../shared/tree";
+import { isMarkdownFile } from "../shared/workspace";
+import { resolveSettings, merge, type Table } from "../shared/schema";
+import {
+  bundledFontHash,
+  configurationFrom,
+  defaultPublication,
+  inspectPublication,
+  publicationFrom,
+  publicationLabels,
+  type PublicationConfiguration,
+  type PublicationFormat,
+  type PublicationInfo,
+  type PublicationPlan,
+  type PublicationResult,
+  type PublicationStage,
+} from "../shared/publication";
+import type { MdkProject, ReadingUnit, ValidationIssue } from "../shared/mdk";
+import { assertPassiveSvg, checkMedia, detectMediaType } from "./media";
+import {
+  openMarkdownFile,
+  readMarkdownFile,
+  readMarkdownResource,
+} from "./markdown-file";
+import { readMdkPublication } from "./mdk";
+import { pdfCjkAliases } from "./pdf-text";
+
+export const sha256 = (data: string | Buffer) =>
+  createHash("sha256").update(data).digest("hex");
+export const emojiFontFile = "NotoEmoji.ttf";
+const emojiFontHash =
+  "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551";
+export const escapeXml = (text: string) =>
+  text.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&apos;",
+      })[char]!,
+  );
+export interface PublicationRuntime {
+  progress?: (stage: PublicationStage) => void;
+  prepare?: (
+    file: string,
+    format: PublicationFormat,
+    presetId?: string,
+  ) => Promise<PreparedPublication>;
+  outputRevision: (file: string) => string | null;
+  engine: string;
+  assetDirectory: string;
+  localConfiguration: (
+    file: string,
+    value?: PublicationConfiguration,
+  ) => PublicationConfiguration | null;
+  verifyImages: (images: { path: string; data: Buffer }[]) => void;
+  verifyLayout: (prepared: PreparedPublication) => Promise<void>;
+  pdf: (
+    prepared: PreparedPublication,
+  ) => Promise<{ bytes: Buffer; pages: number }>;
+  epub: (prepared: PreparedPublication) => Promise<Buffer>;
+}
+type Snapshot = {
+  project: MdkProject;
+  units: ReadingUnit[];
+  files: Map<string, Buffer>;
+  presets?: ReturnType<typeof readMdkPublication>["presets"];
+  rawSettings?: Table;
+};
+export interface PublicationChapter {
+  unit: ReadingUnit;
+  file: string;
+  html: string;
+  hasMath: boolean;
+  title: string;
+  anchors: Map<string, string>;
+  headings: { id: string; title: string; level: number }[];
+}
+export interface PreparedPublication {
+  format: PublicationFormat;
+  snapshot: Pick<Snapshot, "project">;
+  renderedHtml?: string;
+  configuration: PublicationConfiguration;
+  chapters: PublicationChapter[];
+  assets: Map<string, { source: string; data: Buffer; mediaType: string }>;
+  font: Buffer;
+  fontType: string;
+  fontFile: string;
+  coverFile: string;
+  navigation: string;
+  fingerprint: string;
+  issues: ValidationIssue[];
+  width: number;
+  height: number;
+  fontText: string;
+  fontLicense?: Buffer;
+  emojiFont?: { bytes: Buffer; text: string; license: Buffer };
+}
+function applyConfiguration(
+  project: MdkProject,
+  configuration: PublicationConfiguration,
+) {
+  const settings = merge(project.settings as unknown as Table, {
+    appearance: configuration.appearance,
+    colors: configuration.colors,
+    layout: configuration.layout,
+    mode: { book: configuration.book, comic: configuration.comic },
+    preview: { render_containers: configuration.render_containers },
+    extensions: { mardikor: { publication: configuration.publication } },
+  });
+  project.settings = resolveSettings(settings);
+}
+function snapshot(
+  file: string,
+  runtime: Pick<PublicationRuntime, "localConfiguration">,
+): Snapshot {
+  if (!isMarkdownFile(file)) return readMdkPublication(file);
+  const project = openMarkdownFile(file);
+  const configuration = runtime.localConfiguration(file);
+  if (configuration) applyConfiguration(project, configuration);
+  const name = path.basename(file);
+  return {
+    project,
+    units: [
+      {
+        ...project.contents.entries[0],
+        markdown: readMarkdownFile(file, name).content,
+      },
+    ],
+    files: new Map(),
+  };
+}
+const bundledFonts = {
+  "sans-serif": ["NotoSansCJKsc-Regular.otf", bundledFontHash],
+  serif: [
+    "NotoSerifCJKsc-Regular.otf",
+    "2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca",
+  ],
+  monospace: [
+    "NotoSansMonoCJKsc-Regular.otf",
+    "ec04cc376b34887cedbdf84074e2e226ed2761eeabdcB9173fc1dd7bfd153ef7".toLowerCase(),
+  ],
+} as const;
+
+function fontBytes(
+  source: Snapshot,
+  runtime: Pick<PublicationRuntime, "assetDirectory">,
+) {
+  const name = source.project.settings.appearance.font_family;
+  const family = name === "system" ? "sans-serif" : name;
+  if (Object.hasOwn(bundledFonts, family)) {
+    const [filename, hash] = bundledFonts[family as keyof typeof bundledFonts];
+    const bytes = fs.readFileSync(path.join(runtime.assetDirectory, filename));
+    if (sha256(bytes) !== hash)
+      throw new Error(t("内置导出字体的完整性检查未通过。"));
+    return bytes;
+  }
+  if (!name.startsWith("resources/") || !source.files.has(name))
+    throw new Error(
+      t(
+        "PDF 需要工程内的字体资源。请选择内置 Noto 字体，或导入字体后选择其 resources/font 路径；不使用本机字体替代。",
+      ),
+    );
+  const bytes = source.files.get(name)!;
+  checkMedia(name, bytes);
+  if (
+    !["font/otf", "font/ttf"].includes(detectMediaType(bytes) ?? "") ||
+    bytes.subarray(0, 4).toString() === "ttcf"
+  )
+    throw new Error(
+      t("出版导出支持独立 OTF / TTF 字体，不支持字体集合或压缩字体。"),
+    );
+  return bytes;
+}
+function parsedFont(data: Buffer) {
+  const font = fontkit.create(data);
+  if (!("hasGlyphForCodePoint" in font))
+    throw new Error(t("字体集合不能用于固定导出。"));
+  // OS/2 embedding restrictions: restricted license / no subsetting / bitmap-only.
+  const restriction = (
+    font as unknown as {
+      "OS/2"?: {
+        fsType?: {
+          noEmbedding?: boolean;
+          noSubsetting?: boolean;
+          bitmapOnly?: boolean;
+        };
+      };
+    }
+  )["OS/2"]?.fsType;
+  if (
+    restriction?.noEmbedding ||
+    restriction?.noSubsetting ||
+    restriction?.bitmapOnly
+  )
+    throw new Error(
+      t("字体的嵌入许可或子集限制不允许此导出，请换用可嵌入的字体。"),
+    );
+  return font;
+}
+export function publicationInfo(
+  file: string,
+  runtime: PublicationRuntime,
+): PublicationInfo {
+  const source = snapshot(file, runtime),
+    { project } = source;
+  const stored = source.presets ? undefined : publicationFrom(project.settings);
+  const presets = source.presets?.presets.map(({ id, name, format }) => ({
+    id,
+    name,
+    format,
+  }));
+  const publication =
+    stored === undefined
+      ? defaultPublication(
+          path.basename(file).replace(/\.(mdk|md)$/i, ""),
+          project.mode,
+        )
+      : inspectPublication(stored);
+  return {
+    revision: project.revision,
+    mode: project.mode,
+    standalone: isMarkdownFile(file),
+    saved: stored !== undefined,
+    presets,
+    defaultPreset: source.presets?.preferred,
+    engine: runtime.engine,
+    configuration: configurationFrom(project.settings, publication),
+    fonts: project.files
+      .filter(
+        (f) =>
+          f.path.startsWith("resources/font/") && /\.(otf|ttf)$/i.test(f.path),
+      )
+      .map((f) => f.path),
+    images: project.files
+      .filter(
+        (f) => /\.(png|jpe?g|svg)$/i.test(f.path) && f.kind === "resource",
+      )
+      .map((f) => f.path),
+  };
+}
+export function configurePublication(
+  file: string,
+  value: PublicationConfiguration,
+  revision: string,
+  runtime: PublicationRuntime,
+  format: PublicationFormat = "pdf",
+) {
+  if (format !== "pdf" && format !== "epub")
+    throw new Error(t("出版格式无效。"));
+  if (!isMarkdownFile(file))
+    throw new Error(t("请在工程设置中编辑 publication.toml，添加出版预设。"));
+  const source = snapshot(file, runtime);
+  if (source.project.revision !== revision)
+    throw new Error(t("工程已变化，请重新读取导出配置。"));
+  const previous = publicationFrom(source.project.settings);
+  if (previous !== undefined) inspectPublication(previous);
+  const publication = inspectPublication(value?.publication);
+  const configuration = { ...value, publication };
+  applyConfiguration(source.project, configuration);
+  const font = fontBytes(source, runtime);
+  parsedFont(font);
+  publication.metadata.identifier ||= "urn:uuid:" + randomUUID();
+  publication.pdf.engine = runtime.engine;
+  publication.pdf.font_sha256 = sha256(font);
+  runtime.localConfiguration(file, configuration);
+  return publicationInfo(file, runtime);
+}
+function slug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\p{M}_\s-]/gu, "")
+    .replace(/\s/g, "-");
+}
+function validXmlText(text: string) {
+  return [...text].every((c) => {
+    const n = c.codePointAt(0)!;
+    return (
+      n === 9 ||
+      n === 10 ||
+      n === 13 ||
+      (n >= 32 && n <= 0xd7ff) ||
+      (n >= 0xe000 && n <= 0xfffd) ||
+      (n >= 0x10000 && n <= 0x10ffff)
+    );
+  });
+}
+export function preparePublication(
+  file: string,
+  format: PublicationFormat,
+  runtime: Pick<
+    PublicationRuntime,
+    "engine" | "assetDirectory" | "localConfiguration" | "verifyImages"
+  >,
+  presetId?: string,
+): PreparedPublication {
+  if (!["pdf", "epub"].includes(format))
+    throw new Error(t("不支持的出版格式。"));
+  const source = snapshot(file, runtime),
+    { project } = source;
+  const v2 = !!source.presets;
+  const issues = v2
+    ? project.issues.filter(({ scope }) => scope === "core")
+    : [...project.issues];
+  const preset =
+    source.presets?.presets.find(
+      (item) =>
+        item.id === (presetId ?? source.presets?.preferred) &&
+        item.format === format,
+    ) ??
+    (presetId === undefined
+      ? source.presets?.presets.find((item) => item.format === format)
+      : undefined);
+  const issue = (
+    code: string,
+    message: string,
+    target?: string,
+    severity: ValidationIssue["severity"] = "error",
+  ) => issues.push({ severity, code, message, path: target });
+  if (
+    !v2 &&
+    (!["00", "01", "02"].includes(project.mode) ||
+      (format === "epub" && !["01", "02"].includes(project.mode)))
+  )
+    issue(
+      "E_CONVERSION_MODE",
+      t("EPUB 仅支持 book / comic；default 与单 Markdown 仅支持 PDF。"),
+    );
+  const stored = v2 ? undefined : publicationFrom(project.settings);
+  if (!v2 && stored === undefined)
+    issue(
+      "E_EXPORT_UNSAVED",
+      t("请先保存完整导出配置，以便设置和字体随工程分发。"),
+      "settings.toml",
+    );
+  let publication =
+    stored === undefined
+      ? defaultPublication(path.basename(file), project.mode)
+      : inspectPublication(stored);
+  if (v2) {
+    issues.push(
+      ...source.presets!.issues.filter(
+        ({ field }) => field === undefined || field === "presets",
+      ),
+    );
+    if (source.rawSettings === undefined)
+      issue(
+        "mdk.settings.invalid",
+        t("请先在源码中修复 settings.toml。"),
+        "settings.toml",
+      );
+    if (!preset)
+      issue(
+        "mdk.publication.invalid",
+        t("请选择有效的出版预设。"),
+        "publication.toml",
+      );
+    else {
+      issues.push(...preset.issues);
+      if (preset.issues.every(({ severity }) => severity !== "error")) {
+        const resolved = resolveV2Publication(
+          preset,
+          source.rawSettings ?? {},
+          project.metadata ?? {},
+          project.mode,
+        );
+        publication = resolved.publication;
+        project.settings = resolved.settings;
+      }
+    }
+  }
+  const configuration = configurationFrom(project.settings, publication),
+    { pdf, epub, metadata } = publication;
+  const labels = publicationLabels(metadata.language);
+  if (
+    v2 &&
+    format === "epub" &&
+    (!metadata.identifier || !metadata.title || !metadata.language)
+  )
+    issue(
+      "mdk.publication.invalid",
+      t("EPUB 需要作品标题、语言和绝对 URI 标识。"),
+      "mdk.toml",
+    );
+  if (!v2 && !metadata.identifier)
+    issue("E_IDENTIFIER", t("请保存导出配置以生成稳定的出版物标识。"));
+  if (!v2 && format === "pdf" && pdf.engine !== runtime.engine)
+    issue(
+      "E_PDF_ENGINE",
+      t(
+        "此工程固定的 PDF 渲染版本与当前应用不同。请使用相同版本，或明确保存配置采用当前引擎；不能保证跨版本生成相同 PDF。",
+      ),
+      "settings.toml",
+    );
+  if (!source.units.length)
+    issue(
+      "E_NO_CHAPTERS",
+      t("没有已编排文稿，不能导出空出版物。"),
+      "contents.toml",
+    );
+  if (
+    source.units.length > 1000 ||
+    source.units.reduce((n, u) => n + Buffer.byteLength(u.markdown ?? ""), 0) >
+      8 * 1024 * 1024
+  )
+    issue(
+      "E_CONVERSION_LIMIT",
+      t("出版转换最多支持 1,000 个目录项、8 MiB Markdown 正文。"),
+    );
+  if (
+    !v2 &&
+    project.mode === "02" &&
+    epub.layout !== "pre-paginated" &&
+    format === "epub"
+  )
+    issue(
+      "E_COMIC_LAYOUT",
+      t("漫画 EPUB 必须使用固定版式，一篇文稿对应一个展示页。"),
+    );
+  const { layout, appearance } = project.settings;
+  const paperWidth = pdf.page_width ?? layout.page_width;
+  const width =
+    pdf.landscape && format === "pdf" ? pdf.page_height : paperWidth;
+  const height =
+    pdf.landscape && format === "pdf" ? paperWidth : pdf.page_height;
+  if (
+    width < 96 ||
+    width > 14400 ||
+    height <= layout.margin_top + layout.margin_bottom + 24 ||
+    width <= layout.margin_left + layout.margin_right + 24 ||
+    appearance.font_size > 240 ||
+    appearance.line_height > 10 ||
+    appearance.paragraph_spacing > 20
+  )
+    issue(
+      "E_RENDER_RANGE",
+      t("页面可用空间或字号/行距超出出版渲染范围；原设置未改写。"),
+    );
+  if (
+    format === "pdf" &&
+    (pdf.header || pdf.footer || pdf.page_numbers) &&
+    ((layout.margin_top < pdf.furniture_size * 2 && pdf.header) ||
+      (layout.margin_bottom < pdf.furniture_size * 2 &&
+        (pdf.footer || pdf.page_numbers)))
+  )
+    issue(
+      "E_FURNITURE_MARGIN",
+      t("页眉或页脚所在边距至少应为页眉字号的两倍。"),
+    );
+  const assets: PreparedPublication["assets"] = new Map(),
+    resourceNames = new Map<string, string>();
+  let font: Buffer = Buffer.alloc(0),
+    fontType = "font/otf",
+    fontLicense: Buffer | undefined;
+  try {
+    const embed =
+      format === "pdf" || epub.embed_font || epub.layout === "pre-paginated";
+    if (
+      v2 &&
+      format === "epub" &&
+      !epub.embed_font &&
+      appearance.font_family.startsWith("resources/")
+    )
+      issue(
+        "mdk.publication.invalid",
+        t("当前样式使用包内字体，必须启用 EPUB 字体嵌入。"),
+        "publication.toml",
+      );
+    if (
+      v2 &&
+      publication.v2?.fixed &&
+      format === "epub" &&
+      !epub.embed_font &&
+      source.units.some((unit) =>
+        (unit.markdown ?? "").replace(/!\[[^\]]*\]\([^)]*\)/g, "").trim(),
+      )
+    )
+      issue(
+        "mdk.publication.invalid",
+        t("含文字的固定版式 EPUB 必须嵌入字体。"),
+        "publication.toml",
+      );
+    if (embed || !v2) {
+      font = fontBytes(source, runtime);
+      fontType = detectMediaType(font)!;
+      parsedFont(font);
+    }
+    if (
+      format === "epub" &&
+      (epub.embed_font || epub.layout === "pre-paginated") &&
+      Object.values(bundledFonts).some(
+        ([, bundledHash]) => bundledHash === sha256(font),
+      )
+    ) {
+      const bundledLicense = fs.readFileSync(
+        path.join(runtime.assetDirectory, "OFL.txt"),
+      );
+      if (
+        project.settings.appearance.font_family === "system" ||
+        Object.hasOwn(bundledFonts, project.settings.appearance.font_family)
+      )
+        fontLicense = bundledLicense;
+      else {
+        fontLicense = source.files.get("resources/other/Mardikor-Noto-OFL.txt");
+        if (!fontLicense?.equals(bundledLicense))
+          issue(
+            "E_FONT_LICENSE",
+            t("内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。"),
+            "resources/other/Mardikor-Noto-OFL.txt",
+          );
+      }
+    }
+    if (!v2 && pdf.font_sha256 !== sha256(font))
+      issue(
+        "E_FONT_CHANGED",
+        t("字体内容与保存的摘要不一致，请检查资源后重新保存导出配置。"),
+        project.settings.appearance.font_family,
+      );
+  } catch (error) {
+    issue("E_FONT", String(error), project.settings.appearance.font_family);
+  }
+  const resource = (name: string): string => {
+    if (resourceNames.has(name)) return resourceNames.get(name)!;
+    try {
+      let data = source.files.get(name);
+      if (!data && isMarkdownFile(file))
+        data = Buffer.from(
+          readMarkdownResource(file, name).split(",")[1],
+          "base64",
+        );
+      if (!data) throw new Error(t("资源不存在。"));
+      checkMedia(name, data);
+      assertPassiveSvg(data);
+      const type = detectMediaType(data);
+      if (!["image/png", "image/jpeg", "image/svg+xml"].includes(type ?? ""))
+        throw new Error(
+          t(
+            "出版转换当前支持 PNG、JPEG 和纯图形 SVG；请先转换其他媒体，不能静默丢弃。",
+          ),
+        );
+      if (
+        type === "image/svg+xml" &&
+        /<\s*(?:text|tspan|style|animate\w*|set)\b|<!DOCTYPE|<!ENTITY|&(?:#|[A-Za-z])/i.test(
+          data.toString("utf8"),
+        )
+      )
+        throw new Error(
+          t(
+            "SVG 含文本、样式、动画或实体，不能保证便携排版。请转换为 PNG 或路径图形。",
+          ),
+        );
+      if (type === "image/svg+xml") {
+        const svg = new DOMParser({
+          onError: (_level, message) => {
+            throw new Error(message);
+          },
+        }).parseFromString(data.toString("utf8"), "image/svg+xml");
+        const passive = new Set([
+          "svg",
+          "g",
+          "defs",
+          "symbol",
+          "use",
+          "path",
+          "rect",
+          "line",
+          "polyline",
+          "polygon",
+          "circle",
+          "ellipse",
+          "linearGradient",
+          "radialGradient",
+          "stop",
+          "clipPath",
+          "mask",
+          "pattern",
+          "filter",
+          "title",
+          "desc",
+        ]);
+        for (const element of Array.from(svg.getElementsByTagName("*"))) {
+          if (
+            element.namespaceURI !== "http://www.w3.org/2000/svg" ||
+            (!passive.has(element.localName!) &&
+              !/^fe[A-Z][A-Za-z]+$/.test(element.localName!))
+          )
+            throw new Error(
+              t("SVG 含不支持的元素或命名空间：") + element.nodeName,
+            );
+        }
+      }
+      const target =
+        "assets/image-" +
+        (assets.size + 1) +
+        (type === "image/png"
+          ? ".png"
+          : type === "image/jpeg"
+            ? ".jpg"
+            : ".svg");
+      assets.set(target, { source: name, data, mediaType: type! });
+      resourceNames.set(name, target);
+      return target;
+    } catch (error) {
+      issue("E_CONVERSION_RESOURCE", String(error), name);
+      return "";
+    }
+  };
+  const chapters: PublicationChapter[] = [];
+  const tokensByChapter: Token[][] = [];
+  const renderedText: string[] = [];
+  const parser = v2
+    ? createMdkMarkdownParser()
+    : createMarkdownParser(project.settings.preview.render_containers);
+  const mathPlugin = math as typeof math | { default: typeof math };
+  if (!v2)
+    parser.use(
+      typeof mathPlugin === "function" ? mathPlugin : mathPlugin.default,
+    );
+  const formulaTokens = ["math_inline", "math_inline_block", "math_block"];
+  const formulas = new WeakMap<Token, string>();
+  for (const type of formulaTokens)
+    parser.renderer.rules[type] = (tokens, index) =>
+      formulas.get(tokens[index]) ?? "";
+  let formulaCount = 0;
+  parser.options.xhtmlOut = true;
+  parser.validateLink = () => true;
+  if (v2) parser.normalizeLink = (url) => url;
+  const rawParser = createMarkdownParser(
+    project.settings.preview.render_containers,
+    false,
+  );
+  rawParser.options.html = true;
+  const walk = (tokens: Token[], visit: (token: Token) => void) =>
+    tokens.forEach((token) => {
+      visit(token);
+      if (token.children) walk(token.children, visit);
+    });
+  const reserved = reservedSectionNumbers(
+    source.units.map((unit) => unit.position),
+  );
+  const numbered =
+    !v2 && project.mode === "01" && configuration.book.chapter_numbering;
+  source.units.forEach((unit, index) => {
+    const markdown = unit.markdown ?? "";
+    if (unit.markdown === null)
+      issue("E_CHAPTER_MISSING", t("目录项的 Markdown 文件缺失。"), unit.path);
+    if (!validXmlText(markdown))
+      issue(
+        "E_XML_CHARACTERS",
+        t("正文含不能写入出版文档的控制字符。"),
+        unit.path,
+      );
+    if (format === "epub") {
+      let containsHtml = false;
+      walk(rawParser.parse(markdown, {}), (token) => {
+        if (token.type === "html_inline" || token.type === "html_block")
+          containsHtml = true;
+      });
+      if (containsHtml)
+        issue(
+          "W_EPUB_HTML_TEXT",
+          t("原始 HTML 将以文本显示，与 Markdown 预览一致。"),
+          unit.path,
+          "warning",
+        );
+    }
+    const tokens = parser.parse(markdown, {}),
+      anchors = new Map<string, string>(),
+      headings: PublicationChapter["headings"] = [];
+    let hasMath = false;
+    let formulaError = false;
+    walk(tokens, (token) => {
+      if (formulaTokens.includes(token.type)) {
+        hasMath = true;
+        try {
+          if (++formulaCount > 5000 || token.content.length > 4000)
+            throw new Error(
+              t("公式超过出版限额（单个 4000 字符，合计 5000 个）。"),
+            );
+          const inline = token.type === "math_inline";
+          const expression =
+            inline &&
+            token.content.startsWith("`") &&
+            token.content.endsWith("`") &&
+            token.content.length > 2
+              ? token.content.slice(1, -1)
+              : token.content;
+          const markup = katex.renderToString(expression, {
+            output: format === "pdf" ? "htmlAndMathml" : "mathml",
+            displayMode: !inline,
+            trust: false,
+            strict: "ignore",
+            maxExpand: 100,
+            maxSize: 20,
+            throwOnError: true,
+          });
+          // Text inside a formula can need the same fixed body font as prose.
+          // Math operators themselves use the separate KaTeX/math font.
+          for (const [, text] of markup.matchAll(
+            format === "pdf"
+              ? /<span class="[^"]*\b\w+_fallback\b[^"]*"[^>]*>([^<]*)<\/span>/g
+              : /<mtext(?:\s[^>]*)?>([^<]*)<\/mtext>/g,
+          ))
+            renderedText.push(text);
+          formulas.set(
+            token,
+            inline ? markup : `<p class="katex-block">${markup}</p>\n`,
+          );
+        } catch (error) {
+          if (!formulaError)
+            issue("E_MATH", t("公式无法排版：") + String(error), unit.path);
+          formulaError = true;
+        }
+      }
+      if (["text", "code_inline", "code_block", "fence"].includes(token.type))
+        renderedText.push(token.content);
+      if (token.type === "footnote_anchor") renderedText.push("[]:^");
+      if (token.type === "mdk_container_open") {
+        const kind = token.attrGet("class");
+        renderedText.push(
+          kind === "mdk-note"
+            ? "Note"
+            : kind === "mdk-warning"
+              ? "Warning"
+              : "Tip",
+        );
+      }
+    });
+    const fragments = v2 ? v2HeadingAnchors(tokens) : undefined;
+    if (v2) applyV2Typography(tokens, project.settings, true);
+    const slugs = new Map<string, number>(),
+      numberHeading = chapterHeadingNumberer(
+        unit.position,
+        reserved.get(unit.position),
+      );
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i].type !== "heading_open") continue;
+      const token = tokens[i],
+        inline = tokens[i + 1],
+        level = Number(token.tag.slice(1)),
+        id = fragments?.get(i) ?? "heading-" + (headings.length + 1);
+      const title = v2
+        ? headingText(inline.children ?? [])
+        : parser.renderer.renderInlineAsText(
+            inline.children ?? [],
+            parser.options,
+            {},
+          );
+      const base = slug(title),
+        count = slugs.get(base) ?? 0;
+      slugs.set(base, count + 1);
+      if (!v2) {
+        anchors.set(base + (count ? "-" + count : ""), id);
+        anchors.set("mdk-heading-" + (headings.length + 1), id);
+      }
+      anchors.set(id, id);
+      token.attrSet("id", id);
+      const prefix = numbered ? numberHeading(level) + " " : "";
+      if (prefix)
+        inline.children?.unshift(
+          Object.assign(new Token("text", "", 0), { content: prefix }),
+        );
+      headings.push({ id, title: prefix + title, level });
+    }
+    const firstTitle = headings[0]?.level === 1 ? headings[0].title : "";
+    chapters.push({
+      unit,
+      file: "chapter-" + String(index + 1).padStart(4, "0") + ".xhtml",
+      html: "",
+      hasMath,
+      title: v2
+        ? (entryDisplayName(unit) ??
+          (path.posix.basename(unit.path, ".md").trim()
+            ? path.posix.basename(unit.path, ".md")
+            : path.posix.basename(unit.path)))
+        : firstTitle ||
+          (numbered ? unit.position + " " : "") +
+            path.posix.basename(unit.path, ".md"),
+      anchors,
+      headings,
+    });
+    tokensByChapter.push(tokens);
+  });
+  const destination = (
+    chapter: PublicationChapter,
+    url: string,
+    media: boolean,
+  ) => {
+    const target = resolveReference(chapter.unit.path, url, media);
+    if (target.kind === "unsafe") {
+      issue("E_CONVERSION_URL", target.message, chapter.unit.path);
+      return "";
+    }
+    if (target.kind === "external") {
+      if (media) {
+        issue(
+          "E_REMOTE_MEDIA",
+          t("展示资源必须在工程内，转换不访问网络。"),
+          chapter.unit.path,
+        );
+        return "";
+      }
+      return target.url;
+    }
+    if (/^\?[^#]/.test(target.suffix)) {
+      issue("E_LINK_QUERY", t("内部引用不能带查询参数。"), chapter.unit.path);
+      return "";
+    }
+    const suffix = target.suffix.replace(/^\?/, "");
+    if (media) {
+      if (suffix)
+        issue(
+          "E_IMAGE_FRAGMENT",
+          t("图片引用不能带片段或查询参数。"),
+          chapter.unit.path,
+        );
+      return resource(target.path);
+    }
+    const referenced =
+      target.path === chapter.unit.path
+        ? chapter
+        : chapters.find((c) => c.unit.path === target.path);
+    if (!referenced) {
+      issue(
+        "E_LINK_NOT_EXPORTED",
+        t("内部超链接指向未编排文稿或附件，无法在出版物中保留：") + target.path,
+        chapter.unit.path,
+      );
+      return "";
+    }
+    let fragment = "";
+    if (suffix) {
+      try {
+        const key = decodeURIComponent(suffix.slice(1)),
+          id = referenced.anchors.get(key);
+        if (!id)
+          throw new Error(t("找不到标题锚点：") + target.path + "#" + key);
+        fragment = "#" + id;
+      } catch (error) {
+        issue("E_ANCHOR_MISSING", String(error), chapter.unit.path);
+      }
+    }
+    return referenced.file + fragment;
+  };
+  parser.renderer.rules.image = (tokens, index, options) => {
+    const token = tokens[index],
+      alt = parser.renderer.renderInlineAsText(
+        token.children ?? [],
+        options,
+        {},
+      ),
+      src = destination(
+        chapters[renderIndex],
+        token.attrGet("src") ?? "",
+        true,
+      );
+    if (!alt.trim())
+      issue(
+        "W_IMAGE_ALT",
+        t("图片缺少替代文字，建议补充后再分发。"),
+        chapters[renderIndex].unit.path,
+        "warning",
+      );
+    const { attributes, caption } = imageStyleMarkup(token, alt, escapeXml);
+    return `<img src="${escapeXml(src)}" alt="${escapeXml(alt)}"${attributes} />${caption}`;
+  };
+  const renderLink = parser.renderer.rules.link_open;
+  parser.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
+    const token = tokens[index];
+    token.attrSet(
+      "href",
+      destination(chapters[renderIndex], token.attrGet("href") ?? "", false),
+    );
+    return renderLink
+      ? renderLink(tokens, index, options, env, renderer)
+      : renderer.renderToken(tokens, index, options);
+  };
+  let renderIndex = 0;
+  chapters.forEach((chapter, index) => {
+    renderIndex = index;
+    chapter.html = parser.renderer
+      .render(tokensByChapter[index], parser.options, {})
+      .replace(
+        /<input\b([^>]*)\/?\s*>/g,
+        (_match, attributes: string) =>
+          `<span class="task-marker">${attributes.includes("checked=") ? "[x]" : "[ ]"}</span>`,
+      );
+  });
+  const coverFile =
+    metadata.cover &&
+    (format === "pdf" ? pdf.include_cover : v2 || epub.include_cover)
+      ? resource(metadata.cover)
+      : "";
+  if (
+    (format === "pdf" ? pdf.include_cover : epub.include_cover) &&
+    (v2 || metadata.cover) &&
+    !coverFile
+  )
+    issue("E_COVER", t("所选封面不可转换。"), metadata.cover);
+  const headingItems = (chapter: PublicationChapter) => {
+    type Node = {
+      heading: PublicationChapter["headings"][number];
+      children: Node[];
+    };
+    const roots: Node[] = [],
+      stack: Node[] = [];
+    for (const [index, heading] of chapter.headings.entries()) {
+      if (
+        heading.level > configuration.book.toc_depth ||
+        (index === 0 && heading.level === 1)
+      )
+        continue;
+      while (stack.length && stack.at(-1)!.heading.level >= heading.level)
+        stack.pop();
+      const node = { heading, children: [] };
+      (stack.at(-1)?.children ?? roots).push(node);
+      stack.push(node);
+    }
+    const render = (nodes: Node[]): string =>
+      nodes
+        .map(
+          (node) =>
+            `<li><a href="${chapter.file}#${node.heading.id}">${escapeXml(node.heading.title)}</a>${node.children.length ? "<ol>" + render(node.children) + "</ol>" : ""}</li>`,
+        )
+        .join("");
+    return render(roots);
+  };
+  const list = (nodes: OutlineNode[]): string =>
+    "<ol>" +
+    nodes
+      .filter((node) => !v2 || hasChapter(node))
+      .map((node) => {
+        const chapter = chapters.find((c) => c.unit.id === node.entry?.id);
+        const label = chapter
+          ? `<a href="${chapter.file}">${escapeXml(chapter.title)}</a>`
+          : `<span>${escapeXml(node.entry?.title ?? labels.group + " " + node.position)}</span>`;
+        const headings = chapter && !v2 ? headingItems(chapter) : "";
+        return `<li>${label}${headings || node.children.length ? "<ol>" + headings + (node.children.length ? list(node.children).slice(4, -5) : "") + "</ol>" : ""}</li>`;
+      })
+      .join("") +
+    "</ol>";
+  const chapterIds = new Set(chapters.map(({ unit }) => unit.id));
+  const hasChapter = (node: OutlineNode): boolean =>
+    (node.entry !== undefined && chapterIds.has(node.entry.id)) ||
+    node.children.some(hasChapter);
+  const navigation = list(
+    buildOutline(v2 ? project.contents.entries : source.units),
+  );
+  const furniture = (pdf.header + pdf.footer)
+    .replace(/\{title\}/g, metadata.title)
+    .replace(/\{author\}/g, metadata.author);
+  const navigationText =
+    format === "epub" || pdf.include_toc ? Object.values(labels).join("") : "";
+  const markerText = tokensByChapter.some((tokens) =>
+    tokens.some((token) => token.type === "bullet_list_open"),
+  )
+    ? "•[x]"
+    : "";
+  const fontText =
+    renderedText.join("") +
+    chapters.map((chapter) => chapter.title).join("") +
+    furniture +
+    navigationText +
+    markerText +
+    "0123456789 ./";
+  let emojiFont: PreparedPublication["emojiFont"];
+  if (font.length) {
+    try {
+      const face = parsedFont(font);
+      let missing = [
+        ...new Set(
+          [...fontText].filter((c) => {
+            const point = c.codePointAt(0)!;
+            const formatting =
+              (point >= 0x200b && point <= 0x200f) ||
+              (point >= 0x202a && point <= 0x202e) ||
+              (point >= 0x2060 && point <= 0x206f) ||
+              (point >= 0xfe00 && point <= 0xfe0f) ||
+              point === 0xfeff;
+            return (
+              point >= 32 && !formatting && !face.hasGlyphForCodePoint(point)
+            );
+          }),
+        ),
+      ];
+      const emoji = missing.filter(
+        (char) => char.codePointAt(0)! >= 0x2000 && /\p{Emoji}/u.test(char),
+      );
+      if (
+        (format === "pdf" ||
+          epub.embed_font ||
+          epub.layout === "pre-paginated") &&
+        emoji.length
+      ) {
+        const bytes = fs.readFileSync(
+          path.join(runtime.assetDirectory, emojiFontFile),
+        );
+        if (sha256(bytes) !== emojiFontHash)
+          throw new Error(t("应用内置表情字体校验失败。"));
+        const face = parsedFont(bytes);
+        const covered = new Set(
+          emoji.filter((char) =>
+            face.hasGlyphForCodePoint(char.codePointAt(0)!),
+          ),
+        );
+        if (covered.size) {
+          emojiFont = {
+            bytes,
+            text: [...covered].join(""),
+            license: fs.readFileSync(
+              path.join(runtime.assetDirectory, "NotoEmoji-OFL.txt"),
+            ),
+          };
+          missing = missing.filter((char) => !covered.has(char));
+        }
+      }
+      if (
+        missing.length &&
+        (format === "pdf" || epub.embed_font || epub.layout === "pre-paginated")
+      )
+        issue(
+          "E_FONT_GLYPHS",
+          t("固定字体缺少字形：") +
+            missing
+              .slice(0, 24)
+              .map(
+                (c) => c + " U+" + c.codePointAt(0)!.toString(16).toUpperCase(),
+              )
+              .join("、") +
+            t("。请换用覆盖这些字符的字体，不能回退到本机字体。"),
+          project.settings.appearance.font_family,
+        );
+      if (format === "pdf") pdfCjkAliases(font, fontText);
+    } catch (error) {
+      issue("E_FONT_DECODE", String(error));
+    }
+  }
+  try {
+    runtime.verifyImages(
+      [...assets.values()]
+        .filter((a) => a.mediaType !== "image/svg+xml")
+        .map((a) => ({ path: a.source, data: a.data })),
+    );
+  } catch (error) {
+    issue("E_IMAGE_DECODE", String(error));
+  }
+  if (format === "epub" && !epub.embed_font)
+    issue(
+      "W_READER_FONT",
+      t("EPUB 未嵌入字体，阅读器可能使用自己的字体和排版。"),
+      undefined,
+      "warning",
+    );
+  const fingerprint = sha256(
+    JSON.stringify({
+      revision: project.revision,
+      configuration: v2
+        ? {
+            ...configuration,
+            publication: {
+              ...publication,
+              metadata: { ...metadata, modified: undefined },
+            },
+          }
+        : configuration,
+      resources: [...assets].map(([name, value]) => [name, sha256(value.data)]),
+      font: sha256(font),
+      emojiFont: emojiFont && emojiFontHash,
+      engine: runtime.engine,
+    }),
+  );
+  return {
+    format,
+    snapshot: { project },
+    configuration,
+    chapters,
+    assets,
+    font,
+    fontType,
+    fontFile: "assets/body-font." + (fontType === "font/ttf" ? "ttf" : "otf"),
+    coverFile,
+    navigation,
+    fingerprint,
+    issues,
+    width,
+    height,
+    fontText,
+    fontLicense,
+    emojiFont,
+  };
+}
+export async function planPublication(
+  file: string,
+  format: PublicationFormat,
+  runtime: PublicationRuntime,
+  presetId?: string,
+): Promise<PublicationPlan> {
+  runtime.progress?.("prepare");
+  const prepared = await (runtime.prepare?.(file, format, presetId) ??
+    preparePublication(file, format, runtime, presetId));
+  if (!prepared.issues.some((i) => i.severity === "error")) {
+    try {
+      runtime.progress?.("validate-layout");
+      await runtime.verifyLayout(prepared);
+    } catch (error) {
+      prepared.issues.push({
+        severity: "error",
+        code: "E_PUBLICATION_LAYOUT",
+        message: String(error),
+      });
+    }
+  }
+  return {
+    revision: prepared.snapshot.project.revision,
+    fingerprint: prepared.fingerprint,
+    format,
+    report: {
+      valid: !prepared.issues.some((i) => i.severity === "error"),
+      mode: prepared.snapshot.project.mode,
+      issues: prepared.issues,
+      summary: {
+        mode: prepared.snapshot.project.mode,
+        entries: prepared.chapters.length,
+        files: prepared.snapshot.project.files.length,
+        resources: prepared.assets.size,
+      },
+    },
+    chapters: prepared.chapters.length,
+    font: prepared.snapshot.project.settings.appearance.font_family,
+  };
+}
+export async function exportPublication(
+  file: string,
+  output: string,
+  format: PublicationFormat,
+  fingerprint: string,
+  runtime: PublicationRuntime,
+  presetId?: string,
+): Promise<PublicationResult> {
+  if (
+    path.extname(output).toLowerCase() !== "." + format ||
+    path.resolve(output).toLowerCase() === path.resolve(file).toLowerCase()
+  )
+    throw new Error(t("请选择对应格式的新输出路径，不能覆盖源工程。"));
+  const previous = runtime.outputRevision(output);
+  if ((await publicationRevision(output, true)) !== previous)
+    throw new Error(t("输出路径在确认后发生变化，请重新选择文件，未覆盖。"));
+  runtime.progress?.("prepare");
+  const prepared = await (runtime.prepare?.(file, format, presetId) ??
+    preparePublication(file, format, runtime, presetId));
+  if (prepared.fingerprint !== fingerprint)
+    throw new Error(t("工程、资源或配置在预检后已变化，请重新严格校验。"));
+  if (prepared.issues.some((i) => i.severity === "error"))
+    throw new Error(
+      prepared.issues
+        .filter((i) => i.severity === "error")
+        .map((i) => i.message)
+        .join("\n"),
+    );
+  runtime.progress?.("validate-layout");
+  await runtime.verifyLayout(prepared);
+  runtime.progress?.(format === "pdf" ? "print-pdf" : "build-epub");
+  const result =
+    format === "pdf"
+      ? await runtime.pdf(prepared)
+      : { bytes: await runtime.epub(prepared), pages: undefined };
+  if (result.bytes.length > 256 * 1024 * 1024)
+    throw new Error(t("导出结果超过 256 MiB，未写入文件。"));
+  runtime.progress?.("write");
+  const temporary = output + "." + randomUUID() + ".tmp";
+  if (previous) {
+    const stat = await fs.promises.lstat(output);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1)
+      throw new Error(t("输出路径不能是链接或特殊文件。"));
+  }
+  const fd = await fs.promises.open(temporary, "wx");
+  try {
+    try {
+      await fd.writeFile(result.bytes);
+      await fd.sync();
+    } finally {
+      await fd.close();
+    }
+    if (
+      (await publicationRevision(file)) !== prepared.snapshot.project.revision
+    )
+      throw new Error(t("生成期间源工程已改变，未发布过期导出文件。"));
+    if (previous) {
+      if ((await publicationRevision(output)) !== previous)
+        throw new Error(t("输出文件已被外部修改，未覆盖。"));
+      await fs.promises.rename(temporary, output);
+    } else {
+      await fs.promises.link(temporary, output);
+    }
+  } finally {
+    await fs.promises.rm(temporary, { force: true });
+  }
+  return {
+    path: output,
+    bytes: result.bytes.length,
+    sha256: sha256(result.bytes),
+    pages: result.pages,
+  };
+}
+
+async function publicationRevision(file: string, missing = false) {
+  const hash = createHash("sha256");
+  try {
+    for await (const bytes of fs.createReadStream(file)) hash.update(bytes);
+    return hash.digest("hex");
+  } catch (error) {
+    if (missing && (error as NodeJS.ErrnoException).code === "ENOENT")
+      return null;
+    throw error;
+  }
+}

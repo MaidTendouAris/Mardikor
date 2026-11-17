@@ -1,0 +1,244 @@
+# MDK v2 settings.toml 完整字段示例，2026-11-16，对应 v2 定稿版。
+# 对照：docs/MDK v2 Settings Reference.md。
+# 这是 default 模式的一套显式设置，不要求真实工程写全。
+# 建议只保留作者需要覆盖的项；省略才能继续使用继承值／模式缺省值。
+# 例如 book 通常省略 reading.show_toc / chapter_numbering，comic 省略 preview.layout。
+# 在 mdk.toml 的 features.optional 中声明 "mdk.settings-full@1"；
+# 必须完整应用这些设置时改用 features.required，不在本文件重复声明版本或能力。
+# 数字单位由规范规定：px / em / 倍数 / 百分数，不写单位字符串。
+
+# 字体资源示例：先放入真实文件，再取消下面所需行的注释。
+# 同时将相应 body.font / headings.font 等改为 "@body-cjk"。
+# 以下示意的四个文件必须真实存在才可完整交付；无需使用的可选字形可不登记。
+# [[font_sets]]
+# id = "body-cjk"
+# regular = "resources/font/body-regular.otf"
+# bold = "resources/font/body-bold.otf"
+# italic = "resources/font/body-italic.otf"
+# bold_italic = "resources/font/body-bold-italic.otf"
+
+[body]
+font_family = "sans-serif"
+font = "generic"
+font_fallbacks = []
+font_size = 16
+font_weight = 400
+font_style = "normal"
+line_height = 1.7
+paragraph_spacing = 0.8
+letter_spacing = 0
+word_spacing = 0
+kerning = "auto"
+ligatures = "normal"
+font_synthesis = "weight-style"
+text_color = "#1f2933"
+background_color = "#ffffff"
+link_color = "#2563eb"
+text_direction = "auto"
+writing_mode = "horizontal-tb"
+text_orientation = "mixed"
+text_align = "start"
+
+[paragraph]
+first_line_indent = 0
+indent_first = false
+indent_after_heading = false
+spacing_before = 0
+soft_break = "space"
+hyphens = "manual"
+word_break = "normal"
+overflow_wrap = "anywhere"
+widows = 2
+orphans = 2
+
+[headings]
+# font、font_family、text_color 通常省略，以跟随 body；这里显式展示完整字段。
+font = "generic"
+font_family = "sans-serif"
+text_color = "#1f2933"
+font_weight = 700
+line_height = 1.3
+letter_spacing = 0
+text_align = "start"
+spacing_before = 1.5
+spacing_after = 0.6
+keep_with_next = true
+break_before = "auto"
+
+# h1–h6 均可另外覆盖 headings 的 11 个公共字段；以下仅列各级字号。
+[headings.h1]
+size_scale = 2
+
+[headings.h2]
+size_scale = 1.6
+
+[headings.h3]
+size_scale = 1.35
+
+[headings.h4]
+size_scale = 1.15
+
+[headings.h5]
+size_scale = 1
+
+[headings.h6]
+size_scale = 1
+
+[links]
+underline = true
+underline_style = "solid"
+underline_offset = 0.1
+visited_color = "#2563eb"
+external_mark = "none"
+break_long_urls = true
+
+[inline_code]
+font = "generic"
+font_family = "monospace"
+size_scale = 0.9
+text_color = "#1f2933"
+background_color = "#eef2f7"
+border_color = "#d8e0eb"
+border_width = 0
+radius = 3
+padding_inline = 0.25
+padding_block = 0.1
+
+[code]
+font = "generic"
+font_family = "monospace"
+size_scale = 0.9
+line_height = 1.5
+text_color = "#1f2933"
+background_color = "#f5f7fb"
+border_color = "#d8e0eb"
+border_width = 1
+radius = 4
+padding = 12
+wrap = false
+tab_size = 4
+line_numbers = false
+line_number_start = 1
+line_number_color = "#64748b"
+show_language = false
+syntax_highlight = true
+
+[code.palette]
+comment = "#64748b"
+keyword = "#7c3aed"
+string = "#047857"
+number = "#b45309"
+function = "#1d4ed8"
+type = "#0f766e"
+operator = "#334155"
+punctuation = "#475569"
+
+[quote]
+font_style = "normal"
+text_color = "#1f2933"
+background_color = "none"
+border_color = "#cbd5e1"
+border_width = 3
+padding_inline = 1
+padding_block = 0.25
+nesting_indent = 1
+
+[lists]
+indent = 1.5
+item_spacing = 0.25
+unordered_marker = "disc"
+ordered_marker = "source"
+marker_color = "#1f2933"
+
+[tasks]
+checkbox_size = 1
+checkbox_gap = 0.5
+marker_color = "#2563eb"
+completed_style = "normal"
+completed_color = "#1f2933"
+
+[tables]
+size_scale = 1
+line_height = 1.5
+cell_padding_inline = 0.75
+cell_padding_block = 0.5
+border_color = "#d8e0eb"
+border_width = 1
+header_background_color = "#f1f5f9"
+header_text_color = "#1f2933"
+header_font_weight = 700
+stripe_background_color = "none"
+default_align = "start"
+width = "auto"
+overflow = "scroll"
+
+[images]
+max_width = 100
+max_height = 0
+upscale = false
+align = "center"
+frame_ratio = 0
+spacing_before = 0.5
+spacing_after = 0.5
+border_color = "#d8e0eb"
+border_width = 0
+radius = 0
+caption_source = "none"
+caption_size_scale = 0.875
+caption_color = "#1f2933"
+caption_align = "center"
+caption_gap = 0.5
+
+[thematic_break]
+color = "#cbd5e1"
+style = "solid"
+thickness = 1
+width = 100
+spacing_before = 1.5
+spacing_after = 1.5
+
+[preview]
+layout = "continuous"
+max_width = 720
+viewport_height = 960
+padding_block = 24
+padding_inline = 32
+canvas_color = "#f3f6fb"
+document_gap = 24
+spread_gap = 24
+border_color = "#d8e0eb"
+border_width = 0
+radius = 0
+
+[reading]
+direction = "ltr"
+spread = "single"
+image_fit = "contain"
+show_toc = false
+chapter_numbering = false
+first_single = false
+show_project_title = false
+show_creators = false
+show_description = false
+show_cover = false
+
+[document_title]
+show = false
+size_scale = 1.5
+font_weight = 700
+text_align = "start"
+text_color = "#1f2933"
+spacing_before = 0
+spacing_after = 1
+
+[toc]
+source = "outline"
+include_groups = true
+max_node_depth = 0
+heading_min_level = 1
+heading_max_level = 3
+
+[numbering]
+format = "{path} "
+
+# 可选 extensions 表沿用主规范的命名空间规则；此模板没有第三方扩展。

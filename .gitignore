@@ -7,7 +7,8 @@ build-output/
 dist-electron/
 .migration-backup/
 .test-artifacts/
-/docs/test-report/
+/Mardikor-Desktop/docs/test-report/
+/Mardikor-Android/
 
 *.log
 .env

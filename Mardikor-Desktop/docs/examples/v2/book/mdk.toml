@@ -1,0 +1,12 @@
+format_version = 2
+project_id = "6ab75b43-a5cc-40de-9495-7b73a63f1984"
+mode = "book"
+
+[metadata]
+title = "山路与归途"
+creators = ["示例作者"]
+language = "zh-CN"
+description = "一部由 Markdown 文稿组成的示例作品。"
+rights = "示例资料，仅用于格式演示。"
+identifier = "urn:uuid:51d7c39d-09e2-460e-a94a-587b18f5c2a6"
+cover = "resources/cover.svg"

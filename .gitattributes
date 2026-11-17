@@ -4,7 +4,7 @@
 *.icns binary
 *.otf binary
 *.mdk binary
-"docs/MDK Format Specification v1.md" -text
+"Mardikor-Desktop/docs/MDK Format Specification v1.md" -text
 # Retain upstream license formatting verbatim.
-docs/licenses/** -whitespace
-docs/THIRD_PARTY_NOTICES.txt -whitespace
+Mardikor-Desktop/docs/licenses/** -whitespace
+Mardikor-Desktop/docs/THIRD_PARTY_NOTICES.txt -whitespace
