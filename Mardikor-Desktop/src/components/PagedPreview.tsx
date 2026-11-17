@@ -386,7 +386,7 @@ export const PagedPreview = forwardRef<
     editor?: PageEditor;
     preparing: boolean;
     onTogglePreparing: () => void;
-    onOpen: (path: string) => void;
+    onOpen: (path: string, fragment?: string) => void;
     onError: (message: string) => void;
     resolveResource: (source: string) => Promise<string>;
     initialFragment?: string;

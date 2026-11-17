@@ -75,6 +75,7 @@ for (const type of ["dragenter", "dragover", "dragleave"])
 window.addEventListener("drop", fileDrop, true);
 
 const api: DesktopApi = {
+  convertMarkdown: () => ipcRenderer.invoke("app:convert-markdown"),
   update: (action) => ipcRenderer.invoke("app:update", action),
   onUpdate: (callback) => {
     const listener = (

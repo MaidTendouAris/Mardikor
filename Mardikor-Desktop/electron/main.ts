@@ -13,6 +13,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import * as mdk from "./mdk";
 import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
@@ -519,6 +520,34 @@ function registerIpc() {
       const error = await shell.openPath(target.path);
       if (error) throw new Error(t("无法用默认应用打开文件：{0}", error));
     }
+  });
+  ipcMain.handle("app:convert-markdown", async (event) => {
+    const { window } = verifySender(event);
+    const input = await dialog.showOpenDialog(window, {
+      title: t("选择要转换的 Markdown"),
+      properties: ["openFile"],
+      filters: [{ name: t("Markdown 文件"), extensions: ["md", "markdown"] }],
+    });
+    const source = input.filePaths[0];
+    if (input.canceled || !source || window.isDestroyed()) return false;
+    const saved = await dialog.showSaveDialog(window, {
+      title: t("保存转换后的 MDK"),
+      defaultPath: path.join(path.dirname(source), path.parse(source).name + ".mdk"),
+      filters: [{ name: t("MDK 工程"), extensions: ["mdk"] }],
+    });
+    if (saved.canceled || !saved.filePath) return false;
+    const output = saved.filePath;
+    await new Promise<void>((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, "conversion-worker.cjs"), {
+        workerData: { source, output, locale: appLocale() },
+      });
+      worker.once("message", () => resolve());
+      worker.once("error", reject);
+      worker.once("exit", (code) => reject(new Error(t("转换任务意外结束（{0}）。", code))));
+    });
+    state.remember(output, "00");
+    createWindow(output);
+    return true;
   });
   ipcMain.handle("app:reveal-file", (event, entry: unknown) => {
     const { activeProject } = verifySender(event);

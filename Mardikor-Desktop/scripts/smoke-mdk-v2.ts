@@ -120,6 +120,8 @@ try {
   const oldIntro = await page
     .locator("article[data-entry-id='node-intro'] h1")
     .elementHandle();
+  const preview = page.locator(".reading-preview article[data-source-path]");
+  await expect(preview).toHaveCount(1);
   const oldTree = await page
     .locator(".project-tree-row[data-entry-id='node-intro']")
     .elementHandle();
@@ -140,14 +142,18 @@ try {
   for (const [id, name] of [
     ["node-road", "road"],
     ["node-intro", "intro"],
+    ["node-intro-again", "intro"],
+    ["node-intro", "intro"],
   ]) {
     await page.locator(`.project-tree-row[data-entry-id='${id}']`).click();
     await expect(page.locator(".document-title")).toContainText(
       `markdown/${name}.md`,
     );
+    await expect(preview).toHaveCount(1);
+    await expect(preview).toHaveAttribute("data-entry-id", id);
   }
   assert.equal(await oldTree!.evaluate((node) => node.isConnected), true);
-  assert.equal(await oldIntro!.evaluate((node) => node.isConnected), true);
+  assert.equal(await oldIntro!.evaluate((node) => node.isConnected), false);
   assert.equal(
     await page.locator(".editor-workspace").getAttribute("data-busy-on-switch"),
     null,
@@ -214,7 +220,12 @@ try {
   await expect(page.locator(".document-title")).toContainText(
     "markdown/one.md",
   );
-  await expect(page.locator(".reading-spread.double.rtl")).toBeVisible();
+  await expect(preview).toHaveCount(1);
+  await expect(preview).toHaveAttribute("data-entry-id", "node-one");
+  await page.locator(".project-tree-row[data-entry-id='node-two']").click();
+  await expect(preview).toHaveCount(1);
+  await expect(preview).toHaveAttribute("data-entry-id", "node-two");
+  await page.locator(".project-tree-row[data-entry-id='node-one']").click();
   await page.getByRole("tab", { name: "阅读", exact: true }).click();
   await expect(page.locator("article[data-entry-id='node-one']")).toBeVisible();
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();

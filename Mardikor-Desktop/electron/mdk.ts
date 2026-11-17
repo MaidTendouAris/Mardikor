@@ -828,7 +828,7 @@ function uniqueName(
   return candidate;
 }
 
-export function createMdkProject(file: string, mode: string, overwrite = true) {
+function newMdk(mode: string): Document {
   const doc = {
     mode: "00",
     zip: new AdmZip(undefined, { noSort: true }),
@@ -842,6 +842,11 @@ export function createMdkProject(file: string, mode: string, overwrite = true) {
       mode: modeName(mode),
     }),
   );
+  return doc;
+}
+
+export function createMdkProject(file: string, mode: string, overwrite = true) {
+  const doc = newMdk(mode);
   put(doc, "markdown/001.md", "# 001\n\n");
   putContents(doc, {
     schema_version: 2,
@@ -849,6 +854,26 @@ export function createMdkProject(file: string, mode: string, overwrite = true) {
   });
   commit(file, doc, { overwrite });
   return openMdkProject(file);
+}
+
+export function writeImportedMdk(
+  file: string,
+  documents: readonly { path: string; title?: string; content: string }[],
+  resources: ReadonlyMap<string, Buffer>,
+) {
+  const doc = newMdk("00");
+  for (const item of documents) put(doc, item.path, item.content);
+  for (const [name, bytes] of resources) put(doc, name, bytes);
+  putContents(doc, {
+    schema_version: 2,
+    entries: documents.map(({ path, title }, index) => ({
+      id: randomUUID(),
+      path,
+      title,
+      position: String(index + 1),
+    })),
+  });
+  commit(file, doc, { overwrite: false });
 }
 
 export function openMdkProject(file: string): MdkProject {

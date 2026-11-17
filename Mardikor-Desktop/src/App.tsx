@@ -10,6 +10,7 @@ import {
   BookOpen,
   Check,
   ChevronRight,
+  FileInput,
   FilePlus2,
   FolderOpen,
   LayoutGrid,
@@ -113,6 +114,7 @@ export default function App() {
     null,
   );
   const [busy, setBusy] = useState(false);
+  const [converting, setConverting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
@@ -282,6 +284,17 @@ export default function App() {
     await activate(output);
     notify(t("目录已打包为 MDK 工程。"));
   }
+  async function convertMarkdown() {
+    setConverting(true);
+    try {
+      if (await desktop().convertMarkdown()) {
+        setRecent(await desktop().recent());
+        notify(t("已生成 MDK，转换报告位于文稿目录首位。"));
+      }
+    } finally {
+      setConverting(false);
+    }
+  }
   async function windowAction(action: "minimize" | "maximize" | "close") {
     setMaximized(await desktop().window(action));
   }
@@ -434,6 +447,14 @@ export default function App() {
                   </div>
                 </fieldset>
                 <div className="create-action">
+                  <button
+                    className="button"
+                    disabled={busy}
+                    onClick={() => void run(convertMarkdown)}
+                  >
+                    <FileInput size={17} />
+                    {converting ? t("正在转换…") : t("Markdown 转 MDK")}
+                  </button>
                   <button
                     className="button"
                     disabled={busy || mode === "markdown"}

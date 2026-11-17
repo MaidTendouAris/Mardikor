@@ -18,6 +18,23 @@ export function headingText(tokens: Token[]): string {
     .join("");
 }
 
+export function legacyHeadingAnchor() {
+  const fragments = new Set<string>(), counts = new Map<string, number>();
+  return (title: string) => {
+    const base = title
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
+      .replace(/\s+/g, "-");
+    let count = counts.get(base) ?? 0;
+    let fragment = count ? base + "-" + count : base;
+    while (fragments.has(fragment)) fragment = base + "-" + ++count;
+    counts.set(base, count + 1);
+    fragments.add(fragment);
+    return fragment;
+  };
+}
+
 export function v2HeadingAnchors(tokens: Token[]) {
   const whiteSpace =
     // oxlint-disable-next-line eslint/no-control-regex -- Unicode 15.1 White_Space includes TAB, LF, VT, FF, CR and NEL.

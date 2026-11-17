@@ -256,8 +256,8 @@ export function ProjectSettings({
               path: "v2.previewLayout",
               label: t("预览布局"),
               choices: [
-                ["continuous", t("连续滚动")],
-                ["document", t("逐文稿")],
+                ["continuous", t("随正文高度")],
+                ["document", t("保留文档视口高度")],
               ],
             },
             {

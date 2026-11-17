@@ -57,6 +57,7 @@ import { comparePosition } from "../../shared/outline";
 import { MAX_OUTLINE_DEPTH } from "../../shared/mdk-v2";
 import {
   splitMarkdownByHeading,
+  markdownHeadings,
   requiresSourceMode,
   type MarkdownHeading,
 } from "../../shared/markdown";
@@ -270,7 +271,7 @@ export const Workspace = forwardRef<
   const locked = useRef(false);
   const navigating = useRef(false);
   const queuedNavigation = useRef(
-    new Map<string, { path: string; entryId?: string }>(),
+    new Map<string, { path: string; entryId?: string; fragment?: string }>(),
   );
   const pendingSave = useRef<Promise<boolean> | null>(null);
   const contentDirty = !!buffer && buffer.content !== buffer.saved;
@@ -616,6 +617,7 @@ export const Workspace = forwardRef<
     groupId = activeId,
     entryId?: string,
     reuse = false,
+    fragment?: string,
   ) {
     const item = loaded.files.find((f) => f.path === path);
     if (item?.kind === "directory") return;
@@ -651,6 +653,20 @@ export const Workspace = forwardRef<
       loaded.format === "markdown",
       supportsReadingMode(loaded),
     );
+    let heading: EditorGroupState["heading"];
+    if (fragment && current && kind === "markdown" && loaded.projectId) {
+      let anchor = fragment;
+      try {
+        anchor = decodeURIComponent(fragment);
+      } catch {
+        /* Keep literal fragments. */
+      }
+      const target = markdownHeadings(
+        settings.preview.live_preview ? current.content : current.saved,
+        true,
+      ).find(({ anchor: value }) => value === anchor);
+      if (target) heading = { path, index: target.index, key: Date.now() };
+    }
     patchGroup(groupId, (g) => ({
       path,
       entryId,
@@ -666,7 +682,7 @@ export const Workspace = forwardRef<
       outlinePath: undefined,
       revision: g.revision + 1,
       reveal: undefined,
-      heading: undefined,
+      heading,
     }));
   }
   async function refreshBuffers(
@@ -1124,7 +1140,7 @@ export const Workspace = forwardRef<
     }, preferences.autosaveInterval * 1000);
     return () => clearInterval(timer);
   }, [file, preferences.autosave, preferences.autosaveInterval]);
-  async function openFile(path: string, groupId = activeId, entryId?: string) {
+  async function openFile(path: string, groupId = activeId, entryId?: string, fragment?: string) {
     if (!project) return;
     const group = groupsRef.current.find(({ id }) => id === groupId);
     if (group?.path === path && group.tab !== "settings") {
@@ -1146,6 +1162,7 @@ export const Workspace = forwardRef<
         groupId,
         entryId,
         true,
+        fragment,
       );
       return;
     }
@@ -1163,16 +1180,17 @@ export const Workspace = forwardRef<
       if (!(await flush(true))) return;
     } else if (!(await flush(false))) return;
     const loaded = projectRef.current ?? project;
-    await loadFile(path, loaded, "preview", groupId, entryId, true);
+    await loadFile(path, loaded, "preview", groupId, entryId, true, fragment);
   }
   async function selectFile(
     path: string,
     groupId = activeId,
     entryId?: string,
+    fragment?: string,
   ) {
     if (pendingSave.current && !(await pendingSave.current)) return;
     if (locked.current && !navigating.current) return;
-    queuedNavigation.current.set(groupId, { path, entryId });
+    queuedNavigation.current.set(groupId, { path, entryId, fragment });
     if (navigating.current) return;
     navigating.current = true;
     locked.current = true;
@@ -1180,7 +1198,7 @@ export const Workspace = forwardRef<
       for (const [id, target] of queuedNavigation.current) {
         queuedNavigation.current.delete(id);
         if (!groupsRef.current.some((group) => group.id === id)) continue;
-        await openFile(target.path, id, target.entryId);
+        await openFile(target.path, id, target.entryId, target.fragment);
       }
     } catch (error) {
       queuedNavigation.current.clear();
@@ -2094,7 +2112,7 @@ export const Workspace = forwardRef<
                 execute={execute}
                 flush={() => flushRef.current()}
                 saveDocument={saveDocument}
-                openFile={(path) => selectFile(path, group.id)}
+                openFile={(path, fragment) => selectFile(path, group.id, undefined, fragment)}
                 onFindState={(results, hit) => {
                   setFindStates((previous) => {
                     if (

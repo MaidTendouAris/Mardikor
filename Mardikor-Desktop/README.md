@@ -7,7 +7,7 @@
 
 - 可视化编辑器通过分页处理大幅优化了性能，但在遇到过大的单个markdown文档时仍会禁用，源码编辑始终可用。
 
-Windows 安装版自动关联 `.mdk`，可选择关联 `.md`；便携版无需安装。
+Windows 安装版自动关联 `.mdk`，首次安装默认勾选 `.md` 关联，可取消勾选。便携版无需安装。
 
 [下载最新版本](<https://github.com/MaidTendouAris/Mardikor/releases/latest>)。安装版默认每日检查更新，下载与安装由用户手动发起。
 

@@ -166,6 +166,7 @@ export type DialogKind =
 export type EditAction =
   "cut" | "copy" | "paste" | "paste-text" | "select-all" | "copy-text";
 export interface DesktopApi {
+  convertMarkdown(): Promise<boolean>;
   update(
     action: import("./updates").UpdateAction,
   ): Promise<import("./updates").UpdateStatus>;

@@ -11,7 +11,21 @@ LangString NewMdkProject 2052 "MDK 工程"
 !ifndef BUILD_UNINSTALLER
   Var MarkdownAssociation
   Var MarkdownCheckbox
+  Var MarkdownAssociationScope
 !endif
+
+!macro ReadMarkdownAssociation
+  ClearErrors
+  ReadRegDWORD $MarkdownAssociation SHELL_CONTEXT "${MD_ASSOC_KEY}" "Markdown"
+  ${If} ${Errors}
+    ${If} ${isUpdated}
+      StrCpy $MarkdownAssociation 0
+    ${Else}
+      StrCpy $MarkdownAssociation 1
+    ${EndIf}
+  ${EndIf}
+  StrCpy $MarkdownAssociationScope $installMode
+!macroend
 
 !macro customInit
   ${If} ${isUpdated}
@@ -34,10 +48,7 @@ LangString NewMdkProject 2052 "MDK 工程"
       !endif
     !endif
   ${EndIf}
-  ReadRegDWORD $MarkdownAssociation SHELL_CONTEXT "${MD_ASSOC_KEY}" "Markdown"
-  ${If} $MarkdownAssociation != 1
-    StrCpy $MarkdownAssociation 0
-  ${EndIf}
+  !insertmacro ReadMarkdownAssociation
 !macroend
 
 !macro customPageAfterChangeDir
@@ -46,6 +57,9 @@ LangString NewMdkProject 2052 "MDK 工程"
   Function MarkdownAssociationPage
     ${If} ${isUpdated}
       Abort
+    ${EndIf}
+    ${If} $MarkdownAssociationScope != $installMode
+      !insertmacro ReadMarkdownAssociation
     ${EndIf}
     !insertmacro MUI_HEADER_TEXT "文件关联" "选择需要使用 Mardikor 打开的文件类型。"
     nsDialogs::Create 1018
@@ -62,7 +76,7 @@ LangString NewMdkProject 2052 "MDK 工程"
     ${Else}
       ${NSD_Uncheck} $MarkdownCheckbox
     ${EndIf}
-    ${NSD_CreateLabel} 0 62u 100% 36u "不勾选时保留现有 Markdown 打开方式。首次安装默认不勾选。"
+    ${NSD_CreateLabel} 0 62u 100% 36u "首次安装默认勾选。取消勾选可保留现有 Markdown 打开方式。"
     Pop $0
     nsDialogs::Show
   FunctionEnd

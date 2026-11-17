@@ -147,7 +147,7 @@ interface Props {
   execute: (work: () => Promise<unknown>) => Promise<void>;
   flush: () => Promise<boolean>;
   saveDocument: () => Promise<void>;
-  openFile: (path: string) => Promise<void>;
+  openFile: (path: string, fragment?: string) => Promise<void>;
   revealSearch: (hit: SearchHit, view: EditorTab) => boolean;
   onFindState: (results?: SearchResults, hit?: SearchHit) => void;
   changeTab: (tab: EditorTab) => Promise<void>;
@@ -309,17 +309,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             ? focused
             : null;
         findDestination.current = undefined;
-        const unit =
-          tab === "preview"
-            ? focused?.closest<HTMLElement>(
-                ".reading-preview article[data-source-path]",
-              )
-            : undefined;
-        const visible = unit?.dataset.sourcePath
-          ? { path: unit.dataset.sourcePath, id: unit.dataset.entryId }
-          : undefined;
         find.open(
-          (tab === "reader" ? reader.current?.currentDocument() : visible) ?? {
+          (tab === "reader" ? reader.current?.currentDocument() : undefined) ?? {
             path: activePath,
             id: group.entryId,
           },
@@ -407,15 +398,6 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     const codeBuffer = buffer;
     const contentDirty = !!buffer && buffer.content !== buffer.saved;
     const large = isMarkdown && isLargeDocument(markdown);
-    const projectPreviewLarge = useMemo(
-      () =>
-        project?.projectId !== undefined &&
-        (project?.files.reduce(
-          (bytes, item) => bytes + (item.kind === "markdown" ? item.bytes : 0),
-          0,
-        ) ?? 0) > 512_000,
-      [project?.projectId, project?.files],
-    );
     const activeEntry =
       project?.contents.entries.find((entry) => entry.id === group.entryId) ??
       project?.contents.entries.find((e) => e.path === activePath);
@@ -459,15 +441,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       : isMarkdown
         ? buffer.saved
         : "";
+    const layoutText = tab === "write" ? markdown : previewMarkdown;
     const paged =
       isMarkdown &&
-      (markdown.length > pageLength ||
-        !!buffer?.pagination ||
-        (tab === "preview" && projectPreviewLarge)) &&
+      (layoutText.length > pageLength || !!buffer?.pagination) &&
       (tab === "write" ||
         tab === "preview" ||
         (tab === "source" && splitPreview));
-    const layoutText = tab === "write" ? markdown : previewMarkdown;
     const [pageIndex, setPageIndex] = useState(0);
     const [editingPageIndex, setEditingPage] = useState(0);
     const [windowSelection, setWindowSelection] = useState<EditPageWindow>();
@@ -1601,7 +1581,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               initialFragment={initialFragment}
               style={style}
               resolveResource={resolveResource}
-              onOpen={(path) => void openFile(path)}
+              onOpen={(path, fragment) => void openFile(path, fragment)}
               onError={(error) => notify(error, true)}
               onScroll={(ratio, viewport, programmatic) => {
                 if (!programmatic) reportScroll(ratio, viewport);
@@ -1623,13 +1603,15 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             />
           ) : tab === "preview" && project ? (
             <ReadingPreview
-              activeEntryId={group.entryId}
+              entry={activeEntry}
+              reservedSections={reserved.get(activeEntry?.position ?? "")}
               onLayout={viewportReady}
               file={file}
-              project={project}
-              settings={settings}
+              mode={project.mode}
+              standalone={standalone}
+              settings={previewSettings}
               style={style}
-              onOpen={(path) => void openFile(path)}
+              onOpen={(path, fragment) => void openFile(path, fragment)}
               onError={(error) => notify(error, true)}
               initialFragment={initialFragment}
               activeDocument={
@@ -1639,8 +1621,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               }
               heading={previewHeading}
               findHit={find.hit}
-              findEntryId={find.anchor?.id}
-              findDocuments={findDocuments}
+              findMatches={documentMatches}
             />
           ) : buffer ? (
             <>
@@ -1657,7 +1638,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                           event,
                           activePath,
                           standalone,
-                          (path) => void openFile(path),
+                          (path, fragment) => void openFile(path, fragment),
                           (error) => notify(error, true),
                         )
                       }
@@ -1684,7 +1665,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                         event,
                         activePath,
                         standalone,
-                        (path) => void openFile(path),
+                        (path, fragment) => void openFile(path, fragment),
                         (error) => notify(error, true),
                       )
                     }

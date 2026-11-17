@@ -3,7 +3,7 @@ import {
   createMarkdownParser,
   createMdkMarkdownParser,
 } from "../../shared/markdown-parser";
-import { v2HeadingAnchors } from "../../shared/mdk-anchors";
+import { legacyHeadingAnchor, v2HeadingAnchors } from "../../shared/mdk-anchors";
 import {
   applyV2Typography,
   bodyTypography,
@@ -180,8 +180,7 @@ export function renderPreview(
   for (const level of page?.priorHeadingLevels ?? []) numberHeading(level);
   let removedTitle = page?.priorHeadingLevels.includes(1) ?? false;
   let headingNumber = page?.headingOffset ?? 0;
-  const fragments = new Set<string>(),
-    counts = new Map<string, number>();
+  const legacyAnchor = legacyHeadingAnchor();
   if (mapSource) {
     for (const token of tokens)
       if (token.map && token.tag && token.type !== "inline" && !token.hidden)
@@ -202,18 +201,8 @@ export function renderPreview(
           "",
       );
     else if (headingFragments) {
-      const base = parser.renderer
-        .renderInlineAsText(inline.children ?? [], parser.options, env)
-        .trim()
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, "")
-        .replace(/\s+/g, "-");
-      let n = counts.get(base) ?? 0;
-      let fragment = n ? `${base}-${n}` : base;
-      while (fragments.has(fragment)) fragment = `${base}-${++n}`;
-      counts.set(base, n + 1);
-      fragments.add(fragment);
-      token.attrSet("data-fragment", fragment);
+      const title = parser.renderer.renderInlineAsText(inline.children ?? [], parser.options, env);
+      token.attrSet("data-fragment", legacyAnchor(title));
     }
     if (
       settings?.preview.show_title === false &&

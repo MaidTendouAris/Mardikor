@@ -90,6 +90,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:mdk-v2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:markdown-conversion
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/smoke-cli-windows.ps1
           exit $LASTEXITCODE
       - run: node scripts/release-checksums.mjs --with-cli

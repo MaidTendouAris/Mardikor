@@ -29,6 +29,7 @@ export const options = {
   entryPoints: [
     "electron/main.ts",
     "electron/preload.ts",
+    "electron/conversion-worker.ts",
     "electron/publication-worker.ts",
   ],
   outdir: "dist-electron",

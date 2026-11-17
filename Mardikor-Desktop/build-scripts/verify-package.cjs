@@ -14,6 +14,7 @@ exports.default = async (context) => {
     "assets/icon.png",
     "dist-electron/main.cjs",
     "dist-electron/preload.cjs",
+    "dist-electron/conversion-worker.cjs",
     "dist-electron/publication-worker.cjs",
     "dist/index.html",
   ];

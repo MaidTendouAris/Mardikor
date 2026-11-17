@@ -50,7 +50,6 @@ interface TreeItem {
   children?: TreeItem[];
 }
 interface TreeActions {
-  open: (item: TreeItem) => void;
   menu: (item: TreeItem, x: number, y: number) => void;
   busy: boolean;
   selection?: ReadonlyMap<string, { checked: boolean; mixed: boolean }>;
@@ -59,7 +58,6 @@ interface TreeActions {
   findPath?: string;
 }
 const Actions = createContext<TreeActions>({
-  open() {},
   menu() {},
   busy: false,
 });
@@ -94,7 +92,6 @@ function Row({ node, style, dragHandle }: NodeRendererProps<TreeItem>) {
           return;
         }
         node.handleClick(event);
-        if (!data.directory || data.entry) actions.open(data);
       }}
       onDoubleClick={() => {
         if (node.isInternal) node.toggle();
@@ -330,10 +327,6 @@ export function ProjectTree({
     findPath,
     selection,
     toggleSelection,
-    open: (item) => {
-      if (item.path)
-        onOpen(item.path, view === "outline" ? item.id : undefined);
-    },
     menu: (item, x, y) =>
       setMenu({
         item,
@@ -380,9 +373,10 @@ export function ProjectTree({
               onMove(dragIds[0], parentNode?.data.position ?? null, index);
           }}
           onActivate={(node) => {
+            if (busy) return;
             if (selection?.has(node.data.id)) toggleSelection(node.data);
             else if (node.data.path && !node.data.directory)
-              onOpen(node.data.path);
+              onOpen(node.data.path, view === "outline" ? node.id : undefined);
             else node.toggle();
           }}
         >

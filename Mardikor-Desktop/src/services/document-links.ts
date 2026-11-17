@@ -27,7 +27,7 @@ export function followPreviewLink(
   event: MouseEvent<HTMLElement>,
   source: string,
   standalone: boolean,
-  openFile: (path: string) => void,
+  openFile: (path: string, fragment?: string) => void,
   onError: (error: string) => void,
 ) {
   const anchor = (event.target as Element).closest<HTMLAnchorElement>("a");
@@ -50,8 +50,9 @@ export function followPreviewLink(
       .openMarkdownLink(href)
       .catch((error) => onError(String(error)));
   } else if (target.kind === "local") {
-    if (target.path === source && target.suffix.startsWith("#"))
-      scrollToFragment(root, target.suffix.slice(1));
-    else openFile(target.path);
+    const hash = target.suffix.indexOf("#");
+    const fragment = hash < 0 ? undefined : target.suffix.slice(hash + 1);
+    if (target.path === source && fragment) scrollToFragment(root, fragment);
+    else openFile(target.path, fragment);
   }
 }

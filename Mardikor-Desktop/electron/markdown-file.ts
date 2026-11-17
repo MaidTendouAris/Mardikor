@@ -74,14 +74,7 @@ export function resolveMarkdownLink(file: string, href: string) {
     throw new Error(t("此链接的文件类型不支持直接打开。"));
   return { path: actual, fragment };
 }
-function read(file: string) {
-  if (!isMarkdownFile(file))
-    throw new Error(t("单 Markdown 工程须使用 .md 扩展名。"));
-  const info = fs.lstatSync(file);
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1)
-    throw new Error(t("请选择普通 Markdown 文件，不支持链接文件。"));
-  if (info.size > limit) throw new Error(t("Markdown 文件超过 64 MiB。"));
-  const bytes = fs.readFileSync(file);
+export function decodeMarkdownSource(bytes: Buffer) {
   let content: string;
   let encoding: "UTF-8" | "GB18030" = "UTF-8";
   const invalidEncoding = t(
@@ -100,7 +93,17 @@ function read(file: string) {
     }
   }
   if (content.includes("\0")) throw new Error(invalidEncoding);
-  return { content, encoding, revision: digest(bytes) };
+  return { content, encoding };
+}
+function read(file: string) {
+  if (!isMarkdownFile(file))
+    throw new Error(t("单 Markdown 工程须使用 .md 扩展名。"));
+  const info = fs.lstatSync(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1)
+    throw new Error(t("请选择普通 Markdown 文件，不支持链接文件。"));
+  if (info.size > limit) throw new Error(t("Markdown 文件超过 64 MiB。"));
+  const bytes = fs.readFileSync(file);
+  return { ...decodeMarkdownSource(bytes), revision: digest(bytes) };
 }
 export function resolveLocalMarkdownPath(file: string, relative: string) {
   validatePath(relative);
