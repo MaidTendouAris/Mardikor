@@ -42,7 +42,7 @@ mdk.saveMdkTextFile(
   "markdown/001.md",
   "# 阅读测试\n\n" + sections.join("\n\n"),
 );
-add(book, "next", "2", "# 下一章\n\n[回到小节 40](001.md#小节-40)");
+add(book, "next", "2", "# 下一章\n\n[回到小节 40](001.md#h-小节-40)");
 mdk.createMdkProject(comic, "02");
 const image = mdk.importMdkResource(
   comic,
@@ -132,7 +132,7 @@ try {
   ).toBeVisible();
   await expect(
     generalPage.getByRole("tab", { name: "阅读", exact: true }),
-  ).toHaveCount(0);
+  ).toBeEnabled();
   await read(bookPage);
   const bookReader = reader(bookPage);
   const viewport = bookReader.locator(".reader-viewport");
