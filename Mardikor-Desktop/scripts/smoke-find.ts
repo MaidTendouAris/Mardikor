@@ -314,8 +314,18 @@ try {
   await tab(left, "预览").click();
   await button(left).click();
   await search(left, "层级命中", "0 / 4");
-  await renderedMatch(left, "层级命中".repeat(4), false);
+  await renderedMatch(left, "层级命中", false);
   await renderedMatch(left, "");
+  const preview = left.locator(".reading-preview article[data-source-path]");
+  await jumpNumber(left).fill("1");
+  await jumpNumber(left).press("Enter");
+  await expect(preview).toHaveCount(1);
+  await expect(preview).toHaveAttribute("data-source-path", first);
+  await renderedMatch(left, "层级命中");
+  await jumpNumber(left).fill("4");
+  await jumpNumber(left).press("Enter");
+  await expect(preview).toHaveAttribute("data-source-path", "markdown/other.md");
+  await renderedMatch(left, "层级命中");
   await close(left).click();
 
   await tab(left, "可视化").click();
