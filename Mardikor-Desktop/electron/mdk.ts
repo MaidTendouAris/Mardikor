@@ -25,7 +25,7 @@ import {
   MAX_FILE,
   MAX_TOTAL,
 } from "./archive";
-import { addedFile, archiveLimit, BUFFERED_ENTRY_LIMIT, exactSize, FileSnapshot, StoreArchive } from "./archive-io";
+import { addedFile, archiveLimit, BUFFERED_ENTRY_LIMIT, exactSize, FileSnapshot, FileSnapshotChangedError, StoreArchive } from "./archive-io";
 import { requireDiskSpace, writeStoreArchive } from "./archive-write";
 import { archiveCheckpoint } from "./archive-operation";
 import { relativeReference, resolveReference } from "../shared/references";
@@ -358,6 +358,7 @@ function coreTable(doc: Document, name: string) {
   try {
     return parseCoreSource(readText(doc, name));
   } catch (error) {
+    if (error instanceof FileSnapshotChangedError) throw error;
     throw new MdkValidationError(
       "core",
       "fail",
@@ -807,6 +808,36 @@ function removeStagedFile(temporary: string) {
   }
 }
 
+function replaceWithStagedFile(
+  temporary: string,
+  file: string,
+  expectedRevision?: string,
+) {
+  for (let delay = 8; ; delay *= 2) {
+    try {
+      fs.renameSync(temporary, file);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        delay > 64 ||
+        (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")
+      )
+        throw error;
+    }
+    // Windows can briefly deny replacement while a reader has the target open.
+    // Keep the write lock and check the revision before trying the same rename.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    if (
+      expectedRevision !== undefined &&
+      fileRevision(file) !== expectedRevision
+    )
+      throw new MdkRevisionError();
+    archiveCheckpoint(0, true);
+  }
+}
+
 export function publishVerifiedFile<T>(
   file: string,
   output: Buffer | ((fd: number, temporary: string) => void),
@@ -850,7 +881,7 @@ export function publishVerifiedFile<T>(
           const previous = fs.statSync(file, { throwIfNoEntry: false });
           if (previous) fs.chmodSync(temporary, previous.mode & 0o777);
         }
-        fs.renameSync(temporary, file);
+        replaceWithStagedFile(temporary, file, options.expectedRevision);
       }
     });
     return verified;

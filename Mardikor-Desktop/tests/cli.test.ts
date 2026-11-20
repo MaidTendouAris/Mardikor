@@ -237,21 +237,27 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   fs.unlinkSync(lock);
 
   const compete = (content: string) =>
-    new Promise<number | null>((resolve, reject) => {
+    new Promise<{ status: number | null; error: string }>((resolve, reject) => {
       const child = spawn(
         process.execPath,
         [cli, "write", file, first, "--if-revision", batch.revision],
         {
-          stdio: ["pipe", "ignore", "ignore"],
+          stdio: ["pipe", "ignore", "pipe"],
         },
       );
+      let error = "";
+      child.stderr.setEncoding("utf8").on("data", (text) => {
+        error += text;
+      });
       child.once("error", reject);
-      child.once("close", resolve);
+      child.once("close", (status) => resolve({ status, error }));
       child.stdin.end(content);
     });
+  const competingWrites = await Promise.all([compete("甲"), compete("乙")]);
   assert.deepEqual(
-    (await Promise.all([compete("甲"), compete("乙")])).sort(),
+    competingWrites.map(({ status }) => status).sort(),
     [0, 3],
+    competingWrites.map(({ error }) => error).join("\n"),
   );
   assert.match(run(["read", file, first]).stdout, /^[甲乙]$/);
   assert.equal(fs.existsSync(lock), false);

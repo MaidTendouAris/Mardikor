@@ -14,6 +14,7 @@ import {
 } from "../electron/envelope-operations";
 import { MAX_OUTLINE_DEPTH, modeName } from "../shared/mdk-v2";
 import { MAX_ENTRIES, MAX_FILE } from "../electron/archive";
+import { FileSnapshotChangedError } from "../electron/archive-io";
 import { watchProjectFile } from "../electron/project-watch";
 import { comparePosition } from "../shared/outline";
 import { moveOutline } from "../shared/tree";
@@ -363,6 +364,7 @@ function readPassphrase(file: string | undefined) {
 
 async function run(args: string[]) {
   let access: AccessSession | undefined;
+  let revisionSource: string | undefined;
   let json = args
     .slice(0, args.includes("--") ? args.indexOf("--") : args.length)
     .includes("--json");
@@ -473,6 +475,7 @@ async function run(args: string[]) {
       throw new UsageError(
         "请通过 --if-revision 提供 list 或 read 返回的修订号。",
       );
+    if (revision || command === "edit") revisionSource = path.resolve(file);
 
     const passphraseFiles = [
       values["access-passphrase-file"],
@@ -780,7 +783,14 @@ async function run(args: string[]) {
       }
       return 0;
     });
-  } catch (error) {
+  } catch (failure) {
+    // A concurrent replacement can invalidate a streamed archive before the
+    // write reaches the final revision comparison under the lock.
+    const error =
+      failure instanceof FileSnapshotChangedError &&
+      path.resolve(failure.file) === revisionSource
+        ? new mdk.MdkRevisionError()
+        : failure;
     const conflict =
       error instanceof mdk.MdkRevisionError ||
       error instanceof mdk.MdkLockedError;

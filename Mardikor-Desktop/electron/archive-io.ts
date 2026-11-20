@@ -53,8 +53,10 @@ function fingerprint(info: fs.BigIntStats) {
   return `${identity(info)}:${info.ctimeNs}`;
 }
 
-function changed(file: string): never {
-  throw new Error(t("读取期间文件发生变化：{0}", file));
+export class FileSnapshotChangedError extends Error {
+  constructor(readonly file: string) {
+    super(t("读取期间文件发生变化：{0}", file));
+  }
 }
 
 export class FileSnapshot {
@@ -86,7 +88,7 @@ export class FileSnapshot {
     const info = fs.fstatSync(fd, { bigint: true });
     const key =
       process.platform === "win32" ? identity(info) : fingerprint(info);
-    if (key !== this.dataKey) changed(this.path);
+    if (key !== this.dataKey) throw new FileSnapshotChangedError(this.path);
   }
   withFile<T>(work: (fd: number) => T) {
     const fd = this.open();
