@@ -19,9 +19,15 @@ new AppState(userData).preferences({
   directorySyncThreshold: 200,
 });
 const file = path.join(root, `tools-${Date.now()}.mdk`),
-  image = path.join(root, "测试图片.png");
+  image = path.join(root, "测试图片.png"),
+  audio = path.join(root, "测试声轨 100%#1.m4a");
 await fs.copyFile(path.resolve("assets/icon.png"), image);
+await fs.writeFile(
+  audio,
+  Buffer.from("000000186674797069736f6d00000000", "hex"),
+);
 mdk.createMdkProject(file, "00");
+const importedAudio = mdk.importMdkResource(file, audio, "audio").path;
 mdk.saveMdkTextFile(
   file,
   "markdown/001.md",
@@ -140,6 +146,32 @@ try {
     /resources\/image\//,
   );
   await imageDialog.getByRole("button", { name: "确定", exact: true }).click();
+  const beforeReference = await fs.readFile(file);
+  await page.locator(".document-body").press("Control+End");
+  await ribbon
+    .getByRole("button", { name: "插入包内资源", exact: true })
+    .click();
+  const assetDialog = page.getByRole("dialog", {
+    name: "插入包内资源",
+    exact: true,
+  });
+  await assetDialog
+    .getByRole("searchbox", { name: "搜索包内资源" })
+    .fill("声轨");
+  await selectOption(
+    page,
+    assetDialog.getByRole("combobox", { name: "包内资源" }),
+    importedAudio,
+  );
+  await assetDialog.getByLabel("链接文字").fill("录音说明");
+  await assetDialog.getByRole("button", { name: "插入", exact: true }).click();
+  await expect(
+    page.locator(".document-body").getByRole("link", { name: "录音说明" }),
+  ).toHaveAttribute(
+    "href",
+    `../resources/audio/${encodeURIComponent(path.basename(audio))}`,
+  );
+  expect(await fs.readFile(file)).toEqual(beforeReference);
   await page.locator(".document-body").press("Control+End");
   await ribbon.getByRole("button", { name: "插入表格", exact: true }).click();
   const tableDialog = page.getByRole("dialog", {

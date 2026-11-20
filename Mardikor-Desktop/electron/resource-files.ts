@@ -7,12 +7,24 @@ import {
   isFixedResourceFolder,
   isResourcePath,
   resourceCategories,
+  resourceRoot,
 } from "../shared/resources";
 import { MAX_ENTRIES } from "./archive";
-import { addedFile, archiveLimit, exactSize, type StoreArchive, type StoreEntry } from "./archive-io";
+import {
+  addedFile,
+  archiveLimit,
+  exactSize,
+  type StoreArchive,
+  type StoreEntry,
+} from "./archive-io";
 import { requireDiskSpace } from "./archive-write";
 import { MAX_OUTLINE_DEPTH } from "../shared/mdk-v2";
 import { archiveCheckpoint } from "./archive-operation";
+import { classifyResource } from "./media";
+
+type ImportItem = { name: string } & (
+  { entry: StoreEntry } | { children: ImportItem[] }
+);
 
 const nameKey = (name: string) => name.normalize("NFC").toLowerCase();
 
@@ -93,46 +105,95 @@ export function importResourceFiles(
   if (!paths.length || paths.length > MAX_ENTRIES)
     throw new Error(t("请选择要导入的资源。"));
   const names = resourceNameIndex(zip);
-  checkDirectorySpelling(names, parent);
-  const existing = zip.getEntries();
-  let count = existing.length;
-  function add(source: string, destination: string, info: fs.Stats, depth = 1) {
-    if (++count > MAX_ENTRIES)
-      archiveLimit(t("写入 ZIP 索引（条目数）"), destination, count, MAX_ENTRIES, t("条目"));
-    if (depth > MAX_OUTLINE_DEPTH) throw new Error(t("目录超过实现支持的 128 层。"));
-    if (!info.isDirectory() && !info.isFile())
+  const existing = zip.getEntries().length;
+  const automatic = parent === resourceRoot;
+  const checkedFolders = new Set<string>();
+  let count = existing;
+  let scanned = existing;
+  function inspect(source: string, depth = 1): [string, ImportItem][] {
+    archiveCheckpoint();
+    if (++scanned > MAX_ENTRIES)
+      archiveLimit(
+        t("写入 ZIP 索引（条目数）"),
+        source,
+        scanned,
+        MAX_ENTRIES,
+        t("条目"),
+      );
+    if (depth > MAX_OUTLINE_DEPTH)
+      throw new Error(t("目录超过实现支持的 128 层。"));
+    const info = fs.lstatSync(source);
+    const name = path.basename(source).normalize("NFC");
+    resourceName(name);
+    if (info.isFile()) {
+      const entry = addedFile(name, source);
+      const destination = automatic
+        ? `${resourceRoot}/${classifyResource(entry)}`
+        : parent;
+      return [[destination, { name, entry }]];
+    }
+    if (!info.isDirectory())
       throw new Error(t("资源导入仅支持普通文件和目录。"));
+    const groups = new Map<string, ImportItem[]>();
+    for (const child of fs.readdirSync(source)) {
+      for (const [destination, item] of inspect(
+        path.join(source, child),
+        depth + 1,
+      )) {
+        const items = groups.get(destination);
+        if (items) items.push(item);
+        else groups.set(destination, [item]);
+      }
+    }
+    if (!groups.size)
+      groups.set(automatic ? `${resourceRoot}/other` : parent, []);
+    return [...groups].map(([destination, children]) => [
+      destination,
+      { name, children },
+    ]);
+  }
+  function add(item: ImportItem, destination: string) {
+    if (++count > MAX_ENTRIES)
+      archiveLimit(
+        t("写入 ZIP 索引（条目数）"),
+        destination,
+        count,
+        MAX_ENTRIES,
+        t("条目"),
+      );
     const key = nameKey(destination);
     if (names.has(key))
       throw new Error(t("目标路径已存在。") + " " + destination);
     names.set(key, destination);
-    if (info.isDirectory()) {
+    if ("children" in item) {
       zip.add(destination + "/", Buffer.alloc(0));
-      for (const item of fs.readdirSync(source)) {
-        const name = item.normalize("NFC");
-        resourceName(name);
-        const input = path.join(source, item);
-        add(input, destination + "/" + name, fs.lstatSync(input), depth + 1);
-      }
-      return;
-    }
-    zip.set(addedFile(destination, source));
+      for (const child of item.children)
+        add(child, `${destination}/${child.name}`);
+    } else zip.set(item.entry.renamed(destination));
   }
   for (const source of paths) {
-    const info = fs.lstatSync(source);
-    const basename = path.basename(source).normalize("NFC");
-    resourceName(basename);
-    const extension = info.isDirectory() ? "" : path.extname(basename);
-    const stem = basename.slice(0, basename.length - extension.length);
-    let name = parent + "/" + basename;
-    for (let suffix = 2; names.has(nameKey(name)); suffix++)
-      name = parent + "/" + stem + "-" + suffix + extension;
-    add(source, name, info);
+    for (const [folder, item] of inspect(source)) {
+      if (!checkedFolders.has(folder)) {
+        requireResourceFolder(zip, folder);
+        checkDirectorySpelling(names, folder);
+        checkedFolders.add(folder);
+      }
+      const extension = "children" in item ? "" : path.extname(item.name);
+      const stem = item.name.slice(0, item.name.length - extension.length);
+      let name = `${folder}/${item.name}`;
+      for (let suffix = 2; names.has(nameKey(name)); suffix++)
+        name = `${folder}/${stem}-${suffix}${extension}`;
+      add(item, name);
+    }
   }
-  return count - existing.length;
+  return count - existing;
 }
 
-export function selectResourceEntries(zip: StoreArchive, paths: string[], resourcesOnly = true) {
+export function selectResourceEntries(
+  zip: StoreArchive,
+  paths: string[],
+  resourcesOnly = true,
+) {
   if (!Array.isArray(paths) || !paths.length || paths.length > MAX_ENTRIES)
     throw new Error(t("请选择要提取的资源。"));
   const entries = zip.getEntries();
@@ -149,14 +210,18 @@ export function selectResourceEntries(zip: StoreArchive, paths: string[], resour
       selected.add(entry);
     else {
       if (resourcesOnly) requireResourceFolder(zip, name);
-      else if (!entry?.isDirectory && !entries.some((item) => item.entryName.startsWith(name + "/")))
+      else if (
+        !entry?.isDirectory &&
+        !entries.some((item) => item.entryName.startsWith(name + "/"))
+      )
         throw new Error(t("文件或目录不存在。"));
       folders.add(name);
     }
   }
   for (const entry of entries) {
     const parts = entry.entryName.replace(/\/$/, "").split("/");
-    if (resourcesOnly && (parts[0] !== "resources" || parts.length < 2)) continue;
+    if (resourcesOnly && (parts[0] !== "resources" || parts.length < 2))
+      continue;
     if (parts.some((_, i) => folders.has(parts.slice(0, i + 1).join("/"))))
       selected.add(entry);
   }
@@ -208,7 +273,10 @@ export function extractResourceEntries(
   }
   const names = new Map<string, string>();
   for (const entry of entries) {
-    const parts = entry.entryName.replace(/\/$/, "").split("/").slice(resourcesOnly ? 1 : 0);
+    const parts = entry.entryName
+      .replace(/\/$/, "")
+      .split("/")
+      .slice(resourcesOnly ? 1 : 0);
     let prefix = "";
     for (const part of parts) {
       resourceName(part);
@@ -220,12 +288,26 @@ export function extractResourceEntries(
     }
   }
   const parent = fs.realpathSync(destination);
-  requireDiskSpace(path.join(parent, "output"), exactSize(entries.reduce((total, entry) => total + BigInt(entry.header.size), 0n)), t("提取原文件"));
-  const output = fs.mkdtempSync(path.join(parent, resourcesOnly ? "Mardikor-resources-" : "Mardikor-files-"));
+  requireDiskSpace(
+    path.join(parent, "output"),
+    exactSize(
+      entries.reduce((total, entry) => total + BigInt(entry.header.size), 0n),
+    ),
+    t("提取原文件"),
+  );
+  const output = fs.mkdtempSync(
+    path.join(
+      parent,
+      resourcesOnly ? "Mardikor-resources-" : "Mardikor-files-",
+    ),
+  );
   let count = 0;
   try {
     for (const entry of entries) {
-      const parts = entry.entryName.replace(/\/$/, "").split("/").slice(resourcesOnly ? 1 : 0);
+      const parts = entry.entryName
+        .replace(/\/$/, "")
+        .split("/")
+        .slice(resourcesOnly ? 1 : 0);
       let directory = output;
       for (const part of parts.slice(
         0,

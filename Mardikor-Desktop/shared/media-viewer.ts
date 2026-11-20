@@ -1,10 +1,20 @@
 import type { AppTheme } from "./desktop";
 import type { AppLocale } from "./i18n";
-import { insertionFormats } from "./resources";
+import { insertionFormat } from "./resources";
 
 export type PreviewMediaKind = "image" | "video" | "audio";
+export type PlaybackKind = Exclude<PreviewMediaKind, "image">;
+export const defaultMediaVolume = 0.3;
 export type AttachmentViewerKind = PreviewMediaKind | "attachment";
 export type MediaWindowAction = "minimize" | "maximize" | "close";
+
+export function formatPlaybackTime(seconds: number) {
+  const whole = Math.floor(seconds);
+  const minutes = Math.floor(whole / 60);
+  const rest = String(whole % 60).padStart(2, "0");
+  if (minutes < 60) return `${minutes}:${rest}`;
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${rest}`;
+}
 
 // These are candidates for the native decoder, not a list of supported codecs.
 const additionalFormats: Record<string, string> = {
@@ -14,17 +24,12 @@ const additionalFormats: Record<string, string> = {
   heic: "image/heic",
   heif: "image/heif",
   jxl: "image/jxl",
-  mov: "video/quicktime",
-  m4v: "video/mp4",
   mkv: "video/x-matroska",
   avi: "video/x-msvideo",
   mpeg: "video/mpeg",
   mpg: "video/mpeg",
-  ogv: "video/ogg",
   wmv: "video/x-ms-wmv",
   "3gp": "video/3gpp",
-  opus: "audio/ogg",
-  oga: "audio/ogg",
   aiff: "audio/aiff",
   aif: "audio/aiff",
   wma: "audio/x-ms-wma",
@@ -42,11 +47,12 @@ export function previewMediaKind(
 
 export function previewMediaMime(path: string) {
   const extension = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
-  return Object.hasOwn(insertionFormats, extension)
-    ? insertionFormats[extension].mime
-    : Object.hasOwn(additionalFormats, extension)
+  return (
+    insertionFormat(path)?.mime ??
+    (Object.hasOwn(additionalFormats, extension)
       ? additionalFormats[extension]
-      : undefined;
+      : undefined)
+  );
 }
 
 export interface MediaViewerInfo {

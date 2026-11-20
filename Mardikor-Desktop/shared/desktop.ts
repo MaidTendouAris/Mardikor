@@ -15,7 +15,7 @@ import type {
   ResourceInsertion,
   ResourceInsertionResult,
 } from "./mdk";
-import type { NativeDocumentDrop } from "./resources";
+import type { NativeDocumentDrag, NativeDocumentDrop } from "./resources";
 import type {
   PublicationConfiguration,
   PublicationFormat,
@@ -223,6 +223,8 @@ export interface DesktopApi {
   openExternal(url: string): Promise<void>;
   openMarkdownLink(href: string): Promise<void>;
   openMedia(project: string, path: string, kind: import("./media-viewer").AttachmentViewerKind): Promise<void>;
+  preparePlayback(project: string, path: string, kind: import("./media-viewer").PlaybackKind): Promise<string>;
+  releasePlayback(url: string): Promise<void>;
   revealFile(path: string): Promise<void>;
   renameArchive(name: string, revision: string, mode: string): Promise<string>;
   recovery(
@@ -230,6 +232,7 @@ export interface DesktopApi {
     value?: SaveSnapshot | null,
   ): Promise<SaveSnapshot | null>;
   onDocumentDrop(callback: (drop: NativeDocumentDrop) => void): () => void;
+  onDocumentDrag(callback: (point: NativeDocumentDrag | null) => void): () => void;
   onProjectChanged(
     callback: (file: string, revision: string | null) => void,
   ): () => void;

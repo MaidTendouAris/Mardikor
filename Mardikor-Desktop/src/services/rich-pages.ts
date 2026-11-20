@@ -24,9 +24,12 @@ function parsePage(editor: Editor, text: string) {
     : Fragment.empty;
 }
 
-function mapStarts(starts: PageStart[], transaction: Transaction) {
+function mapStarts(starts: PageStart[], transaction: Transaction, includeAtStart?: number) {
   return starts.map((page, index) => {
-    const mapped = index === 0 ? 0 : transaction.mapping.map(page.pos, 1);
+    const mapped = index === 0 ? 0 : transaction.mapping.map(
+      page.pos,
+      page.pos === includeAtStart ? -1 : 1,
+    );
     const position = transaction.doc.resolve(mapped);
     // If an edit joins blocks across a boundary, keep the whole joined block.
     return { ...page, pos: position.depth ? position.after(1) : mapped };
@@ -185,12 +188,12 @@ export function richPageChanges(
   );
 }
 
-export function richPageDraft(editor: Editor, transaction: Transaction) {
+export function richPageDraft(editor: Editor, transaction: Transaction, includeAtStart?: number) {
   return richPageChanges(
     editor,
     editor.state,
     transaction.doc,
-    mapStarts(pageKey.getState(editor.state) ?? [], transaction),
+    mapStarts(pageKey.getState(editor.state) ?? [], transaction, includeAtStart),
   );
 }
 

@@ -21,6 +21,7 @@ export function editorMediaTarget(
   const link = element.closest<HTMLAnchorElement>("a");
   const reference =
     image?.dataset.mdkRef ??
+    element.closest<HTMLElement>("[data-mdk-media-ref]")?.dataset.mdkMediaRef ??
     link?.dataset.mdkLink ??
     link?.getAttribute("href");
   if (!reference) return;
@@ -38,4 +39,10 @@ export function viewMediaLabel(kind: AttachmentViewerKind) {
   if (kind === "image") return t("查看图片");
   if (kind === "video") return t("查看视频");
   return kind === "audio" ? t("播放音频") : t("查看附件");
+}
+
+export function previewMediaLabel(kind: AttachmentViewerKind) {
+  return kind === "audio" || kind === "video"
+    ? t("打开新窗口播放")
+    : viewMediaLabel(kind);
 }

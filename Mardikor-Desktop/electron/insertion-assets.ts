@@ -1,8 +1,12 @@
 import { t } from "../shared/i18n";
 import fs from "node:fs";
 import path from "node:path";
-import { insertionFormats } from "../shared/resources";
-import { checkMedia, detectMediaType, assertPassiveSvg } from "./media";
+import { insertionFormat } from "../shared/resources";
+import {
+  classifyResource,
+  mediaContainerType,
+  assertPassiveSvg,
+} from "./media";
 import { addedFile, StoreEntry } from "./archive-io";
 import { resourceName } from "./resource-files";
 
@@ -12,16 +16,15 @@ export function inspectMdkInsertionAssets(sources: InsertionSource[]) {
   if (!Array.isArray(sources) || !sources.length || sources.length > 16)
     throw new Error(t("一次最多插入 16 个文件。"));
   return sources.map((source) => {
-    const name = path.basename(typeof source === "string" ? source : source.name).normalize("NFC");
+    const name = path
+      .basename(typeof source === "string" ? source : source.name)
+      .normalize("NFC");
     resourceName(name);
-    const entry = typeof source === "string" ? addedFile(name, source) : new StoreEntry(name, source.bytes);
-    const type = detectMediaType(entry.prefix());
-    let kind = type?.split("/", 1)[0];
-    if (type === "image/svg+xml") {
-      try { assertPassiveSvg(entry.getData()); }
-      catch { kind = "other"; }
-    }
-    return { name, entry, kind: kind === "image" || kind === "video" || kind === "audio" || kind === "font" ? kind : "other" } as const;
+    const entry =
+      typeof source === "string"
+        ? addedFile(name, source)
+        : new StoreEntry(name, source.bytes);
+    return { name, entry, kind: classifyResource(entry) };
   });
 }
 
@@ -33,11 +36,8 @@ export function loadInsertionAssets(sources: InsertionSource[]) {
     const name = path.basename(
         typeof source === "string" ? source : source.name,
       ),
-      extension = path.extname(name).slice(1).toLowerCase(),
-      format = Object.hasOwn(insertionFormats, extension)
-        ? insertionFormats[extension]
-        : undefined;
-    if (!format)
+      format = insertionFormat(name);
+    if (!format || format.kind === "font")
       throw new Error(
         t("不支持插入此类型：") + name + t("。支持图片、音视频和 PDF。"),
       );
@@ -48,12 +48,7 @@ export function loadInsertionAssets(sources: InsertionSource[]) {
       throw new Error(t("一次拖入的文件总量不能超过 64 MiB。"));
     const bytes =
       typeof source === "string" ? fs.readFileSync(source) : source.bytes;
-    checkMedia(name, bytes);
-    const mime =
-      format.mime === "application/pdf" &&
-      bytes.subarray(0, 5).toString() === "%PDF-"
-        ? "application/pdf"
-        : detectMediaType(bytes);
+    const mime = mediaContainerType(bytes, format.mime);
     if (mime !== format.mime)
       throw new Error(t("文件内容与受支持格式不符：") + name);
     if (mime === "image/svg+xml") assertPassiveSvg(bytes);

@@ -2,9 +2,42 @@ import { setAppLocale, t, type AppLocale } from "../shared/i18n";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopApi } from "../shared/desktop";
 
-import type { NativeDocumentDrop } from "../shared/resources";
+import type { NativeDocumentDrag, NativeDocumentDrop } from "../shared/resources";
 
 const dropListeners = new Set<(drop: NativeDocumentDrop) => void>();
+const dragListeners = new Set<(point: NativeDocumentDrag | null) => void>();
+let dragPoint: NativeDocumentDrag | null = null;
+let dragFrame = 0;
+function reportDrag(point: NativeDocumentDrag | null) {
+  dragPoint = point;
+  if (!point) {
+    if (dragFrame) cancelAnimationFrame(dragFrame);
+    dragFrame = 0;
+    for (const listener of dragListeners) listener(null);
+    return;
+  }
+  if (dragFrame) return;
+  dragFrame = requestAnimationFrame(() => {
+    dragFrame = 0;
+    for (const listener of dragListeners) listener(dragPoint);
+  });
+}
+function dropZone(target: EventTarget | null) {
+  return target instanceof Element
+    ? target.closest<HTMLElement>("[data-document-drop-zone]")
+    : null;
+}
+function documentPoint(event: DragEvent, zone: HTMLElement | null): NativeDocumentDrag {
+  const mode = zone?.dataset.documentDropZone;
+  return {
+    x: event.clientX,
+    y: event.clientY,
+    target: mode === "source" || mode === "write" ? mode : "",
+    document: zone?.dataset.documentPath,
+    group: zone?.closest<HTMLElement>("[data-editor-group]")?.dataset.editorGroup,
+  };
+}
+
 function isFileDrag(event: DragEvent) {
   return (
     event.dataTransfer?.types.includes("Files") ||
@@ -12,42 +45,35 @@ function isFileDrag(event: DragEvent) {
   );
 }
 function fileDrag(event: DragEvent) {
-  if (!isFileDrag(event)) return;
+  if (!isFileDrag(event) && !(event.type === "dragleave" && dragPoint)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
+  const zone = dropZone(event.target);
+  if (event.type === "dragleave") {
+    if (!zone || zone !== dropZone(event.relatedTarget)) reportDrag(null);
+    return;
+  }
   if (event.dataTransfer)
-    event.dataTransfer.dropEffect =
-      event.target instanceof Element &&
-      event.target.closest("[data-document-drop-zone]")
-        ? "copy"
-        : "none";
+    event.dataTransfer.dropEffect = zone ? "copy" : "none";
+  const point = documentPoint(event, zone);
+  reportDrag(point.target === "write" ? point : null);
 }
 function fileDrop(event: DragEvent) {
   if (!isFileDrag(event)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
+  reportDrag(null);
   const listeners = [...dropListeners];
   const files = Array.from(event.dataTransfer?.files ?? []);
-  const element =
-    event.target instanceof Element
-      ? event.target.closest<HTMLElement>("[data-document-drop-zone]")
-      : null;
-  const target = element?.dataset.documentDropZone as
-    "source" | "write" | undefined;
   const point = {
-    x: event.clientX,
-    y: event.clientY,
-    target: target ?? ("" as const),
-    document: element?.dataset.documentPath,
-    group: element?.closest<HTMLElement>("[data-editor-group]")?.dataset
-      .editorGroup,
+    ...documentPoint(event, dropZone(event.target)),
     names: files.map((file) => file.name),
   };
   const emit = (drop: NativeDocumentDrop) => {
     for (const listener of listeners)
       if (dropListeners.has(listener)) listener(drop);
   };
-  if (!target) {
+  if (!point.target) {
     emit({
       ...point,
       error: t("请将受支持的文件拖入可编辑的 Markdown 正文。"),
@@ -73,6 +99,8 @@ function fileDrop(event: DragEvent) {
 for (const type of ["dragenter", "dragover", "dragleave"])
   window.addEventListener(type, fileDrag as EventListener, true);
 window.addEventListener("drop", fileDrop, true);
+window.addEventListener("blur", () => reportDrag(null));
+window.addEventListener("dragend", () => reportDrag(null), true);
 
 const api: DesktopApi = {
   inspectEnvelope: (file) => ipcRenderer.invoke("app:inspect-envelope", file),
@@ -116,6 +144,10 @@ const api: DesktopApi = {
     return () => {
       dropListeners.delete(callback);
     };
+  },
+  onDocumentDrag: (callback) => {
+    dragListeners.add(callback);
+    return () => { dragListeners.delete(callback); };
   },
   onProjectChanged: (callback) => {
     const listener = (
@@ -175,6 +207,9 @@ const api: DesktopApi = {
     ipcRenderer.invoke("app:open-markdown-link", href),
   openMedia: (project, path, kind) =>
     ipcRenderer.invoke("app:open-media", project, path, kind),
+  preparePlayback: (project, path, kind) =>
+    ipcRenderer.invoke("app:prepare-playback", project, path, kind),
+  releasePlayback: (url) => ipcRenderer.invoke("app:release-playback", url),
   revealFile: (path) => ipcRenderer.invoke("app:reveal-file", path),
   onWindowMaximized: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, maximized: boolean) =>

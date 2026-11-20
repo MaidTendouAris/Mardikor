@@ -13,6 +13,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   BookOpen,
   Braces,
@@ -42,7 +43,7 @@ import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
 import { desktop, desktopErrorMessage } from "../services/desktop";
 import {
   editorMediaTarget,
-  viewMediaLabel,
+  previewMediaLabel,
   type EditorMediaTarget,
 } from "../services/editor-media";
 import { previewMediaKind, previewMediaMime } from "../../shared/media-viewer";
@@ -88,7 +89,8 @@ import {
   richPageTextPosition,
   type RichPageChange,
 } from "../services/rich-pages";
-import { richDropTransaction } from "../services/rich-markdown";
+import { richDropTransaction, richFileDropPosition } from "../services/rich-markdown";
+import { usePreviewPlayback } from "./usePreviewPlayback";
 import { markdownTask } from "../services/markdown-tasks";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
 import {
@@ -251,6 +253,31 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     }, [selectedTab, tab]);
     const [splitPreview, setSplitPreview] = useState(false);
     const [richEditor, setRichEditorInstance] = useState<Editor | null>(null);
+    const [dropLine, setDropLine] = useState<ReturnType<typeof richFileDropPosition>>();
+    useEffect(() => {
+      setDropLine(undefined);
+      if (tab !== "write" || !richEditor || busy) return;
+      return window.mardikor?.onDocumentDrag((point) => {
+        if (point?.target !== "write" || point.group !== group.id ||
+            point.document !== activePath) {
+          setDropLine(undefined);
+          return;
+        }
+        const position = richFileDropPosition(richEditor, point.x, point.y);
+        const viewport = richEditor.view.dom.closest(".paged-preview-viewport,.document-canvas")
+          ?.getBoundingClientRect();
+        if (!position || !viewport) {
+          setDropLine(undefined);
+          return;
+        }
+        const left = Math.max(viewport.left, position.left);
+        const right = Math.min(viewport.right, position.left + position.width);
+        setDropLine({
+          ...position, left, width: Math.max(0, right - left),
+          top: Math.max(viewport.top + 3, Math.min(viewport.bottom - 3, position.top)),
+        });
+      });
+    }, [tab, richEditor, busy, group.id, activePath]);
     const setRichEditor = useCallback(
       (editor: Editor | null) => setRichEditorInstance(editor),
       [],
@@ -417,12 +444,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       [project?.contents.entries],
     );
     const activeFile = project?.files.find((f) => f.path === activePath);
+    const pathMediaKind = previewMediaKind(previewMediaMime(activePath));
     const [resource, setResource] = useState<{ file: string; path: string; data: string }>();
     const resourceData = resource?.file === file && resource.path === activePath ? resource.data : "";
     useEffect(() => {
       let live = true;
       setResource(undefined);
-      if (fileKind === "media") {
+      if (fileKind === "media" && pathMediaKind !== "audio" && pathMediaKind !== "video") {
         void desktop()
           .invoke("readResource", file, activePath)
           .then((data) => {
@@ -435,7 +463,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       return () => {
         live = false;
       };
-    }, [file, activePath, fileKind]);
+    }, [file, activePath, fileKind, pathMediaKind]);
     const resolveResource = useCallback(
       async (source: string) => {
         const target = resolveReference(activePath, source, true);
@@ -460,7 +488,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     }, []);
     useEffect(closePreviewMenu, [file, activePath, tab, closePreviewMenu]);
     const currentMediaKind = fileKind === "media"
-      ? previewMediaKind(previewMediaMime(activePath)) ??
+      ? pathMediaKind ??
         previewMediaKind(resourceData.match(/^data:([^;]+)/)?.[1])
       : undefined;
     const currentMedia: EditorMediaTarget | undefined = fileKind === "media" && (currentMediaKind || !standalone)
@@ -487,7 +515,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       }
     }
     function showPreviewMenu(element: Element, x: number, y: number, keyboard = false) {
-      if (element.closest("button,input,select,textarea,[contenteditable='true']"))
+      if (element.closest("button,input,select,textarea,[contenteditable='true']") &&
+          !element.closest(".preview-player"))
         return false;
       const resource = element.closest(".resource-preview");
       const preview = !resource && (
@@ -506,7 +535,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         if (currentMedia)
           items.push({
             id: "view-media",
-            label: viewMediaLabel(currentMedia.kind),
+            label: previewMediaLabel(currentMedia.kind),
             run: () => void viewMedia(currentMedia),
           });
         items.push({
@@ -522,7 +551,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         const href = anchor?.dataset.mdkLink ?? anchor?.getAttribute("href");
         if (media) {
           items.push(
-            { id: "view-media", label: viewMediaLabel(media.kind), run: () => void viewMedia(media) },
+            { id: "view-media", label: previewMediaLabel(media.kind), run: () => void viewMedia(media) },
             {
               id: "copy-reference",
               label: media.inlineImage ? t("复制图片地址") : t("复制链接地址"),
@@ -878,6 +907,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       () => ({ __html: previewHtml }),
       [previewHtml],
     );
+    const inlinePlayback = usePreviewPlayback(
+      previewRef,
+      (tab === "source" && splitPreview) || (tab === "write" && unsupported) ? file : undefined,
+      activePath,
+      previewHtml,
+    );
     useMappedFind(
       richBody,
       paged ? windowText : markdown,
@@ -1106,13 +1141,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         },
         dropDraft(x, y, marker) {
           if (tab === "write" && richEditor && editWindow && layout) {
-            const transaction = richDropTransaction(richEditor, x, y, marker);
+            const position = x >= 0 && y >= 0 ? richFileDropPosition(richEditor, x, y) : undefined;
+            const transaction = richDropTransaction(richEditor, x, y, marker, position);
             return {
               marker,
               content: replacePages(
                 markdown,
                 layout,
-                richPageDraft(richEditor, transaction),
+                richPageDraft(richEditor, transaction, position?.before ? position.pos : undefined),
               ).content,
             };
           }
@@ -1293,6 +1329,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           followViewport(node);
         }}
       >
+        {dropLine && createPortal(
+          <div
+            className="resource-drop-line"
+            style={{ top: dropLine.top, left: dropLine.left, width: dropLine.width }}
+            aria-hidden="true"
+          >
+            <span>{t("在此插入资源")}</span>
+          </div>,
+          document.body,
+        )}
         {previewMenu && (
           <EditorMenu
             x={previewMenu.x}
@@ -1488,6 +1534,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         {tab === "write" && richEditor && !unsupported && (
           <RichToolbar
             editor={richEditor}
+            packaged={!standalone}
             shortcutOverrides={shortcutOverrides}
             disabled={busy || !!project?.readonly}
             sourceEditable={!busy && !project?.readonly}
@@ -1713,6 +1760,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               ref={pagedPreview}
               className={tab === "source" ? "inline-preview paged-inline" : ""}
               args={previewArgs}
+              playbackFile={tab === "write" ? undefined : file}
               findHit={find.hit?.path === activePath ? find.hit : undefined}
               findMatches={documentMatches}
               onFindPage={
@@ -1753,11 +1801,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             activeFile &&
             project ? (
             <MediaPreview
+              file={file}
               current={activeFile}
               data={resourceData}
               files={project.files}
               view={currentMedia && {
-                label: viewMediaLabel(currentMedia.kind),
+                label: previewMediaLabel(currentMedia.kind),
                 open: () => void viewMedia(currentMedia),
               }}
               onSelect={(path) => void openFile(path)}
@@ -1786,6 +1835,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             />
           ) : buffer ? (
             <>
+              {inlinePlayback}
               {tab === "write" && (
                 <div className="paper-wrapper">
                   {unsupported ? (

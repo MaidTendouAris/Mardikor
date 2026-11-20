@@ -4,6 +4,18 @@ export type ReferenceTarget =
   | { kind: "local"; path: string; suffix: string }
   | { kind: "external"; url: string; media: boolean }
   | { kind: "unsafe"; message: string };
+
+export function relativeReference(source: string, target: string) {
+  const parent = source.split("/").slice(0, -1);
+  const parts = target.split("/");
+  let common = 0;
+  while (common < parent.length && parent[common] === parts[common]) common++;
+  return (
+    "../".repeat(parent.length - common) +
+    parts.slice(common).map(encodeURIComponent).join("/")
+  );
+}
+
 export function resolveReference(
   source: string,
   url: string,

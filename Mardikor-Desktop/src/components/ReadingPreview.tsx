@@ -16,6 +16,7 @@ import type { FindMatches, SearchHit } from "../services/document-find";
 import { findLocations, projectFindHit } from "../services/find-mapping";
 import { mayContainMath, renderPreview } from "../services/preview";
 import { usePreviewMath } from "../services/preview-math";
+import { usePreviewPlayback } from "./usePreviewPlayback";
 import {
   revealFindRect,
   useMappedFind,
@@ -94,6 +95,7 @@ export function ReadingPreview({
     ],
   );
   const markup = useMemo(() => ({ __html: html }), [html]);
+  const playback = usePreviewPlayback(content, file, path, html);
   const location = useMemo(
     () =>
       findHit && findHit.path === path
@@ -244,6 +246,7 @@ export function ReadingPreview({
               </header>
             )}
             <div key={path} ref={content} dangerouslySetInnerHTML={markup} />
+            {playback}
           </article>
         </div>
       ) : (

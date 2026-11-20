@@ -11,6 +11,8 @@ const run = await fs.mkdtemp(path.join(root, "run-"));
 const profile = path.join(run, "profile");
 const file = path.join(run, "resources.mdk");
 const files = [path.join(run, "first.txt"), path.join(run, "second.txt")];
+const audio = path.join(run, "录音.wav");
+const video = path.join(run, "视频.mp4");
 const folder = path.join(run, "incoming");
 const output = path.join(run, "extracted");
 const single = path.join(run, "single.txt");
@@ -19,6 +21,11 @@ await fs.mkdir(output);
 await fs.writeFile(files[0], "first file");
 await fs.writeFile(files[1], "second file");
 await fs.writeFile(path.join(folder, "deep", "third.txt"), "third file");
+await fs.writeFile(audio, "RIFF0000WAVEfmt ");
+await fs.writeFile(
+  video,
+  Buffer.from("000000186674797069736f6d00000000", "hex"),
+);
 mdk.createMdkProject(file, "00");
 new AppState(profile).preferences({
   autosave: false,
@@ -62,6 +69,27 @@ async function newFolder(parent: string, name: string) {
   await expect(row(parent + "/" + name)).toBeVisible();
 }
 try {
+  await app.evaluate(
+    ({ dialog }, chosen) => {
+      dialog.showOpenDialog = async () => ({
+        canceled: false,
+        filePaths: chosen,
+      });
+    },
+    [audio, video, files[0]],
+  );
+  await page.getByRole("button", { name: "导入资源", exact: true }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "已自动分类导入 3 项资源" }),
+  ).toBeVisible();
+  const imported = mdk.openMdkProject(file).files.map(({ path }) => path);
+  expect(imported).toEqual(
+    expect.arrayContaining([
+      "resources/audio/录音.wav",
+      "resources/video/视频.mp4",
+      "resources/other/first.txt",
+    ]),
+  );
   await app.evaluate(
     ({ dialog }, chosen) => {
       dialog.showOpenDialog = async (_window, options) => ({

@@ -37,6 +37,7 @@ await fs.mkdir(root, { recursive: true });
 const directory = await fs.mkdtemp(path.join(root, "media-viewer-"));
 const profile = path.join(directory, "profile");
 const state = new AppState(profile);
+state.windowSize({ width: 1720, height: 980, maximized: false });
 state.preferences({
   ...state.preferences(),
   language: "zh-CN",
@@ -70,7 +71,7 @@ await Promise.all([
   fs.writeFile(emptyFile, ""),
   fs.writeFile(
     standalone,
-    "# Standalone\n\n预览正文\n\n[跳到标题](#standalone)\n\n![图片](测试图片.png)\n",
+    "# Standalone\n\n预览正文\n\n[跳到标题](#standalone)\n\n![图片](测试图片.png)\n\n[独立文稿音频](sound.wav)\n",
   ),
 ]);
 createMdkProject(project, "00");
@@ -263,20 +264,40 @@ try {
   await expect
     .poll(() => player.evaluate((el: HTMLAudioElement) => el.duration))
     .toBe(12);
-  await audioViewer.getByLabel("播放速度").selectOption("1.5");
+  assert.equal(await player.evaluate((el: HTMLAudioElement) => el.volume), 0.3);
+  await expect(player).not.toHaveAttribute("controls", "");
+  const audioBar = audioViewer.getByRole("group", { name: "媒体播放控件" });
+  const audioPlay = audioBar.getByRole("button", { name: "播放", exact: true });
+  const audioProgress = audioBar.getByRole("slider", { name: "播放进度" });
+  const audioVolume = audioBar.getByRole("slider", { name: "音量" });
+  const audioLoop = audioBar.getByRole("button", { name: "循环播放" });
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "30%");
+  await audioVolume.press("ArrowRight");
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "31%");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.volume)).toBe(0.31);
+  await audioBar.getByRole("button", { name: "静音", exact: true }).click();
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "0%");
+  await audioBar.getByRole("button", { name: "取消静音", exact: true }).click();
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "31%");
+  await audioBar.getByLabel("播放速度").selectOption("1.5");
   await expect
     .poll(() => player.evaluate((el: HTMLAudioElement) => el.playbackRate))
     .toBe(1.5);
-  await audioViewer.getByRole("checkbox", { name: "循环播放" }).check();
+  await audioLoop.click();
+  await expect(audioLoop).toHaveAttribute("aria-pressed", "true");
   assert.equal(await player.evaluate((el: HTMLAudioElement) => el.loop), true);
-  await player.evaluate(async (el: HTMLAudioElement) => {
-    el.muted = true;
-    el.currentTime = 8;
-    await el.play();
-  });
+  await audioProgress.press("End");
+  await audioProgress.press("ArrowLeft");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.currentTime)).toBeCloseTo(11.99);
+  await audioProgress.press("Home");
+  await audioPlay.click();
+  const audioPause = audioBar.getByRole("button", { name: "暂停", exact: true });
+  await expect(audioPause).toBeVisible();
   await expect
     .poll(() => player.evaluate((el: HTMLAudioElement) => el.currentTime))
-    .toBeGreaterThan(8);
+    .toBeGreaterThan(0);
+  await audioPause.click();
+  await expect(audioPlay).toBeVisible();
 
   const videoViewer = await openViewer(
     editor.locator(".document-body a").filter({ hasText: "视频样本" }),
@@ -290,6 +311,16 @@ try {
     await videoPlayer.evaluate((el: HTMLVideoElement) => el.duration),
     2,
   );
+  assert.equal(await videoPlayer.evaluate((el: HTMLVideoElement) => el.volume), 0.3);
+  await expect(videoPlayer).not.toHaveAttribute("controls", "");
+  const videoBar = videoViewer.getByRole("group", { name: "媒体播放控件" });
+  await expect(videoBar.getByRole("slider", { name: "音量" })).toHaveAttribute("aria-valuetext", "30%");
+  await videoBar.getByRole("button", { name: "播放", exact: true }).click();
+  await expect.poll(() => videoPlayer.evaluate((el: HTMLVideoElement) => el.currentTime)).toBeGreaterThan(0);
+  await expect(videoBar.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
+  await videoBar.getByRole("button", { name: "全屏显示", exact: true }).click();
+  await expect(videoBar.getByRole("button", { name: "退出全屏", exact: true })).toBeVisible();
+  await videoBar.getByRole("button", { name: "退出全屏", exact: true }).click();
   const unsupportedViewer = await openViewer(
     editor.locator(".document-body a").filter({ hasText: "不支持的视频" }),
     "查看视频",
@@ -300,6 +331,91 @@ try {
   await unsupportedViewer.close();
 
   await editor.getByRole("tab", { name: "预览", exact: true }).click();
+  const inline = (name: string) => editor.locator(".preview-body").getByRole("group", { name, exact: true });
+  const controls = (name: string, action: string) =>
+    inline(name).getByRole("button", { name: action, exact: true });
+  const inlineAudio = inline("音频样本").locator("audio");
+  await expect(inlineAudio).toHaveCount(1);
+  await expect(inlineAudio).not.toHaveAttribute("src", /.+/);
+  assert.equal(await inlineAudio.evaluate((el: HTMLAudioElement) => el.volume), 0.3);
+  const audioGroup = inline("音频样本");
+  const volumeSlider = audioGroup.getByRole("slider", { name: "音量" });
+  const volumeValue = audioGroup.locator(".preview-player-volume-value");
+  await expect(volumeSlider).toHaveAttribute("aria-valuenow", "30");
+  await expect(volumeValue).toHaveText("30%");
+  const wideWidth = await audioGroup.evaluate((el) => ({
+    player: el.getBoundingClientRect().width,
+    slot: el.parentElement!.getBoundingClientRect().width,
+  }));
+  assert.equal(wideWidth.player, wideWidth.slot);
+  await audioGroup.evaluate((el) => {
+    el.parentElement!.style.width = "320px";
+    el.parentElement!.style.zoom = "1.25";
+    window.getSelection()?.removeAllRanges();
+  });
+  await volumeSlider.scrollIntoViewIfNeeded();
+  assert.equal(await audioGroup.evaluate((el) => el.getBoundingClientRect().width), 400);
+  const volumeTrack = volumeSlider.locator(".player-slider-track");
+  const trackBounds = await volumeTrack.boundingBox();
+  assert.ok(trackBounds && trackBounds.width > 150);
+  await editor.mouse.move(trackBounds.x + trackBounds.width * 0.3, trackBounds.y + 2);
+  await editor.mouse.down();
+  await editor.mouse.move(
+    trackBounds.x + trackBounds.width * 0.73,
+    trackBounds.y - 22,
+    { steps: 6 },
+  );
+  await expect(volumeSlider).toHaveAttribute("data-dragging", "true");
+  await expect(volumeValue).toHaveText("73%");
+  assert.equal(await inlineAudio.evaluate((el: HTMLAudioElement) => el.volume), 0.73);
+  assert.deepEqual(await volumeSlider.evaluate((el) => [
+    getComputedStyle(el).outlineStyle,
+    getComputedStyle(el.firstElementChild!, "::after").outlineStyle,
+    window.getSelection()?.isCollapsed,
+  ]), ["none", "none", true]);
+  await editor.mouse.up();
+  await expect(volumeSlider).not.toHaveAttribute("data-dragging", "true");
+  await volumeSlider.press("ArrowLeft");
+  await expect(volumeValue).toHaveText("72%");
+  await audioGroup.evaluate((el) => {
+    el.parentElement!.style.removeProperty("width");
+    el.parentElement!.style.removeProperty("zoom");
+  });
+  await controls("音频样本", "静音").click();
+  await expect(volumeValue).toHaveText("0%");
+  await controls("音频样本", "播放").click();
+  await expect.poll(() => inlineAudio.evaluate((el: HTMLAudioElement) => el.duration)).toBe(12);
+  await expect.poll(() => inlineAudio.evaluate((el: HTMLAudioElement) => el.currentTime)).toBeGreaterThan(0);
+  await controls("音频样本", "暂停").click();
+  await inline("音频样本").getByRole("slider", { name: "播放进度" }).focus();
+  await editor.keyboard.press("End");
+  await expect.poll(() => inlineAudio.evaluate((el: HTMLAudioElement) => el.currentTime)).toBe(12);
+  const inlineVideo = inline("视频样本").locator("video");
+  assert.equal(await inlineVideo.evaluate((el: HTMLVideoElement) => el.volume), 0.3);
+  await editor.locator(".preview-body").getByRole("link", { name: "视频样本" }).click();
+  await expect.poll(() => inlineVideo.evaluate((el: HTMLVideoElement) => el.videoWidth)).toBe(32);
+  assert.equal(await inlineVideo.evaluate((el: HTMLVideoElement) => el.duration), 2);
+  const videoRatio = await inlineVideo.evaluate((el) => {
+    const bounds = el.getBoundingClientRect();
+    return bounds.width / bounds.height;
+  });
+  assert.ok(Math.abs(videoRatio - 4 / 3) < 0.01);
+  await controls("视频样本", "全屏").click();
+  await expect(controls("视频样本", "退出全屏")).toBeVisible();
+  await controls("视频样本", "退出全屏").click();
+  await expect(controls("视频样本", "全屏")).toBeVisible();
+  await controls("不支持的视频", "播放").click();
+  await expect(inline("不支持的视频").getByRole("status")).toContainText("不支持的格式或编解码器");
+  const lightPlayerBackground = await inline("音频样本").evaluate((el) => getComputedStyle(el).backgroundColor);
+  await editor.evaluate(() => { document.documentElement.dataset.appTheme = "dark"; });
+  await expect.poll(() => inline("音频样本").evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(lightPlayerBackground);
+  await editor.evaluate(() => { document.documentElement.dataset.appTheme = "light"; });
+  await videoViewer.close();
+  const inlinePopup = await openViewer(inline("视频样本").locator("video"), "打开新窗口播放");
+  await expect.poll(() => inlinePopup.locator("video").evaluate((el: HTMLVideoElement) => el.videoWidth)).toBe(32);
+  await inlinePopup.close();
+  console.log("Inline players decode WAV and WebM, seek, follow the theme and open a separate playback window.");
+
   for (const [label, input] of [
     ["原始采样记录", opaqueFile],
     ["HTML 附件", textFile],
@@ -333,6 +449,17 @@ try {
     await attachment.close();
   }
   await editor.bringToFront();
+  await editor.getByRole("tab", { name: "整体目录", exact: true }).click();
+  const treeSearch = editor.getByRole("textbox", { name: "搜索工程目录" });
+  await treeSearch.fill(path.basename(audio));
+  await editor.locator(`.project-tree-row[data-path="${audio}"]`).click();
+  const assetPlayer = editor.locator(".resource-preview .preview-player");
+  await assetPlayer.getByRole("button", { name: "静音", exact: true }).click();
+  await assetPlayer.getByRole("button", { name: "播放", exact: true }).click();
+  await expect.poll(() => assetPlayer.locator("audio").evaluate((el: HTMLAudioElement) => el.duration)).toBe(12);
+  await treeSearch.clear();
+  await editor.getByRole("tab", { name: "文稿目录", exact: true }).click();
+  await editor.locator('.project-tree-row[data-path="markdown/001.md"]').click();
   await editor.getByRole("tab", { name: "可视化", exact: true }).click();
 
   const button = (name: string) =>
@@ -354,6 +481,10 @@ try {
     protectedViewer.getByRole("img", { name: "测试图片.png" }),
   ).toBeVisible();
   await editor.bringToFront();
+  await editor.getByRole("tab", { name: "预览", exact: true }).click();
+  await controls("音频样本", "静音").click();
+  await controls("音频样本", "播放").click();
+  await expect.poll(() => inlineAudio.evaluate((el: HTMLAudioElement) => el.currentTime)).toBeGreaterThan(0);
   await button("访问保护").click();
   await button("锁定工程").click();
   await expect
@@ -376,6 +507,10 @@ try {
     "standalone.md",
   );
   await editor.getByRole("tab", { name: "预览", exact: true }).click();
+  await controls("独立文稿音频", "静音").click();
+  await controls("独立文稿音频", "播放").click();
+  await expect.poll(() => inline("独立文稿音频").locator("audio")
+    .evaluate((el: HTMLAudioElement) => el.currentTime)).toBeGreaterThan(0);
   const preview = editor.locator(".preview-body");
   const previewText = preview.getByText("预览正文", { exact: true });
   const previewMenu = editor.getByRole("menu", { name: "预览右键菜单" });

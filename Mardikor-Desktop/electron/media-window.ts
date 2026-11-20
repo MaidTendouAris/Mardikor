@@ -9,7 +9,7 @@ import {
 import path from "node:path";
 import fs from "node:fs";
 import { rename, rm } from "node:fs/promises";
-import { Readable, Transform } from "node:stream";
+import { addAbortSignal, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { crc32 } from "node:zlib";
 import { randomUUID } from "node:crypto";
@@ -27,13 +27,19 @@ import { requireDiskSpace } from "./archive-write";
 import {
   assertPassiveSvg,
   detectMediaType,
+  mediaContainerType,
   publicationRasterSize,
 } from "./media";
 
 export const mediaScheme = "mardikor-media";
 const src = `${mediaScheme}://viewer/resource`;
 
-function serveMedia(request: Request, entry: StoreEntry, mime: string) {
+export function serveMedia(
+  request: Request,
+  entry: StoreEntry,
+  mime: string,
+  lease?: AbortSignal,
+) {
   const size = entry.header.size;
   const headers = {
     "Content-Type": mime,
@@ -43,7 +49,6 @@ function serveMedia(request: Request, entry: StoreEntry, mime: string) {
     "Content-Security-Policy": "default-src 'none'; sandbox",
     "X-Content-Type-Options": "nosniff",
   };
-  if (request.url !== src) return new Response(null, { status: 404 });
   if (request.method === "HEAD") {
     return new Response(null, {
       headers: { ...headers, "Content-Length": String(size) },
@@ -71,9 +76,11 @@ function serveMedia(request: Request, entry: StoreEntry, mime: string) {
   // Bound copies to a chunk while allowing Chromium to seek with range requests.
   let offset = start;
   const bytes = entry.data;
+  const signal = lease ? AbortSignal.any([request.signal, lease]) : request.signal;
   const body = Buffer.isBuffer(bytes)
     ? new ReadableStream<Uint8Array>({
         pull(controller) {
+          signal.throwIfAborted();
           const next = Math.min(offset + 256 * 1024, end + 1);
           if (next > offset)
             controller.enqueue(new Uint8Array(bytes.subarray(offset, next)));
@@ -81,7 +88,8 @@ function serveMedia(request: Request, entry: StoreEntry, mime: string) {
           if (offset > end) controller.close();
         },
       })
-    : (Readable.toWeb(bytes.stream(start, end)) as ReadableStream<Uint8Array>);
+    : (Readable.toWeb(addAbortSignal(signal, bytes.stream(start, end))) as
+        ReadableStream<Uint8Array>);
   return new Response(body, {
     status: range ? 206 : 200,
     headers: {
@@ -114,12 +122,7 @@ export function openMediaWindow({
   const extensionMime = previewMediaMime(resource);
   const sample = entry.prefix(128 * 1024);
   const detected = detectMediaType(sample);
-  // MP4 and Ogg signatures don't always distinguish their audio and video tracks.
-  const containerMime =
-    (detected === "video/mp4" && extensionMime === "audio/mp4") ||
-    (detected === "audio/ogg" && extensionMime === "video/ogg")
-      ? extensionMime
-      : detected;
+  const containerMime = mediaContainerType(sample, extensionMime);
   const mediaKind = previewMediaKind(containerMime);
   if (kind === "attachment") kind = mediaKind ?? "attachment";
   let available = !!mediaKind && mediaKind === kind;
@@ -231,7 +234,9 @@ export function openMediaWindow({
   });
   if (info.src)
     session.protocol.handle(mediaScheme, (request) =>
-      serveMedia(request, entry, info.mime),
+      request.url === src
+        ? serveMedia(request, entry, info.mime)
+        : new Response(null, { status: 404 }),
     );
 
   function checkSender(event: Electron.IpcMainInvokeEvent) {

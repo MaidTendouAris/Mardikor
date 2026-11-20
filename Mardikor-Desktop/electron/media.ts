@@ -1,4 +1,7 @@
 import { t } from "../shared/i18n";
+import type { ResourceKind } from "../shared/mdk";
+import { insertionFormat } from "../shared/resources";
+import type { StoreEntry } from "./archive-io";
 export function detectMediaType(data: Buffer): string | undefined {
   const header = data.subarray(0, 64);
   const ascii = header.toString("latin1");
@@ -70,8 +73,40 @@ const expected: Record<string, string> = {
 export function checkMedia(name: string, data: Buffer) {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
   const type = expected[extension];
-  if (type && detectMediaType(data) !== type)
+  if (type && mediaContainerType(data, type) !== type)
     throw new Error(t("资源的扩展名与实际文件格式不一致：{0}", name));
+}
+
+export function mediaContainerType(data: Buffer, expected?: string) {
+  const detected = detectMediaType(data);
+  // These containers share a signature across filename extensions.
+  if (
+    (detected === "video/mp4" &&
+      (expected === "audio/mp4" || expected === "video/quicktime")) ||
+    (detected === "audio/ogg" && expected === "video/ogg") ||
+    (expected === "application/pdf" &&
+      data.subarray(0, 5).toString() === "%PDF-")
+  )
+    return expected;
+  return detected;
+}
+
+export function classifyResource(entry: StoreEntry): ResourceKind {
+  const format = insertionFormat(entry.entryName);
+  if (
+    !format ||
+    format.kind === "other" ||
+    mediaContainerType(entry.prefix(), format.mime) !== format.mime
+  )
+    return "other";
+  if (format.mime === "image/svg+xml") {
+    try {
+      assertPassiveSvg(entry.getData());
+    } catch {
+      return "other";
+    }
+  }
+  return format.kind;
 }
 export function assertPassiveSvg(data: Buffer) {
   if (

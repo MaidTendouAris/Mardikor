@@ -29,6 +29,7 @@ import { PageNavigation } from "./PageNavigation";
 import { ReaderSettings, type ReaderSettingsProps } from "./ReaderSettings";
 import { Select } from "./Select";
 import type { PreviewArgs } from "../services/preview-page";
+import { usePreviewPlayback } from "./usePreviewPlayback";
 import "../styles/reader.css";
 
 const fonts = {
@@ -164,6 +165,7 @@ function ReaderManuscript({
   useMappedMatches(article, unit.markdown ?? "", locations, output?.html);
   const html = output?.html ?? "";
   const markup = useMemo(() => ({ __html: html }), [html]);
+  const playback = usePreviewPlayback(article, file, unit.path, html);
   return (
     <article
       className="preview-body reader-manuscript"
@@ -190,6 +192,7 @@ function ReaderManuscript({
       ) : (
         <p role="status">{t("正在排版文稿…")}</p>
       )}
+      {playback}
     </article>
   );
 }

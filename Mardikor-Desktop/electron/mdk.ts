@@ -28,7 +28,7 @@ import {
 import { addedFile, archiveLimit, BUFFERED_ENTRY_LIMIT, exactSize, FileSnapshot, StoreArchive } from "./archive-io";
 import { requireDiskSpace, writeStoreArchive } from "./archive-write";
 import { archiveCheckpoint } from "./archive-operation";
-import { resolveReference } from "../shared/references";
+import { relativeReference, resolveReference } from "../shared/references";
 import { accessFor, withAccess } from "./access-session";
 import {
   decodeEnvelope,
@@ -2524,11 +2524,7 @@ export function insertMdkResources(
   });
   const markdown = resources
     .map((resource, index) => {
-      const target = path.posix
-        .relative(path.posix.dirname(insertion.text.path), resource.path)
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/");
+      const target = relativeReference(insertion.text.path, resource.path);
       const label = assets[index].name.replace(
         /[\\[\]]/g,
         (char) => "\\" + char,

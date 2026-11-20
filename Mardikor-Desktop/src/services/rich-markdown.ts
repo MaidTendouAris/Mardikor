@@ -252,14 +252,43 @@ export function richDropTransaction(
   x: number,
   y: number,
   marker: string,
+  position = x >= 0 && y >= 0 ? richFileDropPosition(editor, x, y) : undefined,
 ) {
   if (!editor.markdown) throw new Error(t("Markdown 编辑器尚未就绪。"));
-  const coords = editor.view.posAtCoords({ left: x, top: y }),
-    from = coords?.pos ?? editor.state.selection.from,
-    to = coords ? from : editor.state.selection.to;
+  if (x >= 0 && y >= 0 && !position)
+    throw new Error(t("资源插入位置无效。"));
+  const from = position?.pos ?? editor.state.selection.from;
+  const to = position ? from : editor.state.selection.to;
   const paragraph = editor.schema.nodes.paragraph.create(
     null,
     editor.schema.text(marker),
   );
   return editor.state.tr.replaceRangeWith(from, to, paragraph);
+}
+
+export function richFileDropPosition(editor: Editor, x: number, y: number) {
+  if (editor.isDestroyed || !editor.isEditable) return;
+  const { view, state } = editor;
+  const paper = view.dom.getBoundingClientRect();
+  const hit = view.posAtCoords({ left: x, top: y }) ?? (
+    y <= paper.top ? { pos: 0 } :
+    y >= paper.bottom ? { pos: state.doc.content.size } :
+    view.posAtCoords({ left: Math.max(paper.left + 1, Math.min(x, paper.right - 1)), top: y })
+  );
+  if (!hit) return;
+  const resolved = state.doc.resolve(hit.pos);
+  const block = resolved.depth ? resolved.before(1) : hit.pos;
+  const neighboringStart = block - (state.doc.resolve(block).nodeBefore?.nodeSize ?? 0);
+  const startingNode = view.nodeDOM(block);
+  const previousNode = neighboringStart < block ? view.nodeDOM(neighboringStart) : null;
+  const nextRect = startingNode instanceof HTMLElement ? startingNode.getBoundingClientRect() : null;
+  const prevRect = previousNode instanceof HTMLElement ? previousNode.getBoundingClientRect() : null;
+  const onPrevious = prevRect && (!nextRect ||
+    Math.abs(y - prevRect.bottom) < Math.abs(y - nextRect.top)) &&
+    !resolved.depth && y < (nextRect?.top ?? Infinity);
+  if (onPrevious) return { pos: block, before: false, top: prevRect.bottom + 2, left: paper.left, width: paper.width };
+  const before = !resolved.depth || !nextRect || y < (nextRect.top + nextRect.bottom) / 2;
+  const pos = before ? block : resolved.after(1);
+  const top = nextRect ? (before ? nextRect.top - 2 : nextRect.bottom + 2) : y;
+  return { pos, before, top, left: paper.left, width: paper.width };
 }

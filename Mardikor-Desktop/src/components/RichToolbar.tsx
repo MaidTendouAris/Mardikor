@@ -1,5 +1,11 @@
 import { t } from "../../shared/i18n";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { NodeSelection } from "@tiptap/pm/state";
 import {
@@ -24,6 +30,7 @@ import {
   RemoveFormatting,
   Unlink,
   FileUp,
+  Paperclip,
   BookOpen,
   Copy,
   Clipboard,
@@ -36,7 +43,8 @@ import {
   shortcutKey,
   type ShortcutOverrides,
 } from "../../shared/shortcuts";
-import { resolveReference } from "../../shared/references";
+import { relativeReference, resolveReference } from "../../shared/references";
+import { isResourcePath } from "../../shared/resources";
 import {
   markdownInsertion,
   markdownSyntax,
@@ -53,7 +61,8 @@ import { EditorDialog, EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import { Select } from "./Select";
 import type { Notify } from "../App";
 
-type DialogKind = "link" | "image" | "table" | "code" | "syntax";
+type DialogKind = "link" | "image" | "resource" | "table" | "code" | "syntax";
+const resourceChoicesLimit = 200;
 interface ToolForm {
   kind: DialogKind;
   values: Record<string, string>;
@@ -61,6 +70,7 @@ interface ToolForm {
 }
 interface Props {
   editor: Editor | null;
+  packaged: boolean;
   shortcutOverrides?: ShortcutOverrides;
   disabled: boolean;
   sourceEditable: boolean;
@@ -72,17 +82,9 @@ interface Props {
   onViewMedia: (target: EditorMediaTarget) => Promise<void>;
   onSourceInsert: (content: string) => Promise<void>;
 }
-function relativeResource(from: string, to: string) {
-  const base = from.split("/").slice(0, -1),
-    parts = to.split("/");
-  while (base.length && parts.length && base[0] === parts[0]) {
-    base.shift();
-    parts.shift();
-  }
-  return "../".repeat(base.length) + parts.map(encodeURIComponent).join("/");
-}
 export function RichToolbar({
   editor,
+  packaged,
   shortcutOverrides,
   disabled,
   sourceEditable,
@@ -136,6 +138,18 @@ export function RichToolbar({
   } | null>(null);
   const [form, setForm] = useState<ToolForm | null>(null);
   const [error, setError] = useState("");
+  const resources = useMemo(
+    () =>
+      packaged
+        ? files
+            .filter(
+              (file) => file.kind !== "directory" && isResourcePath(file.path),
+            )
+            .map((file) => file.path)
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        : [],
+    [files, packaged],
+  );
   const closeMenu = useCallback(() => {
     setMenu(null);
     editor?.view.focus();
@@ -202,6 +216,8 @@ export function RichToolbar({
           title: attrs.title ?? "",
         },
       });
+    } else if (kind === "resource") {
+      setForm({ kind, values: { path: "", query: "", label: "" } });
     } else if (kind === "table")
       setForm({ kind, values: { rows: "3", cols: "3" } });
     else if (kind === "code") {
@@ -352,6 +368,29 @@ export function RichToolbar({
             .focus()
             .insertContent(markdown, { contentType: "markdown" })
             .run();
+      } else if (form.kind === "resource") {
+        if (!resources.includes(v.path))
+          throw new Error(t("请选择包内资源文件。"));
+        const inserted = editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: v.label.trim() || v.path.split("/").at(-1)!,
+                marks: [
+                  {
+                    type: "link",
+                    attrs: { href: relativeReference(sourcePath, v.path) },
+                  },
+                ],
+              },
+            ],
+          })
+          .run();
+        if (!inserted) throw new Error(t("无法在当前位置插入资源链接。"));
       } else if (form.kind === "link" || form.kind === "image") {
         const url = v.url.trim();
         if (
@@ -644,6 +683,19 @@ export function RichToolbar({
   const selectedSyntax = markdownSyntax.find(
     (s) => s.id === form?.values.syntax,
   );
+  const resourceMatches =
+    form?.kind === "resource"
+      ? resources.filter((path) =>
+          path.toLowerCase().includes(form.values.query.trim().toLowerCase()),
+        )
+      : [];
+  const resourceChoices = resourceMatches.slice(0, resourceChoicesLimit);
+  const chosenResource =
+    form?.kind === "resource" && resources.includes(form.values.path)
+      ? form.values.path
+      : "";
+  if (chosenResource && !resourceChoices.includes(chosenResource))
+    resourceChoices.unshift(chosenResource);
   return (
     <div className="rich-toolbar-container">
       <div
@@ -867,6 +919,14 @@ export function RichToolbar({
                   editor.isActive("image"),
                 )}
                 {tool(t("导入本地资源"), FileUp, onImport)}
+                {packaged &&
+                  tool(
+                    t("插入包内资源"),
+                    Paperclip,
+                    () => open("resource"),
+                    false,
+                    disabled || !resources.length,
+                  )}
                 {tool(
                   t("插入表格"),
                   Table2,
@@ -963,13 +1023,15 @@ export function RichToolbar({
           title={
             form.kind === "link"
               ? t("链接")
-              : form.kind === "image"
-                ? t("图片")
-                : form.kind === "table"
-                  ? t("插入表格")
-                  : form.kind === "code"
-                    ? t("代码块")
-                    : t("Markdown 语法")
+              : form.kind === "resource"
+                ? t("插入包内资源")
+                : form.kind === "image"
+                  ? t("图片")
+                  : form.kind === "table"
+                    ? t("插入表格")
+                    : form.kind === "code"
+                      ? t("代码块")
+                      : t("Markdown 语法")
           }
           onClose={closeForm}
         >
@@ -1005,6 +1067,54 @@ export function RichToolbar({
                     {t("插入后切换到源码编辑，以保留此语法的完整写法。")}
                   </p>
                 )}
+              </>
+            ) : form.kind === "resource" ? (
+              <>
+                <label>
+                  {t("搜索包内资源")}
+                  <input
+                    autoFocus
+                    type="search"
+                    aria-label={t("搜索包内资源")}
+                    value={form.values.query}
+                    onChange={(event) => values("query", event.target.value)}
+                  />
+                </label>
+                <label>
+                  {t("包内资源")}
+                  <Select
+                    aria-label={t("包内资源")}
+                    value={chosenResource}
+                    onValueChange={(value) => values("path", value)}
+                  >
+                    <option value="">{t("选择包内资源文件…")}</option>
+                    {resourceChoices.map((path) => (
+                      <option key={path} value={path}>
+                        {path}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                {!resourceMatches.length && (
+                  <p className="field-hint">{t("没有匹配的包内资源。")}</p>
+                )}
+                {resourceMatches.length > resourceChoicesLimit && (
+                  <p className="field-hint">
+                    {t(
+                      "显示前 {0} 项，可按文件名或路径搜索。",
+                      resourceChoicesLimit,
+                    )}
+                  </p>
+                )}
+                <label>
+                  {t("链接文字")}
+                  <input
+                    aria-label={t("链接文字")}
+                    value={form.values.label}
+                    placeholder={chosenResource.split("/").at(-1)}
+                    onChange={(event) => values("label", event.target.value)}
+                  />
+                </label>
               </>
             ) : form.kind === "table" ? (
               <div className="editor-dialog-grid">
@@ -1067,7 +1177,7 @@ export function RichToolbar({
                       aria-label={t("工程图片")}
                       value=""
                       onValueChange={(value) => {
-                        values("url", relativeResource(sourcePath, value));
+                        values("url", relativeReference(sourcePath, value));
                       }}
                     >
                       <option value="">{t("选择已导入的图片…")}</option>
@@ -1142,13 +1252,19 @@ export function RichToolbar({
               <button
                 type="submit"
                 className="button primary"
-                disabled={form.kind === "syntax" ? !sourceEditable : disabled}
+                disabled={
+                  form.kind === "syntax"
+                    ? !sourceEditable
+                    : disabled || (form.kind === "resource" && !chosenResource)
+                }
               >
                 {form.kind === "syntax"
                   ? selectedSyntax?.sourceOnly || requiresSourceMode(sourceText)
                     ? t("插入并编辑源码")
                     : t("插入")
-                  : t("确定")}
+                  : form.kind === "resource"
+                    ? t("插入")
+                    : t("确定")}
               </button>
             </div>
           </form>

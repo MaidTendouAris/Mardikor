@@ -1,4 +1,5 @@
 import { t } from "../../shared/i18n";
+import { usePreviewPlayback } from "./usePreviewPlayback";
 import {
   forwardRef,
   Fragment,
@@ -116,6 +117,7 @@ function clickPoint(
 
 function PreviewSlice({
   args,
+  playbackFile,
   layout,
   index,
   headings,
@@ -127,6 +129,7 @@ function PreviewSlice({
   revealFind,
 }: {
   args: PreviewArgs;
+  playbackFile?: string;
   layout: DocumentPages;
   index: number;
   headings: { line: number; level: number; anchor?: string }[];
@@ -222,20 +225,21 @@ function PreviewSlice({
   );
   const html = output?.html ?? "";
   const markup = useMemo(() => ({ __html: html }), [html]);
+  const playback = usePreviewPlayback(element, playbackFile, args[5], html);
 
   return output?.error ? (
     <p role="alert">{output.error}</p>
   ) : (
-    <div
-      ref={element}
-      className="preview-body"
-      dangerouslySetInnerHTML={markup}
-    />
+    <>
+      <div ref={element} className="preview-body" dangerouslySetInnerHTML={markup} />
+      {playback}
+    </>
   );
 }
 
 function PageSlice({
   args,
+  playbackFile,
   layout,
   index,
   height,
@@ -252,6 +256,7 @@ function PageSlice({
   revealFind,
 }: {
   args: PreviewArgs;
+  playbackFile?: string;
   layout: DocumentPages;
   index: number;
   height: number;
@@ -353,6 +358,7 @@ function PageSlice({
       ) : (
         <PreviewSlice
           args={args}
+          playbackFile={playbackFile}
           layout={layout}
           index={index}
           headings={headings}
@@ -374,6 +380,7 @@ export const PagedPreview = forwardRef<
   PagedPreviewHandle,
   {
     args: PreviewArgs;
+    playbackFile?: string;
     findHit?: SearchHit;
     findMatches?: FindMatches;
     onFindPage?: (page: number) => void;
@@ -399,6 +406,7 @@ export const PagedPreview = forwardRef<
 >(function PagedPreview(
   {
     args,
+    playbackFile,
     findHit,
     findMatches,
     onFindPage,
@@ -853,6 +861,7 @@ export const PagedPreview = forwardRef<
                     )}
                     <PageSlice
                       args={args}
+                      playbackFile={playbackFile}
                       layout={layout}
                       index={index}
                       height={offsets[index + 1] - offsets[index]}

@@ -17,8 +17,10 @@ import { Worker } from "node:worker_threads";
 import * as mdk from "./mdk";
 import { initEnvelopeCrypto, passwordBytes, probeEnvelope } from "./envelope";
 import { withAccess, type AccessSession } from "./access-session";
-import { mediaScheme, openMediaWindow } from "./media-window";
-import { BUFFERED_ENTRY_LIMIT, FileSnapshot, StoreEntry } from "./archive-io";
+import { mediaScheme, openMediaWindow, serveMedia } from "./media-window";
+import { addedFile, BUFFERED_ENTRY_LIMIT, FileSnapshot, type StoreEntry } from "./archive-io";
+import { mediaContainerType } from "./media";
+import { previewMediaKind, previewMediaMime, type PlaybackKind } from "../shared/media-viewer";
 import { seedArchiveIndex } from "./archive";
 import type { ArchiveTask } from "./archive-worker";
 import type { ArchiveProgress } from "../shared/archive-operation";
@@ -32,7 +34,7 @@ import type { SaveSnapshot } from "../shared/mdk";
 import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
 import { t, appLocale, resolveAppLocale, setAppLocale } from "../shared/i18n";
-import { containsControl } from "../shared/schema";
+import { containsControl, validatePath } from "../shared/schema";
 import { insertionFormats } from "../shared/resources";
 import { isMarkdownFile, isSupportedDocument } from "../shared/workspace";
 import * as markdownFile from "./markdown-file";
@@ -60,6 +62,8 @@ interface DocumentWindow {
   access?: AccessSession;
   pendingAccess?: AccessSession;
   mediaWindows: Map<string, BrowserWindow>;
+  playback: Map<string, { resource: string; kind: PlaybackKind; abort: AbortController }>;
+  bufferedPlayback?: { url: string; revision: string; entry: StoreEntry };
   archiveJob?: Int32Array;
   closeAfterArchive?: boolean;
 }
@@ -444,6 +448,40 @@ function watchActiveProject(context: DocumentWindow, source: string) {
 }
 function closeMediaWindows(context: DocumentWindow) {
   for (const window of context.mediaWindows.values()) window.destroy();
+  for (const grant of context.playback.values()) grant.abort.abort();
+  context.playback.clear();
+  context.bufferedPlayback = undefined;
+}
+
+function servePreviewPlayback(context: DocumentWindow, request: Request) {
+  const grant = context.playback.get(request.url);
+  const project = context.activeProject;
+  if (!grant || !project) return new Response(null, { status: 404 });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return new Response(null, { status: 405 });
+  try {
+    let entry: StoreEntry;
+    if (isMarkdownFile(project)) {
+      entry = addedFile(grant.resource, markdownFile.resolveLocalMarkdownPath(project, grant.resource));
+    } else {
+      const revision = new FileSnapshot(project).key;
+      const cached = context.bufferedPlayback;
+      if (cached?.url === request.url && cached.revision === revision) {
+        entry = cached.entry;
+      } else {
+        entry = withAccess(windowAccess(context, project), () => mdk.mdkAttachment(project, grant.resource));
+        // Keep at most one decrypted entry for successive range requests.
+        if (Buffer.isBuffer(entry.data))
+          context.bufferedPlayback = { url: request.url, revision, entry };
+      }
+    }
+    const mime = mediaContainerType(entry.prefix(128 * 1024), previewMediaMime(grant.resource));
+    if (!mime || previewMediaKind(mime) !== grant.kind)
+      return new Response(null, { status: 415 });
+    return serveMedia(request, entry, mime, grant.abort.signal);
+  } catch {
+    return new Response(null, { status: 404 });
+  }
 }
 const counts: Record<keyof MdkCommands, [number, number]> = {
   publicationInfo: [1, 1],
@@ -559,7 +597,7 @@ function registerIpc() {
       filters: isMarkdownFile(context.activeProject) ? [
         {
           name: t("支持的图片、音视频及 PDF"),
-          extensions: Object.keys(insertionFormats),
+          extensions: Object.keys(insertionFormats).filter((extension) => insertionFormats[extension].kind !== "font"),
         },
       ] : undefined,
     });
@@ -752,6 +790,28 @@ function registerIpc() {
       if (error) throw new Error(t("无法用默认应用打开文件：{0}", error));
     }
   });
+  ipcMain.handle("app:prepare-playback", (event, project, resource, kind) => {
+    const context = verifySender(event);
+    assertApproved(context, project);
+    if (
+      context.activeProject !== path.resolve(project) ||
+      typeof resource !== "string" || resource.length > 65535 ||
+      (kind !== "video" && kind !== "audio")
+    ) throw new Error(t("媒体预览参数无效。"));
+    validatePath(resource);
+    const url = `${mediaScheme}://preview/${randomUUID()}`;
+    context.playback.set(url, { resource, kind, abort: new AbortController() });
+    return url;
+  });
+  ipcMain.handle("app:release-playback", (event, url) => {
+    const context = verifySender(event);
+    const grant = context.playback.get(url);
+    if (!grant) return;
+    grant.abort.abort();
+    context.playback.delete(url);
+    if (context.bufferedPlayback?.url === url)
+      context.bufferedPlayback = undefined;
+  });
   ipcMain.handle("app:open-media", (event, project, resource, kind) => {
     const context = verifySender(event);
     assertApproved(context, project);
@@ -771,7 +831,7 @@ function registerIpc() {
     }
     const entry = withAccess(windowAccess(context, project), () =>
       isMarkdownFile(project)
-        ? new StoreEntry(resource, markdownFile.readMarkdownResourceBytes(project, resource))
+        ? addedFile(resource, markdownFile.resolveLocalMarkdownPath(project, resource))
         : mdk.mdkAttachment(project, resource),
     );
     const window = openMediaWindow({
@@ -1270,6 +1330,7 @@ function createWindow(file?: string, fragment?: string) {
     droppedFiles: new Map(),
     publicationOutputs: new Map(),
     mediaWindows: new Map(),
+    playback: new Map(),
   };
   if (file) context.approvedFiles.add(file);
   const id = window.webContents.id;
@@ -1283,8 +1344,13 @@ function createWindow(file?: string, fragment?: string) {
   };
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("did-start-loading", () => closeMediaWindows(context));
+  window.webContents.session.protocol.handle(mediaScheme, (request) =>
+    servePreviewPlayback(context, request),
+  );
   window.webContents.session.setPermissionRequestHandler(
-    (_contents, _permission, callback) => callback(false),
+    (contents, permission, callback, details) =>
+      callback(contents.id === id && permission === "fullscreen" && details.isMainFrame),
   );
   window.webContents.session.webRequest.onHeadersReceived(
     (details, callback) => {
@@ -1296,7 +1362,7 @@ function createWindow(file?: string, fragment?: string) {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            `default-src 'self'; script-src ${script}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
+            `default-src 'self'; script-src ${script}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob: ${mediaScheme}:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
           ],
         },
       });

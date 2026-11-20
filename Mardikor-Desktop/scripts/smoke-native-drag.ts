@@ -28,9 +28,15 @@ mdk.saveMdkTextFile(
 mdk.addMdkEntry(file, "second.md");
 mdk.createMdkProject(second, "00");
 const image = path.join(root, "拖入图片.png"),
+  audio = path.join(root, "拖入录音.m4a"),
+  video = path.join(root, "拖入视频.mov"),
   unsupported = path.join(root, "unsupported.exe");
 await fs.copyFile(path.resolve("assets/icon.png"), image);
-await fs.writeFile(unsupported, "unsupported file");
+// Shared MP4 signatures exercise the extension-based container classification.
+const mediaHeader = Buffer.from("000000186674797069736f6d00000000", "hex");
+await fs.writeFile(audio, mediaHeader);
+await fs.writeFile(video, mediaHeader);
+await fs.copyFile(image, unsupported);
 const env = {
   ...process.env,
   MARDIKOR_USER_DATA: userData,
@@ -75,7 +81,7 @@ try {
   ) => {
     await page!.locator("#native-drag-files").setInputFiles(paths);
     await page!.evaluate(
-      ({ target, terminal }) => {
+      async ({ target, terminal }) => {
         const files =
           document.querySelector<HTMLInputElement>(
             "#native-drag-files",
@@ -90,10 +96,25 @@ try {
           ["dragenter", body, tree],
           ["dragleave", tree, body],
           ["dragover", body, null],
-          // External OS file drags do not dispatch dragend inside this document.
+          // Native OS file drags do not dispatch dragend inside the document.
           [terminal, body, null],
         ];
+        let count = 0;
+        let aligned = false;
         for (const [type, node, relatedTarget] of sequence) {
+          if (node === body && type === terminal) {
+            // Give the preload and React time to paint the indicator.
+            await new Promise<void>((resolve) => requestAnimationFrame(() =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ));
+            const indicators = document.querySelectorAll(".resource-drop-line");
+            const line = indicators[0]?.getBoundingClientRect();
+            const block = body.getBoundingClientRect();
+            count = indicators.length;
+            aligned = !!line &&
+              Math.min(Math.abs(line.top - block.top), Math.abs(line.top - block.bottom)) <= 3 &&
+              line.right > block.left && line.left < block.right;
+          }
           const box = node.getBoundingClientRect();
           node.dispatchEvent(
             new DragEvent(type, {
@@ -101,14 +122,23 @@ try {
               cancelable: true,
               dataTransfer: transfer,
               clientX: box.left + Math.min(30, box.width / 2),
-              clientY: box.top + Math.min(10, box.height / 2),
+              clientY: box.top + (node === body ? box.height * 0.75 : box.height / 2),
               relatedTarget,
             }),
           );
         }
+        return {
+          write: !!body.closest('[data-document-drop-zone="write"]'),
+          count,
+          aligned,
+        };
       },
       { target, terminal },
-    );
+    ).then(({ write, count, aligned }) => {
+      expect(count).toBe(write ? 1 : 0);
+      if (write) expect(aligned).toBe(true);
+    });
+    await expect(page!.locator(".resource-drop-line")).toHaveCount(0);
   };
   const healthy = async () => {
     await expect(page!.locator(".startup-error")).toHaveCount(0);
@@ -122,6 +152,9 @@ try {
   await expect(
     page.locator(".document-body img:not(.ProseMirror-separator)"),
   ).toHaveAttribute("src", /^data:image\/png/);
+  const withImage = mdk.readMdkTextFile(file, "markdown/001.md").content;
+  expect(withImage.indexOf("![")).toBeGreaterThan(withImage.indexOf("正文段落。"));
+  expect(withImage.indexOf("![")).toBeLessThan(withImage.indexOf("## 下一节"));
   await page.getByRole("tab", { name: "整体目录", exact: true }).click();
   await healthy();
   await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
@@ -133,12 +166,27 @@ try {
   await page.getByRole("tab", { name: "整体目录", exact: true }).click();
   await healthy();
   await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
-  const before = await fs.readFile(file);
-  await gesture([image, unsupported], ".document-body p");
-  await expect(page.locator('.toast[role="alert"]')).toContainText(
-    "不支持插入此类型",
+  await gesture([audio, video, unsupported], ".document-body p");
+  await expect(page.locator('.toast[role="status"]')).toContainText(
+    "已插入 3 个资源",
   );
-  expect((await fs.readFile(file)).equals(before)).toBe(true);
+  for (const [name, kind] of [
+    ["拖入录音.m4a", "audio"],
+    ["拖入视频.mov", "video"],
+    ["unsupported.exe", "other"],
+  ]) {
+    await expect(
+      page.locator(".document-body").getByRole("link", { name, exact: true }),
+    ).toHaveAttribute(
+      "href",
+      `../resources/${kind}/${encodeURIComponent(name)}`,
+    );
+    expect(
+      mdk
+        .openMdkProject(file)
+        .files.some((entry) => entry.path === `resources/${kind}/${name}`),
+    ).toBe(true);
+  }
   await page.getByRole("tab", { name: "整体目录", exact: true }).click();
   await healthy();
   await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
@@ -195,6 +243,7 @@ try {
   await page.getByRole("tab", { name: "文稿目录", exact: true }).click();
   await healthy();
   expect(mdk.validateMdk(file).valid).toBe(true);
+  await page.getByRole("tab", { name: "源码", exact: true }).click();
   await page.getByRole("textbox", { name: "源码编辑器", exact: true }).focus();
   await page.keyboard.press("Control+End");
   await page.keyboard.insertText("\n\n拖入后仍可编辑保存。");
@@ -205,9 +254,7 @@ try {
   await expect
     .poll(() => mdk.readMdkTextFile(second, "markdown/001.md").content)
     .toContain("拖入后仍可编辑保存");
-  await expect(page.locator('.toast[role="status"]')).toContainText(
-    "工程已保存",
-  );
+  await expect(page.locator(".editor-statusbar")).toContainText("所有更改已保存");
   await expect(
     page.locator(".document-topbar").getByRole("button", { name: /保存/ }),
   ).toBeEnabled();
@@ -224,7 +271,7 @@ try {
   expect(mdk.validateMdk(second).valid).toBe(true);
   await healthy();
   console.log(
-    "Canceled/rejected drops, actual tree dragging, split image insertion and project replacement passed without backend conflicts.",
+    "Mixed media drops, catch-all attachments, tree dragging, split insertion and project replacement passed.",
   );
 } catch (error) {
   if (page && !executablePath)

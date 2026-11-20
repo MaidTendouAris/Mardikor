@@ -98,7 +98,7 @@ test("general insertion keeps opaque attachments inert and is atomic when a sour
     forged = path.join(root, "forged.png"),
     active = path.join(root, "active.svg");
   fs.writeFileSync(good, png);
-  fs.writeFileSync(unsupported, Buffer.from([0x4d, 0x5a, 0, 0xff]));
+  fs.writeFileSync(unsupported, png);
   fs.writeFileSync(prototypeName, "not supported");
   fs.writeFileSync(forged, "not an image");
   fs.writeFileSync(
@@ -113,19 +113,67 @@ test("general insertion keeps opaque attachments inert and is atomic when a sour
     text: { path: "markdown/001.md", content: "# before\n\n" + marker },
     marker,
   };
-  assert.throws(() => mdk.insertMdkResources(file, [good, path.join(root, "missing-input")], insertion));
+  assert.throws(() =>
+    mdk.insertMdkResources(
+      file,
+      [good, path.join(root, "missing-input")],
+      insertion,
+    ),
+  );
   assert.deepEqual(fs.readFileSync(file), before);
-  const result = mdk.insertMdkResources(file, [good, unsupported, prototypeName, forged, active], insertion);
+  const result = mdk.insertMdkResources(
+    file,
+    [good, unsupported, prototypeName, forged, active],
+    insertion,
+  );
   assert.match(result.content, /!\[good\.png\]/);
   for (const source of [unsupported, prototypeName, forged, active]) {
     const name = path.basename(source);
     assert.ok(result.content.includes(`\n[${name}](`));
-    assert.deepEqual(mdk.mdkAttachment(file, `resources/other/${name}`).getData(), fs.readFileSync(source));
+    assert.deepEqual(
+      mdk.mdkAttachment(file, `resources/other/${name}`).getData(),
+      fs.readFileSync(source),
+    );
   }
   mdk.saveMdkTextFile(file, "markdown/001.md", "external change");
   const changed = fs.readFileSync(file);
   assert.throws(() => mdk.insertMdkResources(file, [good], insertion));
   assert.deepEqual(fs.readFileSync(file), changed);
+});
+
+test("automatic folder import applies the same allowlist and preserves source subfolders", () => {
+  const file = path.join(root, "classified.mdk");
+  const folder = path.join(root, "batch");
+  fs.mkdirSync(path.join(folder, "nested"), { recursive: true });
+  const expected = [
+    ["cover.PNG", "image", png],
+    [
+      "nested/clip.mp4",
+      "video",
+      Buffer.from("000000186674797069736f6d00000000", "hex"),
+    ],
+    [
+      "nested/track.m4a",
+      "audio",
+      Buffer.from("000000186674797069736f6d00000000", "hex"),
+    ],
+    ["nested/type.otf", "font", Buffer.from("OTTO font header")],
+    ["nested/renamed.bin", "other", png],
+    ["nested/forged.png", "other", Buffer.from("plain text")],
+  ] as const;
+  for (const [name, , bytes] of expected)
+    fs.writeFileSync(path.join(folder, name), bytes);
+  const project = mdk.createMdkProject(file, "00");
+  mdk.importMdkResourceBatch(file, "resources", [folder], project.revision);
+  for (const [name, kind, bytes] of expected)
+    assert.deepEqual(
+      mdk.mdkAttachment(file, `resources/${kind}/batch/${name}`).getData(),
+      bytes,
+    );
+  assert.equal(
+    mdk.readMdkTextFile(file, "markdown/001.md").content,
+    "# 001\n\n",
+  );
 });
 
 test("multi-editor snapshots save all files atomically and retain both recovery buffers", () => {

@@ -82,6 +82,7 @@ try {
   );
   await expect(page.locator(".page-topbar")).toHaveCount(0);
   await expect(page.locator(".open-file-tabs")).toHaveCount(0);
+  await page.getByRole("tab", { name: "源码", exact: true }).click();
   const headings = markdownHeadings(source),
     last = headings.at(-1)!;
   await expect(
@@ -169,7 +170,7 @@ try {
   await expect(
     page.locator(".document-body img:not(.ProseMirror-separator)"),
   ).toHaveAttribute("src", /^data:image\/png/);
-  let zip = new AdmZip((await fs.readFile(file)).subarray(2));
+  let zip = new AdmZip(await fs.readFile(file));
   expect(zip.getEntry("resources/image/拖入图片.png")).not.toBeNull();
   expect(zip.readAsText("markdown/001.md")).toContain("resources/image/");
   await drop([pdf], ".document-body p");
@@ -177,19 +178,25 @@ try {
     "已插入 1 个资源",
   );
   await expect(page.locator(".document-body")).toContainText("attachment.pdf");
-  const before = await fs.readFile(file);
-  await drop([image, bad], ".document-body p");
-  await expect(page.locator('.toast[role="alert"]')).toContainText(
-    "不支持插入此类型",
+  await drop([bad], ".document-body p");
+  await expect(page.locator('.toast[role="status"]')).toContainText(
+    "已插入 1 个资源",
   );
-  expect((await fs.readFile(file)).equals(before)).toBe(true);
+  await expect(
+    page
+      .locator(".document-body")
+      .getByRole("link", { name: path.basename(bad), exact: true }),
+  ).toHaveAttribute(
+    "href",
+    `../resources/other/${encodeURIComponent(path.basename(bad))}`,
+  );
   await page.getByRole("button", { name: "关闭提示", exact: true }).click();
   if (!packaged)
     await page.screenshot({
       path: path.join(root, "visual-toolbar-and-outline.png"),
     });
   await page.getByRole("tab", { name: "预览", exact: true }).click();
-  await expect(page.locator(".fluid-reading .reading-unit")).toHaveCount(1);
+  await expect(page.locator(".reading-preview.mdk-v2-preview .reading-unit")).toHaveCount(1);
   await expect(page.locator(".reading-unit-label,.preview-toc")).toHaveCount(0);
   await expect(page.locator(".reading-unit h1")).toHaveText("文稿标题");
   expect(
@@ -215,7 +222,7 @@ try {
   await expect(page.locator('.toast[role="status"]')).toContainText(
     "已插入 1 个资源",
   );
-  zip = new AdmZip((await fs.readFile(file)).subarray(2));
+  zip = new AdmZip(await fs.readFile(file));
   expect(zip.getEntry("resources/image/拖入图片-2.png")).not.toBeNull();
   expect(zip.readAsText("markdown/001.md")).toContain(
     "%E6%8B%96%E5%85%A5%E5%9B%BE%E7%89%87-2.png",
@@ -235,6 +242,7 @@ try {
   await expect(page.locator(".document-title")).toContainText(
     "markdown/other.md",
   );
+  await page.getByRole("tab", { name: "源码", exact: true }).click();
   await expect(page.locator(".editor-statusbar")).toContainText("行 1，列 1");
   await expect
     .poll(() =>
@@ -246,7 +254,7 @@ try {
     .toBe(0);
   expect(errors).toEqual([]);
   console.log(
-    "Editor desktop passed: removed chrome/tabs, independent fixed toolbar, heading navigation, fluid default layouts, native image/PDF insertion, atomic whitelist rejection and source drop.",
+    "Editor desktop passed: heading navigation, fluid previews, visual image and attachment drops, and source insertion.",
   );
 } catch (error) {
   if (page && !packaged)

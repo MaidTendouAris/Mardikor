@@ -1,14 +1,17 @@
 import { appLocale, t } from "../../shared/i18n";
 import { ChevronLeft, ChevronRight, File } from "lucide-react";
 import type { ProjectFile } from "../../shared/mdk";
-import { previewMediaMime } from "../../shared/media-viewer";
+import { previewMediaKind, previewMediaMime } from "../../shared/media-viewer";
+import { MediaPlayer } from "./MediaPlayer";
 export function MediaPreview({
+  file,
   current,
   data,
   files,
   view,
   onSelect,
 }: {
+  file: string;
   current: ProjectFile;
   data: string;
   files: ProjectFile[];
@@ -25,6 +28,7 @@ export function MediaPreview({
         a.path.localeCompare(b.path, undefined, { numeric: true }),
       ),
     index = images.findIndex((f) => f.path === current.path);
+  const kind = previewMediaKind(previewMediaMime(current.path) ?? data.match(/^data:([^;]+)/)?.[1]);
   return (
     <div className="resource-preview">
       <div className="media-toolbar">
@@ -58,14 +62,12 @@ export function MediaPreview({
           </div>
         )}
       </div>
-      {data.startsWith("data:image/") ? (
+      {kind === "audio" || kind === "video" ? (
+        <MediaPlayer key={JSON.stringify([file, current.path])} file={file} path={current.path} kind={kind} />
+      ) : data.startsWith("data:image/") ? (
         <div className="image-pages single">
           <img src={data} alt={current.path} />
         </div>
-      ) : data.startsWith("data:audio/") ? (
-        <audio src={data} controls />
-      ) : data.startsWith("data:video/") ? (
-        <video src={data} controls />
       ) : (
         <div className="binary-file-info">
           <File size={32} />

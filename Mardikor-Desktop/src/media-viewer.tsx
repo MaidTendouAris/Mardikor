@@ -30,12 +30,14 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { appLocale, setAppLocale, t } from "../shared/i18n";
-import type {
-  MediaViewerApi,
-  MediaViewerInfo,
-  MediaWindowAction,
+import {
+  defaultMediaVolume,
+  type MediaViewerApi,
+  type MediaViewerInfo,
+  type MediaWindowAction,
 } from "../shared/media-viewer";
 import { EditorMenu } from "./components/EditorMenu";
+import { MediaPlaybackBar } from "./components/MediaPlaybackBar";
 import { desktopErrorMessage } from "./services/desktop";
 import "./styles/base.css";
 import "./styles/media-viewer.css";
@@ -50,7 +52,6 @@ type View = {
 };
 const initialView: View = { zoom: null, angle: 0, mirrored: false, x: 0, y: 0 };
 const initialSize: Size = { width: 0, height: 0 };
-const speedOptions = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
@@ -137,7 +138,11 @@ function MediaViewer({
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
-  const player = useRef<HTMLMediaElement>(null);
+  const [player, setPlayer] = useState<HTMLMediaElement | null>(null);
+  const attachPlayer = useCallback((element: HTMLMediaElement | null) => {
+    if (element) element.volume = defaultMediaVolume;
+    setPlayer(element);
+  }, []);
   const drag = useRef<{
     id: number;
     x: number;
@@ -164,8 +169,6 @@ function MediaViewer({
       stage.current?.focus({ preventScroll: true });
   }, []);
   const [saving, setSaving] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const [loop, setLoop] = useState(false);
   const [message, setMessage] = useState("");
   const [details, setDetails] = useState(false);
   const isImage = info.kind === "image";
@@ -298,6 +301,17 @@ function MediaViewer({
       setMessage(desktopErrorMessage(error));
     }
   }
+  function togglePlayback() {
+    if (!player || !showTools) return;
+    if (player.paused) {
+      void player.play().catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError"))
+          setMessage(desktopErrorMessage(error));
+      });
+    } else {
+      player.pause();
+    }
+  }
   async function save() {
     if (saving) return;
     setSaving(true);
@@ -335,6 +349,34 @@ function MediaViewer({
       setNatural({ width: element.videoWidth, height: element.videoHeight });
     setReady(true);
   }
+  const fileTools = (
+    <>
+      {!isAttachment && !failed && (
+        <Tool
+          label={t("附件详情")}
+          pressed={details}
+          onClick={() => setDetails(!details)}
+        >
+          <Info size={18} />
+        </Tool>
+      )}
+      <Tool
+        label={isAttachment || failed ? t("提取原文件") : t("另存原文件")}
+        shortcut="Ctrl+S"
+        onClick={() => void save()}
+        disabled={saving}
+      >
+        <Download size={18} />
+      </Tool>
+      <Tool
+        label={fullscreen ? t("退出全屏") : t("全屏显示")}
+        shortcut="F11"
+        onClick={() => void toggleFullscreen()}
+      >
+        {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+      </Tool>
+    </>
+  );
 
   return (
     <main
@@ -395,21 +437,21 @@ function MediaViewer({
           else return;
           event.preventDefault();
         } else if (
-          player.current &&
-          !(event.target as Element).closest("button,input,select,video,audio")
+          player &&
+          !(event.target as Element).closest(
+            "button,input,select,[role=slider]",
+          )
         ) {
-          const element = player.current;
           if (key === " ") {
-            if (element.paused) void element.play().catch(() => {});
-            else element.pause();
+            togglePlayback();
           } else if (
             (key === "arrowleft" || key === "arrowright") &&
-            Number.isFinite(element.duration)
+            Number.isFinite(player.duration)
           ) {
-            element.currentTime = clamp(
-              element.currentTime + (key === "arrowleft" ? -5 : 5),
+            player.currentTime = clamp(
+              player.currentTime + (key === "arrowleft" ? -5 : 5),
               0,
-              element.duration,
+              player.duration,
             );
           } else return;
           event.preventDefault();
@@ -462,153 +504,109 @@ function MediaViewer({
         </div>
       </header>
       <footer className="media-viewer-toolbar">
-        <div
-          className="media-viewer-tools"
-          role="toolbar"
-          aria-label={t("媒体查看工具")}
-        >
-          {isImage && (
-            <>
-              <div className="media-viewer-tool-group">
-                <Tool
-                  label={t("缩小图片")}
-                  shortcut="-"
-                  onClick={() => changeZoom(1 / 1.2)}
-                  disabled={!showTools}
-                >
-                  <ZoomOut size={18} />
-                </Tool>
-                <output className="media-viewer-zoom">
-                  {Math.max(1, Math.round(layout.zoom * 100))}%
-                </output>
-                <Tool
-                  label={t("放大图片")}
-                  shortcut="+"
-                  onClick={() => changeZoom(1.2)}
-                  disabled={!showTools}
-                >
-                  <ZoomIn size={18} />
-                </Tool>
-                <Tool
-                  label={t("适应窗口")}
-                  shortcut="0"
-                  onClick={() => center(null)}
-                  pressed={view.zoom === null}
-                  disabled={!showTools}
-                >
-                  <Scan size={18} />
-                </Tool>
-                <Tool
-                  label={t("实际大小")}
-                  shortcut="1"
-                  onClick={() => center(1)}
-                  pressed={view.zoom === 1}
-                  disabled={!showTools}
-                >
-                  <span className="media-viewer-actual">1:1</span>
-                </Tool>
-              </div>
-              <div className="media-viewer-tool-group">
-                <Tool
-                  label={t("向左旋转")}
-                  shortcut="Shift+R"
-                  onClick={() => rotate(-90)}
-                  disabled={!showTools}
-                >
-                  <RotateCcw size={18} />
-                </Tool>
-                <Tool
-                  label={t("向右旋转")}
-                  shortcut="R"
-                  onClick={() => rotate(90)}
-                  disabled={!showTools}
-                >
-                  <RotateCw size={18} />
-                </Tool>
-                <Tool
-                  label={t("水平翻转")}
-                  onClick={() =>
-                    setView((current) => ({
-                      ...current,
-                      mirrored: !current.mirrored,
-                    }))
-                  }
-                  pressed={view.mirrored}
-                  disabled={!showTools}
-                >
-                  <FlipHorizontal2 size={18} />
-                </Tool>
-              </div>
-            </>
-          )}
-          {isPlayer && (
-            <div className="media-viewer-tool-group">
-              <label>
-                {t("播放速度")}
-                <select
-                  value={speed}
-                  disabled={!showTools}
-                  onChange={(event) => {
-                    const rate = Number(event.target.value);
-                    if (player.current) player.current.playbackRate = rate;
-                    setSpeed(rate);
-                  }}
-                >
-                  {speedOptions.map((rate) => (
-                    <option key={rate} value={rate}>
-                      {rate}×
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={loop}
-                  disabled={!showTools}
-                  onChange={(event) => setLoop(event.target.checked)}
-                />
-                {t("循环播放")}
-              </label>
-            </div>
-          )}
-          <div className="media-viewer-tool-group">
+        {isPlayer && !failed ? (
+          <MediaPlaybackBar
+            player={player}
+            ready={showTools}
+            onTogglePlayback={togglePlayback}
+          >
+            {fileTools}
+          </MediaPlaybackBar>
+        ) : (
+          <div
+            className="media-viewer-tools"
+            role="toolbar"
+            aria-label={t("媒体查看工具")}
+          >
             {isImage && (
-              <Tool
-                label={t("复制图片")}
-                shortcut="Ctrl+C"
-                onClick={() => void copyImage()}
-                disabled={!showTools}
-              >
-                <Copy size={18} />
-              </Tool>
+              <>
+                <div className="media-viewer-tool-group">
+                  <Tool
+                    label={t("缩小图片")}
+                    shortcut="-"
+                    onClick={() => changeZoom(1 / 1.2)}
+                    disabled={!showTools}
+                  >
+                    <ZoomOut size={18} />
+                  </Tool>
+                  <output className="media-viewer-zoom">
+                    {Math.max(1, Math.round(layout.zoom * 100))}%
+                  </output>
+                  <Tool
+                    label={t("放大图片")}
+                    shortcut="+"
+                    onClick={() => changeZoom(1.2)}
+                    disabled={!showTools}
+                  >
+                    <ZoomIn size={18} />
+                  </Tool>
+                  <Tool
+                    label={t("适应窗口")}
+                    shortcut="0"
+                    onClick={() => center(null)}
+                    pressed={view.zoom === null}
+                    disabled={!showTools}
+                  >
+                    <Scan size={18} />
+                  </Tool>
+                  <Tool
+                    label={t("实际大小")}
+                    shortcut="1"
+                    onClick={() => center(1)}
+                    pressed={view.zoom === 1}
+                    disabled={!showTools}
+                  >
+                    <span className="media-viewer-actual">1:1</span>
+                  </Tool>
+                </div>
+                <div className="media-viewer-tool-group">
+                  <Tool
+                    label={t("向左旋转")}
+                    shortcut="Shift+R"
+                    onClick={() => rotate(-90)}
+                    disabled={!showTools}
+                  >
+                    <RotateCcw size={18} />
+                  </Tool>
+                  <Tool
+                    label={t("向右旋转")}
+                    shortcut="R"
+                    onClick={() => rotate(90)}
+                    disabled={!showTools}
+                  >
+                    <RotateCw size={18} />
+                  </Tool>
+                  <Tool
+                    label={t("水平翻转")}
+                    onClick={() =>
+                      setView((current) => ({
+                        ...current,
+                        mirrored: !current.mirrored,
+                      }))
+                    }
+                    pressed={view.mirrored}
+                    disabled={!showTools}
+                  >
+                    <FlipHorizontal2 size={18} />
+                  </Tool>
+                </div>
+              </>
             )}
-            {!isAttachment && !failed && (
-              <Tool
-                label={t("附件详情")}
-                pressed={details}
-                onClick={() => setDetails(!details)}
-              >
-                <Info size={18} />
-              </Tool>
-            )}
-            <Tool
-              label={isAttachment || failed ? t("提取原文件") : t("另存原文件")}
-              shortcut="Ctrl+S"
-              onClick={() => void save()}
-              disabled={saving}
-            >
-              <Download size={18} />
-            </Tool>
-            <Tool
-              label={fullscreen ? t("退出全屏") : t("全屏显示")}
-              shortcut="F11"
-              onClick={() => void toggleFullscreen()}
-            >
-              {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-            </Tool>
+            <div className="media-viewer-tool-group">
+              {isImage && (
+                <Tool
+                  label={t("复制图片")}
+                  shortcut="Ctrl+C"
+                  onClick={() => void copyImage()}
+                  disabled={!showTools}
+                >
+                  <Copy size={18} />
+                </Tool>
+              )}
+              {fileTools}
+            </div>
           </div>
-        </div>
+        )}
       </footer>
       <div
         ref={stage}
@@ -616,6 +614,7 @@ function MediaViewer({
         tabIndex={isImage && showTools ? 0 : undefined}
         role={isImage && showTools ? "region" : undefined}
         aria-label={isImage && showTools ? t("图片查看器") : undefined}
+        data-audio={(info.kind === "audio" && !failed) || undefined}
         data-pan={isImage && showTools}
         data-dragging={dragging}
         onPointerDown={pointerDown}
@@ -697,28 +696,25 @@ function MediaViewer({
           />
         ) : isVideo ? (
           <video
-            ref={(element) => {
-              player.current = element;
-            }}
+            ref={attachPlayer}
             src={info.src!}
-            controls
             playsInline
             preload="metadata"
-            loop={loop}
+            onClick={togglePlayback}
             onLoadedMetadata={(event) => metadata(event.currentTarget)}
             onError={() => setFailed(true)}
           />
         ) : (
           <div className="media-viewer-audio">
-            <AudioLines size={56} aria-hidden="true" />
+            <span className="media-viewer-audio-art" aria-hidden="true">
+              <AudioLines size={44} strokeWidth={1.5} />
+            </span>
+            <strong title={info.name}>{info.name}</strong>
             <audio
-              ref={(element) => {
-                player.current = element;
-              }}
+              ref={attachPlayer}
               src={info.src!}
-              controls
               preload="metadata"
-              loop={loop}
+              hidden
               onLoadedMetadata={(event) => metadata(event.currentTarget)}
               onError={() => setFailed(true)}
             />

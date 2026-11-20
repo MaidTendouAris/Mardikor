@@ -18,7 +18,6 @@ import {
   FolderOpen,
   FolderSearch,
   GripVertical,
-  ImagePlus,
   LoaderCircle,
   Minus,
   PencilLine,
@@ -50,7 +49,9 @@ import { SplitHandle } from "../components/SplitHandle";
 import { EditorDialog } from "../components/EditorMenu";
 import type { SourceModelPool } from "../components/SourceEditor";
 import {
+  isFixedResourceFolder,
   isResourcePath,
+  resourceRoot,
   type NativeDocumentDrop,
 } from "../../shared/resources";
 import { ProjectTree, type TreeAction } from "../components/ProjectTree";
@@ -85,7 +86,6 @@ import {
   type MdkEntry,
   type MdkProject,
   type MdkSettings,
-  type ResourceKind,
 } from "../../shared/mdk";
 import {
   defaultPageLength,
@@ -185,7 +185,6 @@ export const Workspace = forwardRef<
   const [operation, setOperation] = useState<"work" | "save" | null>(null);
   const busy = operation !== null || publicationBusy;
   const [query, setQuery] = useState("");
-  const [resourceKind, setResourceKind] = useState<ResourceKind>("image");
   const [fileSelection, setFileSelection] = useState<Set<string>>();
   useEffect(() => setFileSelection(undefined), [file]);
   const [sidebarWidth, setSidebarWidth] = useState(280);
@@ -1412,7 +1411,7 @@ export const Workspace = forwardRef<
     if (action === "extract-file") return extractResources([path], true);
     if (action === "import-files" || action === "import-folders")
       return importResource(
-        path,
+        isFixedResourceFolder(path) ? resourceRoot : path,
         action === "import-files" ? "files" : "folders",
       );
     if (entry && ["up", "down", "indent", "outdent"].includes(action))
@@ -1537,7 +1536,9 @@ export const Workspace = forwardRef<
     );
     if (!result) return;
     setProject(result.project);
-    notify(t("已导入 {0} 项资源至 {1}。", result.count, folder));
+    notify(folder === resourceRoot
+      ? t("已自动分类导入 {0} 项资源。", result.count)
+      : t("已导入 {0} 项资源至 {1}。", result.count));
   }
   async function extractResources(paths: string[], projectFiles = false) {
     if (!project) return;
@@ -1942,32 +1943,14 @@ export const Workspace = forwardRef<
           </button>
         </div>
         <div className="import-resource">
-          <Select
-            aria-label={t("资源类型")}
-            disabled={standalone || project?.readonly}
-            value={resourceKind}
-            onValueChange={(value) => setResourceKind(value as ResourceKind)}
-          >
-            {Object.entries({
-              image: t("图片"),
-              video: t("视频"),
-              audio: t("音频"),
-              font: t("字体"),
-              other: t("其他"),
-            }).map(([value, label]) => (
-              <option value={value} key={value}>
-                {label}
-              </option>
-            ))}
-          </Select>
           <button
             className="button small"
             disabled={busy || !project || standalone || project.readonly}
             onClick={() =>
-              void execute(() => importResource("resources/" + resourceKind))
+              void execute(() => importResource(resourceRoot))
             }
           >
-            <ImagePlus size={14} />
+            <FilePlus2 size={14} />
             {t("导入资源")}
           </button>
         </div>
