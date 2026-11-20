@@ -119,6 +119,7 @@ export const editorExtensions = (
     addNodeView() {
       return ({ node }) => {
         const image = document.createElement("img");
+        image.dataset.mdkRef = node.attrs.src ?? "";
         image.alt = node.attrs.alt ?? "";
         image.title = node.attrs.title ?? "";
         let live = true;

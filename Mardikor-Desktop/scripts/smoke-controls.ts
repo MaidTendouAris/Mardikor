@@ -21,7 +21,7 @@ new AppState(profile).preferences({
   directorySyncThreshold: 200,
 });
 const project = mdk.createMdkProject(file, "00");
-project.settings.appearance.font_family = "Custom Existing Font";
+project.settings.appearance.font_family = "serif";
 mdk.updateMdkSettings(file, project.settings);
 mdk.createTextFile(file, "meta/annotations.json", '{"note":"source only"}');
 const png = mdk.importMdkResource(
@@ -75,6 +75,15 @@ try {
     "rgb(255, 255, 255)",
   );
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
+  const pageMarkers = page.getByRole("switch", { name: "显示分页标记", exact: true });
+  const savePreferences = page.getByRole("button", { name: "保存偏好", exact: true });
+  await pageMarkers.uncheck();
+  await expect(savePreferences).toBeInViewport();
+  await page.getByRole("button", { name: "工程", exact: true }).click();
+  await page.getByRole("button", { name: "应用设置", exact: true }).click();
+  await expect(pageMarkers).not.toBeChecked();
+  await expect(savePreferences).toBeEnabled();
+  await pageMarkers.check();
   const preference = page.getByRole("combobox", {
     name: "双击文件时打开的视图",
     exact: true,
@@ -180,6 +189,18 @@ try {
     )
     .toEqual(opened);
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
+  const contentsTab = page.getByRole("tab", { name: "文稿目录", exact: true });
+  const filesTab = page.getByRole("tab", { name: "整体目录", exact: true });
+  await contentsTab.press("ArrowRight");
+  await expect(filesTab).toBeFocused();
+  await expect(filesTab).toHaveAttribute("aria-selected", "true");
+  await filesTab.press("ArrowLeft");
+  await expect(contentsTab).toHaveAttribute("aria-selected", "true");
+  const previewTab = page.getByRole("tab", { name: "预览", exact: true });
+  const visualTab = page.getByRole("tab", { name: "可视化", exact: true });
+  await previewTab.press("ArrowLeft");
+  await expect(visualTab).toBeFocused();
+  await expect(visualTab).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".document-paper")).toHaveCSS(
     "background-color",
     "rgb(20, 20, 20)",
@@ -242,32 +263,15 @@ try {
   await expect(contentsMarkdown).not.toBeChecked();
   await contentsMarkdown.check();
   const font = page.getByRole("combobox", { name: "字体", exact: true });
-  await expect(font).toHaveValue("Custom Existing Font");
+  await expect(font).toHaveAttribute("data-value", "serif");
+  expect(await font.evaluate((element) => element.tagName)).toBe("BUTTON");
   await font.focus();
   await font.press("ArrowDown");
-  await expect(
-    page.getByRole("listbox", { name: "字体建议", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await expect(page.getByRole("option", { name: "serif", exact: true })).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await expect(font).toHaveValue("Arial");
-  await font.fill("Noto Sans CJK");
-  await expect(
-    page.getByRole("listbox", { name: "字体建议", exact: true }),
-  ).toContainText("可直接输入");
-  await font.press("Escape");
-  await expect(font).toHaveValue("Noto Sans CJK");
-  await page.getByRole("button", { name: "选择字体", exact: true }).click();
-  await expect(page.getByRole("listbox", { name: "字体建议" })).toHaveCSS(
-    "opacity",
-    "1",
-  );
-  if (!executablePath)
-    await page.screenshot({ path: path.join(root, "font-suggestions.png") });
-  await page
-    .getByRole("option", { name: "Times New Roman", exact: true })
-    .click();
-  await expect(font).toHaveValue("Times New Roman");
+  await expect(font).toHaveAttribute("data-value", "sans-serif");
   await expect(font).toBeFocused();
   await selectOption(
     page,
@@ -277,7 +281,7 @@ try {
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect
     .poll(() => mdk.openMdkProject(file).settings.appearance.font_family)
-    .toBe("Times New Roman");
+    .toBe("sans-serif");
   expect(mdk.openMdkProject(file).settings.mode.comic.reading_direction).toBe(
     "rtl",
   );
@@ -301,8 +305,9 @@ try {
   await expect(
     page.locator(".monaco-source .monaco-editor-background").first(),
   ).toHaveCSS("background-color", "rgb(20, 20, 20)");
-  for (const name of ["可视化", "预览", "工程设置"])
+  for (const name of ["可视化", "预览"])
     await expect(tab(name)).toBeDisabled();
+  await expect(tab("工程设置")).toBeEnabled();
   await tab("整体目录").click();
   const filter = page.getByPlaceholder("筛选目录…");
   const openEntry = async (entry: string) => {
@@ -317,12 +322,12 @@ try {
   await expect(page.locator(".monaco-source .view-lines")).toContainText(
     "source only",
   );
-  for (const name of ["可视化", "预览", "工程设置"])
+  for (const name of ["可视化", "预览"])
     await expect(tab(name)).toBeDisabled();
   for (const asset of [png.path, svgPath]) {
     await openEntry(asset);
     await expect(tab("预览")).toHaveAttribute("aria-selected", "true");
-    for (const name of ["源码", "可视化", "工程设置"])
+    for (const name of ["源码", "可视化"])
       await expect(tab(name)).toBeDisabled();
     await expect(
       page.getByRole("img", { name: asset, exact: true }),
@@ -415,7 +420,7 @@ try {
     await page.screenshot({ path: path.join(root, "font-and-navigation.png") });
   expect(errors).toEqual([]);
   console.log(
-    "Custom dropdown keyboard/escape, persisted values, editable font suggestions and animated/reduced-motion navigation passed.",
+    "Custom dropdowns, tab keyboard navigation, retained settings drafts, valid font selection and navigation animations passed.",
   );
 } catch (error) {
   if (page && !executablePath)

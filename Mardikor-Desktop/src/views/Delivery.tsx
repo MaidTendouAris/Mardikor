@@ -1,17 +1,15 @@
 import { t } from "../../shared/i18n";
-import { useState } from "react";
-import {
-  CheckCircle2,
-  FileCheck2,
-  FolderOpen,
-  ShieldCheck,
-  TriangleAlert,
-} from "lucide-react";
+import { useState, type Ref } from "react";
+import { Archive, CheckCircle2, ShieldCheck } from "lucide-react";
 import { desktop } from "../services/desktop";
 import type { Ask, Notify } from "../App";
 import type { ValidationReport, ExportPlan } from "../../shared/mdk";
 import { isMarkdownFile } from "../../shared/workspace";
-import { PublicationExport } from "../components/PublicationExport";
+import {
+  PublicationExport,
+  type PublicationHandle,
+} from "../components/PublicationExport";
+import { ValidationIssueRow } from "../components/ValidationIssueRow";
 
 const scopeLabels = {
   container: "容器",
@@ -28,61 +26,115 @@ const statusLabels = {
 } as const;
 
 export function Delivery({
+  hidden,
   file,
+  revision,
+  getRevision,
   flush,
   notify,
   ask,
   onConfigured,
+  onPackDistribution,
+  publicationRef,
+  onPublicationDirty,
+  onPublicationBusy,
+  issueFiles,
+  onOpenIssue,
+  busy: workspaceBusy,
 }: {
+  hidden: boolean;
   file: string;
+  revision: string;
+  getRevision: () => string | undefined;
   flush: () => Promise<boolean>;
   notify: Notify;
   ask: Ask;
-  onConfigured: (file: string) => Promise<void>;
+  onConfigured: () => Promise<void>;
+  onPackDistribution: () => void;
+  publicationRef: Ref<PublicationHandle>;
+  onPublicationDirty: (dirty: boolean) => void;
+  onPublicationBusy: (busy: boolean) => void;
+  issueFiles: ReadonlySet<string>;
+  onOpenIssue: (path: string) => void;
+  busy: boolean;
 }) {
-  const [input, setInput] = useState(file);
-  const [report, setReport] = useState<ValidationReport | null>(null);
-  const [exportPlan, setExportPlan] = useState<ExportPlan | null>(null);
+  const standalone = isMarkdownFile(file);
+  const [section, setSection] = useState<"publication" | "project">(
+    "publication",
+  );
+  const [check, setCheck] = useState<{
+    revision?: string;
+    report: ValidationReport;
+    plan: ExportPlan | null;
+    selectionKey: string;
+  }>();
+  const currentCheck = check?.revision === revision ? check : undefined;
+  const report = currentCheck?.report;
+  const exportPlan = currentCheck?.plan;
   const [includeState, setIncludeState] = useState(false);
   const [excluded, setExcluded] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const selection = {
+    includeState,
+    exclude: excluded.filter((path) => issueFiles.has(path)),
+  };
+  const selectionKey = JSON.stringify([
+    includeState,
+    [...selection.exclude].sort(),
+  ]);
+  const stale = Boolean(
+    exportPlan && currentCheck?.selectionKey !== selectionKey,
+  );
+  const deliveryFiles = exportPlan
+    ? [...exportPlan.included_meta, ...exportPlan.excluded_meta].sort()
+    : [];
+  const omitted = new Set(selection.exclude);
+  const excludedFiles = deliveryFiles.filter(
+    (path) => omitted.has(path) || (path.startsWith("state/") && !includeState),
+  );
+  const omittedFiles = new Set(excludedFiles);
+  const includedFiles = deliveryFiles.filter((path) => !omittedFiles.has(path));
+  const [working, setWorking] = useState(false);
+  const busy = working || workspaceBusy;
   async function unpack() {
-    setBusy(true);
+    setWorking(true);
     try {
       if (!(await flush())) return;
-      const source = input || (await desktop().dialog("open-project"));
-      if (!source) return;
+      if (
+        (await desktop().inspectEnvelope(file)).kind === "MDKP" &&
+        !(await ask({
+          title: t("解包受保护工程"),
+          description: t("选定目录将写入明文正文和资源。"),
+          danger: true,
+        }))
+      )
+        return;
       const directory = await desktop().dialog("directory");
       if (!directory) return;
-      await desktop().invoke("unpack", source, directory);
+      await desktop().invoke("unpack", file, directory);
       notify(t("工程已解包。"));
     } catch (error) {
       notify(String(error), true);
     } finally {
-      setBusy(false);
+      setWorking(false);
     }
   }
   async function perform(action: "validate" | "preflight" | "export") {
-    setBusy(true);
+    setWorking(true);
     try {
       if (!(await flush())) return;
-      let selected = input;
-      if (!selected) selected = (await desktop().dialog("open-project")) ?? "";
-      if (!selected) return;
-      setInput(selected);
-      setReport(null);
-      setExportPlan(null);
-      const selection = { includeState, exclude: excluded };
+      const checkedRevision = getRevision();
+      setCheck(undefined);
       const plan =
         action !== "validate"
-          ? await desktop().invoke("exportPlan", selected, selection)
+          ? await desktop().invoke("exportPlan", file, selection)
           : null;
-      const result =
-        plan?.report ?? (await desktop().invoke("validate", selected));
-      if (!plan || plan.preflight_report || !result.valid) {
-        setReport(result);
-        setExportPlan(plan);
-      }
+      const result = plan?.report ?? (await desktop().invoke("validate", file));
+      setCheck({
+        revision: plan?.revision ?? checkedRevision,
+        report: result,
+        plan,
+        selectionKey,
+      });
       if (action === "export") {
         if (!result.valid) throw new Error(t("请先修复校验错误。"));
         if (
@@ -99,96 +151,98 @@ export function Delivery({
           return;
         const output = await desktop().dialog(
           "save-project",
-          selected.split(/[\\/]/).pop(),
+          file.split(/[\\/]/).pop(),
         );
         if (output) {
           await desktop().invoke(
             "export",
-            selected,
+            file,
             output,
             plan?.revision ?? "",
             selection,
           );
-          setReport(result);
-          setExportPlan(plan);
           notify(t("工程已导出。"));
         }
       }
     } catch (error) {
       notify(String(error), true);
     } finally {
-      setBusy(false);
+      setWorking(false);
     }
   }
   return (
-    <section className="delivery-page page-scroll">
+    <section
+      className="delivery-page page-scroll"
+      hidden={hidden}
+      aria-label={t("校验与导出")}
+    >
       <div className="delivery-heading">
         <div>
           <h1>{t("校验与导出")}</h1>
+          <p title={file}>{file.split(/[\\/]/).pop()}</p>
         </div>
       </div>
-      <div className="delivery-file">
-        <span className="recent-file">
-          <FileCheck2 size={24} />
-        </span>
-        <div>
-          <strong>{input.split(/[\\/]/).pop() || t("未选择工程")}</strong>
-          <span>{input || t("支持 .mdk / .md 文件")}</span>
-        </div>
-        <button
-          className="button"
-          disabled={busy}
-          onClick={() =>
-            void (async () => {
-              if (!(await flush())) return;
-              const selected = await desktop().dialog("open-project");
-              if (selected) {
-                setInput(selected);
-                setReport(null);
-                setExportPlan(null);
-                setExcluded([]);
-                setIncludeState(false);
-              }
-            })().catch((error) => notify(String(error), true))
-          }
+      {!standalone && (
+        <div
+          className="delivery-sections"
+          role="group"
+          aria-label={t("校验与导出")}
         >
-          <FolderOpen size={16} />
-          {t("选择文件")}
-        </button>
+          <button
+            className="button"
+            aria-pressed={section === "publication"}
+            onClick={() => setSection("publication")}
+          >
+            PDF / EPUB
+          </button>
+          <button
+            className="button"
+            aria-pressed={section === "project"}
+            onClick={() => setSection("project")}
+          >
+            MDK / MDKE
+          </button>
+        </div>
+      )}
+      <div hidden={section !== "publication"}>
+        <PublicationExport
+          file={file}
+          flush={flush}
+          notify={notify}
+          onConfigured={onConfigured}
+          ask={ask}
+          handleRef={publicationRef}
+          onDirty={onPublicationDirty}
+          onBusy={onPublicationBusy}
+          issueFiles={issueFiles}
+          onOpenIssue={onOpenIssue}
+        />
       </div>
-      <PublicationExport
-        file={input}
-        flush={flush}
-        notify={notify}
-        onConfigured={async (path) => {
-          setReport(null);
-          setExportPlan(null);
-          await onConfigured(path);
-        }}
-      />
-      {!isMarkdownFile(input) && (
+      {!standalone && section === "project" && (
         <>
           <div className="section-heading">
             <h2>{t("MDK 工程容器交付")}</h2>
           </div>
           <div className="delivery-cards">
             <div className="validation-status">
-              {report?.valid ? (
+              {report?.valid && !stale ? (
                 <CheckCircle2 size={20} />
               ) : (
                 <ShieldCheck size={20} />
               )}
               <h2>
-                {report
-                  ? report.valid
-                    ? exportPlan
-                      ? t("基础内容交付通过")
-                      : t("工程校验通过")
-                    : t("校验未通过")
-                  : t("未校验")}
+                {stale
+                  ? t("交付范围已更改，请重新预检")
+                  : report
+                    ? report.valid
+                      ? exportPlan
+                        ? t("基础内容交付通过")
+                        : t("工程校验通过")
+                      : t("校验未通过")
+                    : t("未校验")}
               </h2>
               <p>
-                {report
+                {report && !stale
                   ? t(
                       "{0} 个错误 · {1} 个警告 · {2} 条提示",
                       report.issues.filter((i) => i.severity === "error")
@@ -223,7 +277,7 @@ export function Delivery({
                 </button>
                 <button
                   className="button primary"
-                  disabled={busy}
+                  disabled={busy || stale}
                   onClick={() => void perform("export")}
                 >
                   {t("导出 .mdk")}
@@ -244,86 +298,110 @@ export function Delivery({
               ))}
             </dl>
           </div>
-          <div className="section-heading">
-            <h2>{t("MDK 容器校验详情")}</h2>
+          <div className="delivery-distribution">
+            <div>
+              <h2>{t("MDKE 分发包")}</h2>
+              <p>{t("封装当前工程，可选择压缩方式和解包口令。")}</p>
+            </div>
+            <button
+              className="button"
+              disabled={busy}
+              onClick={onPackDistribution}
+            >
+              <Archive size={16} />
+              {t("生成 MDKE")}
+            </button>
           </div>
-          {exportPlan && (
-            <div className="export-meta-plan">
-              <strong>{t("本次交付范围")}</strong>
-              <p>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={includeState}
-                    onChange={(event) => setIncludeState(event.target.checked)}
-                  />{" "}
-                  {t("携带可重建状态")}
-                </label>
-              </p>
-              {exportPlan.selectable.length > 0 && (
-                <fieldset>
-                  <legend>{t("随副本携带的附加文件")}</legend>
-                  {exportPlan.selectable.map((name) => (
-                    <div key={name}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={!excluded.includes(name)}
-                          onChange={(event) => {
-                            const keep = event.target.checked;
-                            setExcluded((old) =>
-                              keep
-                                ? old.filter((item) => item !== name)
-                                : [...old, name],
-                            );
-                          }}
-                        />{" "}
-                        {name}
-                      </label>
+          {report && (
+            <>
+              <div className="section-heading">
+                <h2>{t("MDK 容器校验详情")}</h2>
+              </div>
+              {exportPlan && (
+                <div className="export-meta-plan">
+                  <strong>{t("本次交付范围")}</strong>
+                  <p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={includeState}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setIncludeState(event.target.checked)
+                        }
+                      />{" "}
+                      {t("携带可重建状态")}
+                    </label>
+                  </p>
+                  {exportPlan.selectable.length > 0 && (
+                    <fieldset>
+                      <legend>{t("随副本携带的附加文件")}</legend>
+                      {exportPlan.selectable.map((name) => (
+                        <div key={name}>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={!omitted.has(name)}
+                              disabled={busy}
+                              onChange={(event) => {
+                                const keep = event.target.checked;
+                                setExcluded((old) =>
+                                  keep
+                                    ? old.filter((item) => item !== name)
+                                    : [...old, name],
+                                );
+                              }}
+                            />{" "}
+                            {name}
+                          </label>
+                        </div>
+                      ))}
+                    </fieldset>
+                  )}
+                  <p aria-live="polite">
+                    {t("保留：")}
+                    {includedFiles.join("、") || t("无")}
+                  </p>
+                  <p aria-live="polite">
+                    {t("剔除：")}
+                    {excludedFiles.join("、") || t("无")}
+                  </p>
+                </div>
+              )}
+              {!stale && report?.scopes && (
+                <dl className="validation-summary">
+                  {report.scopes.map(({ scope, status }) => (
+                    <div key={scope}>
+                      <dt>{t(scopeLabels[scope])}</dt>
+                      <dd>{t(statusLabels[status])}</dd>
                     </div>
                   ))}
-                </fieldset>
+                </dl>
               )}
-              <p>
-                {t("保留：")}
-                {exportPlan.included_meta.join("、") || t("无")}
-              </p>
-              <p>
-                {t("剔除：")}
-                {exportPlan.excluded_meta.join("、") || t("无")}
-              </p>
-            </div>
-          )}
-          {report?.scopes && (
-            <dl className="validation-summary">
-              {report.scopes.map(({ scope, status }) => (
-                <div key={scope}>
-                  <dt>{t(scopeLabels[scope])}</dt>
-                  <dd>{t(statusLabels[status])}</dd>
+              {!stale && (
+                <div className="issues-list">
+                  {report?.issues.length ? (
+                    report.issues.map((issue, index) => (
+                      <ValidationIssueRow
+                        key={index}
+                        issue={issue}
+                        fallback={t("工程容器")}
+                        onOpen={
+                          issue.path && issueFiles.has(issue.path)
+                            ? onOpenIssue
+                            : undefined
+                        }
+                      />
+                    ))
+                  ) : (
+                    <div className="no-issues">
+                      <p>{report ? t("未发现问题。") : t("暂无校验结果。")}</p>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </dl>
+              )}
+            </>
           )}
-          <div className="issues-list">
-            {report?.issues.length ? (
-              report.issues.map((issue, index) => (
-                <div className={`issue ${issue.severity}`} key={index}>
-                  <TriangleAlert size={18} />
-                  <div>
-                    <strong>
-                      {issue.path ?? t("工程容器")}
-                      <code>{issue.code}</code>
-                    </strong>
-                    <p>{issue.message}</p>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="no-issues">
-                <p>{report ? t("未发现问题。") : t("暂无校验结果。")}</p>
-              </div>
-            )}
-          </div>
         </>
       )}
     </section>

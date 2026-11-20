@@ -94,6 +94,25 @@ function fixture(mode = "01") {
   );
   return { file, directory };
 }
+
+test("editing multiple publication presets validates the whole batch before committing", () => {
+  const { file } = fixture();
+  const before = fs.readFileSync(file);
+  const revision = mdk.openMdkProject(file).revision;
+  const pdf = { format: "pdf", presetId: "print", options: { page_width: 170 }, metadata: {} } as const;
+  assert.throws(() => mdk.saveMdkPublication(file, [pdf, {
+    format: "epub", presetId: "read", options: { layout: "fixed", page_width: -1 }, metadata: {},
+  }], revision));
+  assert.deepEqual(fs.readFileSync(file), before);
+  const saved = mdk.saveMdkPublication(file, [pdf, {
+    format: "epub", presetId: "read", options: { direction: "rtl" }, metadata: {},
+  }], revision);
+  assert.deepEqual(saved.ids, ["print", "read"]);
+  assert.notEqual(saved.revision, revision);
+  assert.equal(publicationInfo(file, runtime).presets?.[0].options.page_width, 170);
+  const epub = publicationInfo(file, runtime).presets?.[1];
+  assert.equal(epub?.format === "epub" && epub.options.direction, "rtl");
+});
 function changeControl(
   file: string,
   name: string,

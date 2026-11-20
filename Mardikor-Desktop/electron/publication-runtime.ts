@@ -1,4 +1,5 @@
 import { appLocale, t } from "../shared/i18n";
+import { accessFor } from "./access-session";
 import { app, BrowserWindow, nativeImage, session } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -272,6 +273,7 @@ export function publicationRuntime(
         engine,
         assetDirectory: assets,
         configuration: state.publication(file),
+        access: accessFor(file),
       }),
     assetDirectory: assets,
     localConfiguration: (file, value) => state.publication(file, value),

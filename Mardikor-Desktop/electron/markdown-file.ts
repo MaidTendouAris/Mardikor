@@ -270,12 +270,15 @@ export function copyMarkdownDraft(
     throw new Error(t("请选择 .md 输出路径，并提供当前文稿的草稿。"));
   write(output, texts[0].content);
 }
-export function readMarkdownResource(file: string, relative: string) {
+export function readMarkdownResourceBytes(file: string, relative: string) {
   const target = resolveLocalMarkdownPath(file, relative),
     info = fs.statSync(target);
   if (!info.isFile() || info.size > limit)
     throw new Error(t("资源无效或超过 64 MiB。"));
-  const bytes = fs.readFileSync(target);
+  return fs.readFileSync(target);
+}
+export function readMarkdownResource(file: string, relative: string) {
+  const bytes = readMarkdownResourceBytes(file, relative);
   checkMedia(relative, bytes);
   const mime = detectMediaType(bytes);
   if (

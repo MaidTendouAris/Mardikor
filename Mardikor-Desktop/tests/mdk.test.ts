@@ -23,10 +23,8 @@ function fixture(
   mimetypeFirst = true,
 ) {
   const zip = new AdmZip(undefined, { noSort: true });
-  if (mimetypeFirst) {
-    zip.addFile("mimetype", Buffer.from(mdk.MDK_MIMETYPE));
-    zip.getEntry("mimetype")!.header.method = 0;
-  }
+  if (mimetypeFirst)
+    addArchiveMember(zip, "mimetype", Buffer.from(mdk.MDK_MIMETYPE));
   addArchiveMember(
     zip,
     "mdk.toml",
@@ -38,14 +36,15 @@ function fixture(
     ),
   );
   for (const [name, content] of Object.entries(files))
-    if (name !== "mdk.toml") zip.addFile(name, Buffer.from(content));
-  if (!mimetypeFirst) zip.addFile("mimetype", Buffer.from(mdk.MDK_MIMETYPE));
+    if (name !== "mdk.toml") addArchiveMember(zip, name, Buffer.from(content));
+  if (!mimetypeFirst)
+    addArchiveMember(zip, "mimetype", Buffer.from(mdk.MDK_MIMETYPE));
   const file = target(name);
   fs.writeFileSync(file, zip.toBuffer());
   return file;
 }
 
-test("writer uses the standard ZIP header and two physical STORE entries", () => {
+test("writer uses the standard ZIP header with mimetype and manifest first", () => {
   const file = target("new.mdk");
   mdk.createMdkProject(file, "01");
   const bytes = fs.readFileSync(file);
@@ -588,13 +587,17 @@ test("archive path traversal, duplicate names and oversized declarations fail be
   assert.equal(mdk.validateMdk(oversized).valid, false);
 });
 
-test("media imports check the real file signature before updating an archive", () => {
+test("generic imports preserve bytes independent of extension and validate image requests separately", () => {
   const file = target("media.mdk");
   mdk.createMdkProject(file, "00");
   fs.writeFileSync(target("fake.png"), "<html>not an image</html>");
-  const before = fs.readFileSync(file);
-  assert.throws(() => mdk.importMdkResource(file, target("fake.png"), "image"));
-  assert.deepEqual(fs.readFileSync(file), before);
+  const { path: internal } = mdk.importMdkResource(file, target("fake.png"), "image");
+  assert.equal(mdk.mdkAttachment(file, internal).getData().toString(), "<html>not an image</html>");
+  mdk.saveMdkTextFile(file, "markdown/001.md", `[附件](../${internal})`);
+  assert.ok(mdk.validateMdk(file).valid);
+  mdk.saveMdkTextFile(file, "markdown/001.md", `![图片](../${internal})`);
+  const report = mdk.validateMdk(file);
+  assert.equal(report.scopes?.find((scope) => scope.scope === "content")?.status, "fail");
 });
 
 test("the physical file manager creates UTF-8 files, folders and indexed Markdown documents", () => {
@@ -868,9 +871,8 @@ test("a failing resource batch leaves every imported file outside the archive", 
   const file = target("resource-atomic.mdk");
   const project = mdk.createMdkProject(file, "00");
   const valid = target("valid-note.txt");
-  const invalid = target("invalid-batch-image.png");
+  const invalid = target("missing-batch-file.png");
   fs.writeFileSync(valid, "keep external");
-  fs.writeFileSync(invalid, "not a PNG");
   assert.throws(() =>
     mdk.importMdkResourceBatch(
       file,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
-import { crc32, deflateRawSync } from "node:zlib";
+import { crc32 } from "node:zlib";
 import AdmZip from "adm-zip";
 import { parse } from "smol-toml";
 import * as mdk from "../electron/mdk";
@@ -25,6 +25,7 @@ function fixture(
   filename: string,
   entries: Record<string, string | Buffer> = {},
   control = header,
+  deflated?: string,
 ) {
   const zip = new AdmZip(undefined, { noSort: true });
   const fields = {
@@ -35,6 +36,7 @@ function fixture(
   };
   for (const [name, data] of Object.entries(fields))
     addArchiveMember(zip, name, Buffer.from(data));
+  if (deflated) zip.getEntry(deflated)!.header.method = 8;
   const file = at(filename);
   fs.writeFileSync(file, zip.toBuffer());
   return file;
@@ -52,8 +54,11 @@ test("v2 writer, reader and independent ZIP parser agree about file offsets, con
     ["mimetype", "mdk.toml"],
   );
   assert.equal(zip.readAsText(mime), mdk.MDK_MIMETYPE);
-  assert.equal(mime.header.method, 0);
-  assert.equal(manifest.header.method, 0);
+  for (const entry of zip.getEntries()) {
+    assert.equal(entry.header.method, 0, entry.entryName);
+    assert.equal(raw.readUInt16LE(entry.header.offset + 8), 0, entry.entryName);
+    assert.equal(entry.header.compressedSize, entry.header.size, entry.entryName);
+  }
   assert.equal(mime.header.flags & 0x808, 0x800);
   assert.equal(manifest.header.flags & 0x808, 0x800);
   const control = parse(zip.readAsText("mdk.toml"));
@@ -66,6 +71,72 @@ test("v2 writer, reader and independent ZIP parser agree about file offsets, con
     project.contents.nodes?.[0].document,
     project.contents.documents?.[0].id,
   );
+});
+
+test("pack, save and delivery keep directories, encoded media and unknown entries in STORE", () => {
+  const file = at("stored-book.mdk");
+  mdk.packMdk("docs/examples/v2/book", file);
+  const png = fs.readFileSync("assets/icon.png");
+  const image = mdk.importMdkResource(file, path.resolve("assets/icon.png"), "image");
+  mdk.createTextFile(file, "meta/notes.txt", "Keep these original bytes.\n");
+  const delivered = at("stored-delivery.mdk");
+  mdk.exportMdk(file, delivered);
+  for (const output of [file, delivered]) {
+    const bytes = fs.readFileSync(output);
+    const archive = new AdmZip(bytes);
+    assert(archive.getEntries().some((entry) => entry.isDirectory));
+    for (const entry of archive.getEntries()) {
+      assert.equal(entry.header.method, 0, entry.entryName);
+      assert.equal(bytes.readUInt16LE(entry.header.offset + 8), 0, entry.entryName);
+      assert.equal(entry.header.compressedSize, entry.header.size, entry.entryName);
+    }
+    assert.deepEqual(archive.readFile(image.path), png);
+    assert.equal(archive.readAsText("meta/notes.txt"), "Keep these original bytes.\n");
+  }
+});
+
+test("non-STORE methods are rejected in either header and never overwrite or deliver the source", () => {
+  const attachment = "meta/保留.dat";
+  const legacy = fixture("legacy-compressed.mdk", { [attachment]: "Unchanged ".repeat(200) }, header, attachment);
+  const original = fs.readFileSync(legacy);
+  const diagnostic = (file: string, name: string) => {
+    const report = mdk.validateMdk(file);
+    assert.equal(report.valid, false);
+    assert.equal(report.scopes?.[0].status, "fail");
+    const issue = report.issues[0];
+    assert.equal(issue.code, "mdk.container.invalid");
+    assert.equal(issue.severity, "error");
+    assert.equal(issue.path, name);
+    assert.equal(issue.field, "method");
+    assert.match(issue.message, /禁止容器压缩/);
+  };
+  assert.equal(new AdmZip(original).readAsText(attachment), "Unchanged ".repeat(200));
+  diagnostic(legacy, attachment);
+  const destination = at("rejected-delivery.mdk");
+  for (const action of [
+    () => mdk.openMdkProject(legacy),
+    () => mdk.saveMdkTextFile(legacy, "contents.toml", ""),
+    () => mdk.createMdkProject(legacy, "00"),
+    () => mdk.exportMdk(legacy, destination),
+    () => mdk.readMdkPublication(legacy),
+  ]) assert.throws(action, /禁止容器压缩/);
+  assert.deepEqual(fs.readFileSync(legacy), original);
+  assert.equal(fs.existsSync(destination), false);
+
+  const folder = "resources/empty/";
+  const source = fixture("header-template.mdk", { [folder]: "" });
+  const bytes = fs.readFileSync(source);
+  const entry = new AdmZip(bytes).getEntry(folder)!;
+  const central = bytes.readUInt32LE(bytes.length - 6);
+  const lastRecord = bytes.indexOf(Buffer.from(folder), central) - 46;
+  assert.equal(bytes.readUInt32LE(lastRecord), 0x02014b50);
+  for (const offset of [entry.header.offset + 8, lastRecord + 10]) {
+    const invalid = Buffer.from(bytes);
+    invalid.writeUInt16LE(8, offset);
+    const file = at("nonstore-" + offset + ".mdk");
+    fs.writeFileSync(file, invalid);
+    diagnostic(file, folder);
+  }
 });
 
 test("unrecognized bytes, invalid recognized ZIP and invalid core fields have distinct results", () => {
@@ -518,8 +589,7 @@ test("ordinary entries can use small ZIP64 sizes and an unsigned descriptor", ()
     end = input.length - 22,
     start = input.readUInt32LE(end + 16);
   const name = Buffer.from("extra.txt"),
-    body = Buffer.from("descriptor test"),
-    compressed = deflateRawSync(body);
+    body = Buffer.from("descriptor test");
   let offset = start;
   while (
     !input
@@ -544,7 +614,7 @@ test("ordinary entries can use small ZIP64 sizes and an unsigned descriptor", ()
   local.writeUInt16LE(extra.length, 28);
   const descriptor = Buffer.alloc(20);
   descriptor.writeUInt32LE(crc32(body), 0);
-  descriptor.writeBigUInt64LE(BigInt(compressed.length), 4);
+  descriptor.writeBigUInt64LE(BigInt(body.length), 4);
   descriptor.writeBigUInt64LE(BigInt(body.length), 12);
   const central = Buffer.from(input.subarray(offset, offset + 46));
   central.writeUInt16LE(45, 6);
@@ -554,11 +624,11 @@ test("ordinary entries can use small ZIP64 sizes and an unsigned descriptor", ()
   central.writeUInt16LE(extra.length, 30);
   const endRecord = Buffer.from(input.subarray(end));
   endRecord.writeUInt32LE(input.readUInt32LE(end + 12) + extra.length, 12);
-  const localData = Buffer.concat([local, name, extra, compressed, descriptor]);
+  const localData = Buffer.concat([local, name, extra, body, descriptor]);
   endRecord.writeUInt32LE(localOffset + localData.length, 16);
   const exact = Buffer.from(extra);
   exact.writeBigUInt64LE(BigInt(body.length), 4);
-  exact.writeBigUInt64LE(BigInt(compressed.length), 12);
+  exact.writeBigUInt64LE(BigInt(body.length), 12);
   const zip64 = at("zip64.mdk");
   fs.writeFileSync(
     zip64,

@@ -1,5 +1,11 @@
 import { t } from "../../shared/i18n";
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useState,
+  type Ref,
+} from "react";
 import {
   Download,
   FileCheck2,
@@ -8,11 +14,12 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Select } from "./Select";
-import { desktop } from "../services/desktop";
-import type { Notify } from "../App";
+import { MdkPublicationExport } from "./MdkPublicationExport";
+import { isMarkdownFile } from "../../shared/workspace";
+import { desktop, desktopErrorMessage } from "../services/desktop";
+import type { Ask, Notify } from "../App";
 import type {
   PublicationConfiguration,
-  PublicationFormat,
   PublicationInfo,
   PublicationPlan,
   PublicationStage,
@@ -28,28 +35,48 @@ const progressLabels: Record<PublicationStage, string> = {
   write: t("正在校验修订并写入导出文件…"),
 };
 
-export function PublicationExport({
-  file,
-  flush,
-  notify,
-  onConfigured,
-}: {
+export function PublicationExport(props: PublicationExportProps) {
+  return isMarkdownFile(props.file) ? (
+    <LocalPublicationExport {...props} />
+  ) : (
+    <MdkPublicationExport {...props} progressLabels={progressLabels} />
+  );
+}
+
+export interface PublicationHandle {
+  save: () => Promise<boolean>;
+}
+
+export interface PublicationExportProps {
   file: string;
   flush: () => Promise<boolean>;
   notify: Notify;
   onConfigured: (file: string) => Promise<void>;
-}) {
+  ask: Ask;
+  handleRef: Ref<PublicationHandle>;
+  onDirty: (dirty: boolean) => void;
+  onBusy: (busy: boolean) => void;
+  issueFiles: ReadonlySet<string>;
+  onOpenIssue: (path: string) => void;
+}
+
+function LocalPublicationExport({
+  file,
+  flush,
+  notify,
+  onConfigured,
+  ask,
+  handleRef,
+  onDirty,
+  onBusy,
+}: PublicationExportProps) {
   const [info, setInfo] = useState<PublicationInfo | null>(null),
     [draft, setDraft] = useState<PublicationConfiguration | null>(null),
-    [format, setFormat] = useState<PublicationFormat>("pdf"),
     [changed, setChanged] = useState(false),
     [busy, setBusy] = useState(false),
     [progress, setProgress] = useState(""),
-    [presetId, setPresetId] = useState(""),
     [error, setError] = useState(""),
     [plan, setPlan] = useState<PublicationPlan | null>(null);
-  const flushRef = useRef(flush);
-  flushRef.current = flush;
   useEffect(
     () =>
       window.mardikor?.onPublicationProgress((source, stage) => {
@@ -57,6 +84,8 @@ export function PublicationExport({
       }),
     [file],
   );
+  useLayoutEffect(() => onDirty(changed), [changed, onDirty]);
+  useLayoutEffect(() => onBusy(busy), [busy, onBusy]);
   useEffect(() => {
     let active = true;
     setInfo(null);
@@ -64,15 +93,10 @@ export function PublicationExport({
     setError("");
     setPlan(null);
     setChanged(false);
-    setFormat("pdf");
-    setPresetId("");
     if (file) {
       setBusy(true);
-      void (async () => {
-        if (!(await flushRef.current()))
-          throw new Error(t("请先保存或修复编辑缓冲区。"));
-        return desktop().invoke("publicationInfo", file);
-      })()
+      void desktop()
+        .invoke("publicationInfo", file)
         .then((value) => {
           if (active) {
             setInfo(value);
@@ -80,7 +104,7 @@ export function PublicationExport({
           }
         })
         .catch((error) => {
-          if (active) setError(String(error));
+          if (active) setError(desktopErrorMessage(error));
         })
         .finally(() => {
           if (active) setBusy(false);
@@ -101,6 +125,15 @@ export function PublicationExport({
     setPlan(null);
   };
   async function reload() {
+    if (
+      changed &&
+      !(await ask({
+        title: t("放弃未保存的导出配置？"),
+        confirm: t("重新读取配置"),
+        danger: true,
+      }))
+    )
+      return;
     setBusy(true);
     try {
       const value = await desktop().invoke("publicationInfo", file);
@@ -110,36 +143,12 @@ export function PublicationExport({
       setPlan(null);
       setError("");
     } catch (error) {
-      setError(String(error));
+      setError(desktopErrorMessage(error));
     } finally {
       setBusy(false);
     }
   }
   const needsSave = !!info && !!draft && (changed || !info.saved);
-  async function addPreset(format: PublicationFormat) {
-    setBusy(true);
-    setError("");
-    try {
-      if (!(await flush())) return;
-      const current = await desktop().invoke("publicationInfo", file);
-      const { id } = await desktop().invoke(
-        "addPublicationPreset",
-        file,
-        format,
-        current.revision,
-      );
-      await onConfigured(file);
-      const next = await desktop().invoke("publicationInfo", file);
-      setInfo(next);
-      setDraft(next.configuration);
-      setPresetId(id);
-      setPlan(null);
-    } catch (error) {
-      setError(String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
   async function persistConfiguration() {
     if (!draft || !info) return;
     const current = await desktop().invoke("publicationInfo", file);
@@ -156,7 +165,7 @@ export function PublicationExport({
       file,
       draft,
       current.revision,
-      format,
+      "pdf",
     );
     setInfo(value);
     setDraft(value.configuration);
@@ -165,24 +174,29 @@ export function PublicationExport({
     await onConfigured(file);
     return value;
   }
-  async function save() {
+  async function save(flushDocument = true): Promise<boolean> {
+    if (busy) return false;
     setBusy(true);
     setError("");
     try {
-      if (!(await flush())) return;
+      if (flushDocument && !(await flush())) return false;
       const value = await persistConfiguration();
-      if (!value) return;
-      notify(
-        value.standalone
-          ? t("导出配置已保存在本机，Markdown 原文件保持不变。")
-          : t("导出配置已保存至工程。"),
-      );
+      if (!value) return false;
+      if (flushDocument)
+        notify(t("导出配置已保存在本机，Markdown 原文件保持不变。"));
+      return true;
     } catch (error) {
-      setError(String(error));
+      const message = desktopErrorMessage(error);
+      setError(message);
+      if (!flushDocument) notify(message, true);
+      return false;
     } finally {
       setBusy(false);
     }
   }
+  useImperativeHandle(handleRef, () => ({
+    save: async () => !busy && (!changed || (await save(false))),
+  }));
   async function perform(exporting: boolean) {
     if (!info || !draft) return;
     setBusy(true);
@@ -190,38 +204,24 @@ export function PublicationExport({
     setProgress(t("正在保存文稿与导出配置…"));
     try {
       if (!(await flush())) return;
-      if (!info.presets && needsSave) await persistConfiguration();
-      const selected =
-        info.presets?.find((preset) => preset.id === presetId) ??
-        info.presets?.find((preset) => preset.id === info.defaultPreset) ??
-        info.presets?.[0];
-      const targetFormat = selected?.format ?? format;
-      if (info.presets && !selected) return;
-      const result = selected
-        ? await desktop().invoke(
-            "planPublication",
-            file,
-            targetFormat,
-            selected.id,
-          )
-        : await desktop().invoke("planPublication", file, targetFormat);
+      if (needsSave) await persistConfiguration();
+      const targetFormat = "pdf";
+      const result = await desktop().invoke(
+        "planPublication",
+        file,
+        targetFormat,
+      );
       setPlan(result);
       if (!result.report.valid || !exporting) return;
       const name =
         (
           draft.publication.metadata.title ||
-          file
-            .split(/[\\/]/)
-            .at(-1)!
-            .replace(/\.mdk$/i, "")
+          file.split(/[\\/]/).at(-1)!.replace(/\.md$/i, "")
         ).replace(/[\\/:<>"|?*]/g, "_") +
         "." +
         targetFormat;
       setProgress(t("请选择导出位置。"));
-      const output = await desktop().dialog(
-        targetFormat === "pdf" ? "save-pdf" : "save-epub",
-        name,
-      );
+      const output = await desktop().dialog("save-pdf", name);
       if (!output) return;
       const exported = await desktop().invoke(
         "exportPublication",
@@ -229,7 +229,6 @@ export function PublicationExport({
         output,
         targetFormat,
         result.fingerprint,
-        ...(selected ? ([selected.id] as [string]) : []),
       );
       notify(
         t(
@@ -239,7 +238,7 @@ export function PublicationExport({
         ),
       );
     } catch (error) {
-      setError(String(error));
+      setError(desktopErrorMessage(error));
     } finally {
       setProgress("");
       setBusy(false);
@@ -329,7 +328,6 @@ export function PublicationExport({
       </Select>
     </label>
   );
-  const allowedEpub = !!info && ["01", "02"].includes(info.mode);
   const paperSizes = { A4: [210, 297], A5: [148, 210], Letter: [215.9, 279.4] };
   const paperPreset =
     Object.entries(paperSizes).find(
@@ -346,106 +344,8 @@ export function PublicationExport({
         ) < 0.001,
     )?.[0] ?? "current";
   if (!file) return null;
-  if (info?.presets) {
-    const selected =
-      info.presets.find((preset) => preset.id === presetId) ??
-      info.presets.find((preset) => preset.id === info.defaultPreset) ??
-      info.presets[0];
-    return (
-      <section
-        className="publication-export"
-        aria-label={t("PDF 与 EPUB 导出")}
-      >
-        <div className="section-heading">
-          <h2>{t("出版导出")}</h2>
-          <button
-            className="button small"
-            disabled={busy}
-            onClick={() => void reload()}
-          >
-            <RefreshCw size={14} />
-            {t("重新读取配置")}
-          </button>
-        </div>
-        {error && <p role="alert">{error}</p>}
-        {busy && progress && (
-          <div role="status">
-            {progress}
-            <progress aria-label={t("出版任务进度")} />
-          </div>
-        )}
-        <div className="button-row">
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() => void addPreset("pdf")}
-          >
-            {t("新建 PDF 预设")}
-          </button>
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() => void addPreset("epub")}
-          >
-            {t("新建 EPUB 预设")}
-          </button>
-        </div>
-        {selected && (
-          <div className="button-row">
-            <Select
-              aria-label={t("选择出版预设")}
-              disabled={busy}
-              value={selected.id}
-              onValueChange={(id) => {
-                setPresetId(id);
-                setPlan(null);
-              }}
-            >
-              {info.presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name} · {preset.format.toUpperCase()}
-                </option>
-              ))}
-            </Select>
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => void perform(false)}
-            >
-              <FileCheck2 size={15} />
-              {t("严格预检")}
-            </button>
-            <button
-              className="button primary"
-              disabled={busy}
-              onClick={() => void perform(true)}
-            >
-              <Download size={15} />
-              {t("导出")} {selected.format.toUpperCase()}
-            </button>
-          </div>
-        )}
-        {plan && (
-          <div aria-live="polite">
-            <p>{plan.report.valid ? t("严格预检通过") : t("严格预检未通过")}</p>
-            {plan.report.issues.length > 0 && (
-              <ul>
-                {plan.report.issues.map((issue, index) => (
-                  <li key={index}>
-                    {[issue.path, issue.field, issue.message]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </section>
-    );
-  }
   return (
-    <section className="publication-export" aria-label={t("PDF 与 EPUB 导出")}>
+    <section className="publication-export" aria-label={t("PDF 导出")}>
       {busy && progress && (
         <div className="publication-progress" role="status">
           <span>{progress}</span>
@@ -453,7 +353,7 @@ export function PublicationExport({
         </div>
       )}
       <div className="section-heading">
-        <h2>{t("出版导出")}</h2>
+        <h2>{t("PDF 导出")}</h2>
         <button
           className="button small"
           disabled={busy}
@@ -475,30 +375,13 @@ export function PublicationExport({
       ) : (
         <>
           <div className="publication-actions">
-            <Select
-              aria-label={t("出版导出格式")}
-              value={format}
-              disabled={busy}
-              onValueChange={(value) => {
-                setFormat(value as PublicationFormat);
-                setPlan(null);
-              }}
-            >
-              <option value="pdf">{t("PDF 文档")}</option>
-              <option value="epub" disabled={!allowedEpub}>
-                {t("EPUB 3 电子书")}
-                {!allowedEpub ? t("（仅 book / comic）") : ""}
-              </option>
-            </Select>
             <button
               className="button"
               disabled={busy}
               onClick={() => void save()}
             >
               <Save size={15} />
-              {info.standalone
-                ? t("保存本机导出配置")
-                : t("保存导出配置至工程")}
+              {t("保存本机导出配置")}
             </button>
             <button
               className="button"
@@ -517,7 +400,7 @@ export function PublicationExport({
               onClick={() => void perform(true)}
             >
               <Download size={15} />
-              {needsSave ? t("保存并导出") : t("导出")} {format.toUpperCase()}
+              {needsSave ? t("保存并导出") : t("导出")} PDF
             </button>
           </div>
           {needsSave && (
@@ -535,17 +418,9 @@ export function PublicationExport({
             </p>
           )}
           <p className="publication-note">
-            {info.standalone
-              ? t(
-                  "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。",
-                )
-              : format === "pdf"
-                ? t(
-                    "PDF 配置和字体校验值随 MDK 分发，使用匹配的应用版本复现导出。",
-                  )
-                : t(
-                    "EPUB 配置保存在 settings.toml，内置字体的子集直接写入电子书。",
-                  )}
+            {t(
+              "单 Markdown 仅导出 PDF；配置保存在本机，不产生 settings.toml。",
+            )}
           </p>
           {plan && (
             <p className="publication-preflight" role="status">
@@ -782,7 +657,7 @@ export function PublicationExport({
                 ))}
               </div>
             </details>
-            <details open={format === "pdf"}>
+            <details open>
               <summary>{t("PDF 选项")}</summary>
               <div className="publication-fields">
                 {check(
@@ -938,120 +813,6 @@ export function PublicationExport({
                 )}
               </p>
             </details>
-            {allowedEpub && (
-              <details open={format === "epub"}>
-                <summary>{t("EPUB 转换选项")}</summary>
-                <div className="publication-fields">
-                  {choose(
-                    t("EPUB 版式"),
-                    draft.publication.epub.layout,
-                    info.mode === "02"
-                      ? [["pre-paginated", t("固定版式（漫画）")]]
-                      : [
-                          ["reflowable", t("可重排版式（书籍）")],
-                          ["pre-paginated", t("固定版式")],
-                        ],
-                    (value) =>
-                      change((c) => {
-                        c.publication.epub.layout = value as
-                          "reflowable" | "pre-paginated";
-                      }),
-                  )}
-                  {choose(
-                    t("EPUB 翻页方向"),
-                    info.mode === "02"
-                      ? draft.comic.reading_direction
-                      : draft.publication.epub.direction,
-                    [
-                      ["ltr", t("从左到右")],
-                      ["rtl", t("从右到左")],
-                    ],
-                    (value) =>
-                      change((c) => {
-                        if (info.mode === "02")
-                          c.comic.reading_direction = value;
-                        else
-                          c.publication.epub.direction = value as "ltr" | "rtl";
-                      }),
-                  )}
-                  {check(
-                    t("EPUB 嵌入字体（固定版式强制嵌入）"),
-                    draft.publication.epub.layout === "pre-paginated" ||
-                      draft.publication.epub.embed_font,
-                    (value) =>
-                      change((c) => {
-                        c.publication.epub.embed_font = value;
-                      }),
-                    draft.publication.epub.layout === "pre-paginated",
-                  )}
-                  {check(
-                    t("将导航目录加入阅读顺序"),
-                    draft.publication.epub.toc_in_spine,
-                    (value) =>
-                      change((c) => {
-                        c.publication.epub.toc_in_spine = value;
-                      }),
-                  )}
-                  {check(
-                    t("EPUB 插入封面"),
-                    draft.publication.epub.include_cover,
-                    (value) =>
-                      change((c) => {
-                        c.publication.epub.include_cover = value;
-                      }),
-                  )}
-                </div>
-                <p className="publication-note">
-                  {t(
-                    "EPUB 3 转换执行前严格检查容器、控制文件、阅读顺序、链接锚点、字体和资源兼容性。原始 HTML 按文本显示。外部媒体、附件链接和不兼容图片须先处理；生成后再次检查 XHTML、manifest、spine 和导航。",
-                  )}
-                </p>
-              </details>
-            )}
-            {info.mode === "02" && (
-              <details open>
-                <summary>{t("漫画页面")}</summary>
-                <div className="publication-fields">
-                  {choose(
-                    t("漫画页面排列"),
-                    draft.comic.spread_mode,
-                    [
-                      ["single", t("单页")],
-                      ["double", t("双页")],
-                    ],
-                    (value) =>
-                      change((c) => {
-                        c.comic.spread_mode = value;
-                      }),
-                  )}
-                  {choose(
-                    t("漫画阅读方向"),
-                    draft.comic.reading_direction,
-                    [
-                      ["ltr", t("从左到右")],
-                      ["rtl", t("从右到左")],
-                    ],
-                    (value) =>
-                      change((c) => {
-                        c.comic.reading_direction = value;
-                      }),
-                  )}
-                  {choose(
-                    t("漫画图片适应"),
-                    draft.comic.page_fit,
-                    [
-                      ["contain", t("完整显示")],
-                      ["cover", t("填充裁切")],
-                      ["width", t("宽度适应")],
-                    ],
-                    (value) =>
-                      change((c) => {
-                        c.comic.page_fit = value;
-                      }),
-                  )}
-                </div>
-              </details>
-            )}
           </fieldset>
           {plan && (
             <div

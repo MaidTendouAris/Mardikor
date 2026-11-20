@@ -18,31 +18,32 @@ import {
   Minus,
   PanelLeft,
   Settings2,
-  ShieldCheck,
   X,
 } from "lucide-react";
-import { desktop } from "./services/desktop";
+import { desktop, desktopErrorMessage } from "./services/desktop";
 import { Modal, type ModalRequest } from "./components/Modal";
 import { DocumentIcon } from "./components/DocumentIcon";
 import appIcon from "../assets/icon.svg";
 import { Workspace, type WorkspaceHandle } from "./views/Workspace";
-import { Delivery } from "./views/Delivery";
-import { AppSettings } from "./views/AppSettings";
+import { AppSettings, type AppSettingsDraft } from "./views/AppSettings";
 import { UpdateNotice, useAppUpdate } from "./components/AppUpdate";
 import type { Preferences, RecentProject } from "../shared/desktop";
 import type { MdkProject } from "../shared/mdk";
+import type { ArchiveProgress } from "../shared/archive-operation";
 import { isMarkdownFile } from "../shared/workspace";
 import {
   defaultReadingPreferences,
   type ReadingChange,
 } from "../shared/reading";
 import type { EditorTab } from "./services/editor-groups";
+import { isMdkeCompression, mdkeCompressionOptions, type EnvelopeAction, type MdkeCompression } from "../shared/envelopes";
+import { normalizeUnicode151 } from "../shared/mdk-anchors";
 
 export type Ask = (
   options: Omit<ModalRequest, "resolve">,
 ) => Promise<string | null>;
 export type Notify = (message: string, error?: boolean) => void;
-type Page = "home" | "editor" | "delivery" | "settings";
+type Page = "home" | "editor" | "settings";
 
 const modes = [
   { value: "markdown", title: t("单 Markdown 工程") },
@@ -63,6 +64,7 @@ const modes = [
 export default function App() {
   const update = useAppUpdate();
   const [page, setPage] = useState<Page>("home");
+  const [settingsDraft, setSettingsDraft] = useState<AppSettingsDraft>({});
   const [documentProject, setDocumentProject] = useState<{
     file: string;
     project: MdkProject;
@@ -115,6 +117,9 @@ export default function App() {
   );
   const [busy, setBusy] = useState(false);
   const [converting, setConverting] = useState(false);
+  const [processingEnvelope, setProcessingEnvelope] = useState(false);
+  const [archiveProgress, setArchiveProgress] = useState<ArchiveProgress | null>(null);
+  useEffect(() => window.mardikor?.onArchiveProgress(setArchiveProgress), []);
   const [isDirty, setIsDirty] = useState(false);
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
@@ -136,12 +141,7 @@ export default function App() {
   const notify: Notify = useCallback(
     (text, error = false) =>
       setToast({
-        text: text
-          .replace(
-            /^(?:Error:\s*)?Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,
-            "",
-          )
-          .replace(/^Error:\s*/, ""),
+        text: desktopErrorMessage(text),
         error,
       }),
     [],
@@ -204,6 +204,25 @@ export default function App() {
     fragment?: string,
   ) {
     if (workspace.current && !(await workspace.current.flush())) return;
+    if (!isMarkdownFile(file)) {
+      const api = desktop();
+      const info = await api.inspectEnvelope(file);
+      if (info.kind === "MDKE") {
+        await openDistribution(file, info.encrypted, view);
+        return;
+      }
+      if (info.kind === "MDKP") {
+        const passphrase = await ask({
+          title: t("访问口令"),
+          password: "existing",
+          confirm: t("解锁工程"),
+        });
+        if (passphrase === null) return;
+        await envelopeAction(file, { kind: "unlock", passphrase });
+      } else if (/\.mdke$/i.test(file)) {
+        throw new Error(t("请选择有效的 MDKE 分发包。"));
+      }
+    }
     const project = await desktop().invoke("open", file);
     setDocumentProject({ file, project });
     setInitialView(view);
@@ -259,6 +278,154 @@ export default function App() {
     const file = await desktop().dialog("open-project");
     if (file) await activate(file);
   }
+  async function envelopeAction(file: string, action: EnvelopeAction) {
+    setProcessingEnvelope(true);
+    try {
+      return await desktop().envelope(file, action);
+    } finally {
+      setProcessingEnvelope(false);
+    }
+  }
+  async function newPassphrase(title: string) {
+    const first = await ask({ title, password: "new", description: t("口令使用 NFC 规范化，保留首尾空格。请妥善保存口令。") });
+    if (first === null) return null;
+    const second = await ask({ title: t("确认口令"), password: "existing" });
+    if (second === null) return null;
+    if (normalizeUnicode151(first) !== normalizeUnicode151(second))
+      throw new Error(t("两次输入的口令不一致。"));
+    return first;
+  }
+  function showEnvelopeReport(report: Awaited<ReturnType<typeof envelopeAction>>) {
+    if (!report || !("outer" in report)) return;
+    const status = report.innerProject === "unverified" ? t("未验证") :
+      report.innerProject === "pass" ? t("通过") : t("失败");
+    notify(t("外层校验通过。内层类型 {0}。工程校验 {1}。", report.innerIdentity, status));
+  }
+  async function openDistribution(file: string, encrypted: boolean, view: EditorTab) {
+    const choice = await ask({
+      title: t("MDKE 分发包"),
+      choices: [
+        { value: "extract", label: t("提取并打开") },
+        { value: "set", label: encrypted ? t("更改解包口令") : t("添加解包口令") },
+        ...(encrypted ? [{ value: "remove", label: t("移除解包口令") }] : []),
+      ],
+    });
+    if (choice === null) return;
+    if (choice === "extract" && encrypted && !await ask({
+      title: t("提取 MDK"),
+      description: t("仅有外层保护时，提取的工程是明文。内层访问保护会随工程保留。"),
+    })) return;
+    let passphrase: string | undefined;
+    if (encrypted) {
+      const entered = await ask({ title: t("解包口令"), password: "existing" });
+      if (entered === null) return;
+      passphrase = entered;
+    }
+    if (choice === "extract") {
+      const output = await desktop().dialog("save-project", file.replace(/\.(mdke|mdk)$/i, "") + "-extracted.mdk");
+      if (!output) return;
+      showEnvelopeReport(await envelopeAction(file, { kind: "extract", passphrase, output }));
+      await activate(output, view);
+      return;
+    }
+    let nextPassphrase: string | undefined;
+    if (choice === "set") {
+      const entered = await newPassphrase(t("新解包口令"));
+      if (entered === null) return;
+      nextPassphrase = entered;
+    }
+    const output = await desktop().dialog("save-mdke", file.replace(/\.(mdke|mdk)$/i, "") + "-copy.mdke");
+    if (output)
+      showEnvelopeReport(await envelopeAction(file, { kind: "rekey", passphrase, nextPassphrase, output }));
+  }
+  async function packDistribution(chosen?: string) {
+    const source = chosen ?? await desktop().dialog("open-project");
+    if (!source) return;
+    if (!/\.mdk$/i.test(source)) throw new Error(t("请选择要打包的 MDK 工程。"));
+    let compression: MdkeCompression = "auto";
+    const labels: Record<MdkeCompression, string> = {
+      auto: t("自动（普通 MDK 压缩，受保护 MDK 原样存储）"),
+      store: t("STORE（原样存储）"),
+      "zstd-3": t("Zstandard（等级 3）"),
+      "zstd-9": t("Zstandard（等级 9）"),
+    };
+    const choice = await ask({
+      title: t("生成 MDKE"),
+      description: t("MDKE 保留原工程字节及其访问保护。请为两层使用不同口令。"),
+      initial: compression,
+      select: {
+        label: t("压缩方式"),
+        options: mdkeCompressionOptions.map((value) => ({ value, label: labels[value] })),
+        onChange: (value) => {
+          if (isMdkeCompression(value)) compression = value;
+        },
+      },
+      choices: [
+        { value: "plain", label: t("直接打包") },
+        { value: "encrypted", label: t("设置解包口令") },
+      ],
+    });
+    if (!choice) return;
+    let passphrase: string | undefined;
+    if (choice === "encrypted") {
+      const entered = await newPassphrase(t("新解包口令"));
+      if (entered === null) return;
+      passphrase = entered;
+    }
+    const output = await desktop().dialog("save-mdke", source.replace(/\.mdk$/i, ".mdke"));
+    if (!output) return;
+    if (source === currentPath && workspace.current && !(await workspace.current.flush())) return;
+    const action = { kind: "pack", passphrase, output, compression } as const;
+    let report = await envelopeAction(source, action);
+    if (report && "overlap" in report) {
+      if (!await ask({
+        title: t("两层口令相同"),
+        description: t("使用同一口令会减弱两层保护。继续打包？"),
+      })) return;
+      report = await envelopeAction(source, { ...action, allowOverlap: true });
+    }
+    showEnvelopeReport(report);
+  }
+  async function manageAccess(isProtected: boolean) {
+    if (!documentProject || !workspace.current) return;
+    const { file } = documentProject;
+    const editor = workspace.current;
+    const choice = await ask({
+      title: t("访问保护"),
+      choices: isProtected
+        ? [
+            { value: "lock", label: t("锁定工程") },
+            { value: "set", label: t("更改访问口令") },
+            { value: "remove", label: t("移除访问保护") },
+          ]
+        : [{ value: "set", label: t("设置访问口令") }],
+    });
+    if (choice === null) return;
+    if (choice === "lock") {
+      if (!(await editor.flush())) return;
+      desktop().setDirty(false);
+      await desktop().lockEnvelope(file);
+      setDocumentProject(undefined);
+      setIsDirty(false);
+      setGeneration((n) => n + 1);
+      setPage("home");
+      return;
+    }
+    let passphrase: string | null = null;
+    if (choice === "set") {
+      passphrase = await newPassphrase(t("新访问口令"));
+      if (passphrase === null) return;
+    } else if (!await ask({
+      title: t("移除访问保护"),
+      description: t("此操作会将工程保存为明文。"),
+      danger: true,
+    })) return;
+    await editor.changeAccess(async (snapshot) => {
+      const result = await envelopeAction(file, { kind: "set-access", passphrase, snapshot });
+      if (!result || !("project" in result)) throw new Error(t("封装操作参数无效。"));
+      return result;
+    });
+  }
   async function createProject() {
     if (workspace.current && !(await workspace.current.flush())) return;
     const single = mode === "markdown";
@@ -302,7 +469,7 @@ export default function App() {
     <>
       <div
         className={`app-shell ${compact ? "compact-nav" : ""}`}
-        inert={update?.phase === "preparing" && !request}
+        inert={(update?.phase === "preparing" || processingEnvelope || !!archiveProgress) && !request}
       >
         <header className="titlebar">
           <div className="titlebar-brand">
@@ -359,14 +526,16 @@ export default function App() {
               [
                 { id: "home", icon: LayoutGrid, title: t("工程") },
                 { id: "editor", icon: BookOpen, title: t("编辑器") },
-                { id: "delivery", icon: ShieldCheck, title: t("校验与导出") },
               ] as const
             ).map((item) => (
               <button
                 key={item.id}
                 title={item.title}
                 className={`nav-item ${page === item.id ? "active" : ""}`}
-                onClick={() => setPage(item.id)}
+                onClick={() => {
+                  if (item.id === "editor") workspace.current?.showEditor();
+                  setPage(item.id);
+                }}
               >
                 <item.icon size={19} strokeWidth={1.7} />
                 <span>{item.title}</span>
@@ -447,6 +616,9 @@ export default function App() {
                   </div>
                 </fieldset>
                 <div className="create-action">
+                  <button className="button" disabled={busy} onClick={() => void run(() => packDistribution())}>
+                    {t("生成 MDKE")}
+                  </button>
                   <button
                     className="button"
                     disabled={busy}
@@ -549,6 +721,8 @@ export default function App() {
               notify={notify}
               onDirty={setIsDirty}
               onOpen={() => void run(chooseProject)}
+              onManageAccess={(isProtected) => void run(() => manageAccess(isProtected))}
+              onPackDistribution={() => void run(() => packDistribution(currentPath))}
               onRename={(file) => {
                 setDocumentProject((current) => current && { ...current, file });
                 void desktop()
@@ -556,24 +730,13 @@ export default function App() {
                   .then(setRecent)
                   .catch((error) => notify(String(error), true));
               }}
-              onDeliver={() => setPage("delivery")}
             />
           </div>
-          {page === "delivery" && (
-            <Delivery
-              file={currentPath}
-              onConfigured={async (selected) => {
-                if (selected === currentPath)
-                  await workspace.current?.refresh();
-              }}
-              flush={() => workspace.current?.flush() ?? Promise.resolve(true)}
-              notify={notify}
-              ask={ask}
-            />
-          )}
           {page === "settings" && (
             <AppSettings
               value={preferences}
+              draftState={settingsDraft}
+              onDraftChange={setSettingsDraft}
               onChange={receivePreferences}
               notify={notify}
               update={update}
@@ -599,9 +762,26 @@ export default function App() {
             </button>
           </div>
         )}
-        {request && <Modal request={request} close={() => setRequest(null)} />}
+        {request && <Modal key={request.title} request={request} close={() => setRequest(null)} />}
         <UpdateNotice status={update} onOpen={() => setPage("settings")} />
       </div>
+      {processingEnvelope && (
+        <div className="update-preparing" role="dialog" aria-label={t("正在处理封装")}>
+          <div className="button-row">
+            <span role="status">{t("正在处理封装")}</span>
+            <button className="button" onClick={() => void desktop().cancelEnvelope()}>{t("取消")}</button>
+          </div>
+        </div>
+      )}
+      {archiveProgress && (
+        <div className="update-preparing" role="dialog" aria-label={t("正在处理 MDK 文件")}>
+          <div className="button-row">
+            <span role="status">{archiveProgress.committing ? t("正在提交 MDK 文件") :
+              t("正在处理 MDK 文件：已处理 {0} MiB", Math.round(archiveProgress.bytes / 1048576).toLocaleString(appLocale()))}</span>
+            <button className="button" disabled={archiveProgress.committing} onClick={() => void desktop().cancelArchive()}>{t("取消")}</button>
+          </div>
+        </div>
+      )}
       {update?.phase === "preparing" && !request && (
         <div
           className="update-preparing"

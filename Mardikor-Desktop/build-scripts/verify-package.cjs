@@ -14,9 +14,13 @@ exports.default = async (context) => {
     "assets/icon.png",
     "dist-electron/main.cjs",
     "dist-electron/preload.cjs",
+    "dist-electron/media-preload.cjs",
+    "dist-electron/archive-worker.cjs",
     "dist-electron/conversion-worker.cjs",
+    "dist-electron/envelope-worker.cjs",
     "dist-electron/publication-worker.cjs",
     "dist/index.html",
+    "dist/media-viewer.html",
   ];
   for (const file of fs.readdirSync(path.join(root, "assets/export")))
     bundled.push(`assets/export/${file}`);

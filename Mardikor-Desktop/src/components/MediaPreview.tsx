@@ -1,22 +1,26 @@
 import { appLocale, t } from "../../shared/i18n";
 import { ChevronLeft, ChevronRight, File } from "lucide-react";
-import type { MdkSettings, ProjectFile } from "../../shared/mdk";
+import type { ProjectFile } from "../../shared/mdk";
+import { previewMediaMime } from "../../shared/media-viewer";
 export function MediaPreview({
   current,
   data,
   files,
+  view,
   onSelect,
 }: {
-  file: string;
   current: ProjectFile;
   data: string;
   files: ProjectFile[];
-  settings: MdkSettings;
-  mode: string;
+  view?: { label: string; open: () => void };
   onSelect: (path: string) => void;
 }) {
   const images = files
-      .filter((f) => /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(f.path))
+      .filter(
+        (f) =>
+          f.kind !== "directory" &&
+          previewMediaMime(f.path)?.startsWith("image/"),
+      )
       .sort((a, b) =>
         a.path.localeCompare(b.path, undefined, { numeric: true }),
       ),
@@ -24,7 +28,12 @@ export function MediaPreview({
   return (
     <div className="resource-preview">
       <div className="media-toolbar">
-        <strong>{current.path}</strong>
+        <strong title={current.path}>{current.path}</strong>
+        {view && (
+          <button type="button" className="button small" onClick={view.open}>
+            {view.label}
+          </button>
+        )}
         {index >= 0 && (
           <div className="button-row">
             <button

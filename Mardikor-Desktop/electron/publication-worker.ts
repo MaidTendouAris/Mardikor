@@ -1,4 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { withAccess, type AccessSession } from "./access-session";
+import { initEnvelopeCrypto } from "./envelope";
 import { deserialize, serialize } from "node:v8";
 import {
   PDFArray,
@@ -37,6 +39,7 @@ export type PublicationWork =
       engine: string;
       assetDirectory: string;
       configuration: PublicationConfiguration | null;
+      access?: AccessSession;
     }
   | { kind: "pdf-pages"; bytes: Buffer; first: number }
   | { kind: "pdf-finish"; bytes: Buffer; details: PdfDetails }
@@ -44,7 +47,8 @@ export type PublicationWork =
 
 async function run(work: PublicationWork) {
   if (work.kind === "prepare") {
-    const prepared = preparePublication(
+    if (work.access) await initEnvelopeCrypto();
+    const prepared = withAccess(work.access, () => preparePublication(
       work.file,
       work.format,
       {
@@ -62,7 +66,7 @@ async function run(work: PublicationWork) {
         },
       },
       work.presetId,
-    );
+    ));
     if (!prepared.issues.some(({ severity }) => severity === "error"))
       prepared.renderedHtml = publicationHtml(prepared);
     return prepared;
@@ -214,4 +218,6 @@ void run(work).then(
   (error) => {
     throw error;
   },
-);
+).finally(() => {
+  if (work.kind === "prepare") work.access?.key.fill(0);
+});

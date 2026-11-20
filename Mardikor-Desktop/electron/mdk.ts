@@ -17,23 +17,37 @@ export {
 import { randomUUID, createHash } from "node:crypto";
 import {
   readArchive,
+  readArchiveFile,
+  cachedArchiveRevision,
   addArchiveMember,
-  archiveComments,
   checkNames,
   MAX_ENTRIES,
   MAX_FILE,
   MAX_TOTAL,
 } from "./archive";
+import { addedFile, archiveLimit, BUFFERED_ENTRY_LIMIT, exactSize, FileSnapshot, StoreArchive } from "./archive-io";
+import { requireDiskSpace, writeStoreArchive } from "./archive-write";
+import { archiveCheckpoint } from "./archive-operation";
 import { resolveReference } from "../shared/references";
+import { accessFor, withAccess } from "./access-session";
+import {
+  decodeEnvelope,
+  encodeEnvelope,
+  envelopeKind,
+  maxEnvelopeBytes,
+  probeEnvelope,
+  readBoundedFile,
+  type EnvelopeKey,
+} from "./envelope";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import AdmZip from "adm-zip";
-import { loadInsertionAssets, type InsertionSource } from "./insertion-assets";
+import { inspectMdkInsertionAssets, type InsertionSource } from "./insertion-assets";
 import { createMdkMarkdownParser } from "../shared/markdown-parser";
 import { v2HeadingAnchors } from "../shared/mdk-anchors";
-import { bundledFontPath } from "../shared/publication";
+import { bundledFontPath, publicationMetadataFields, type PublicationPresetEdit } from "../shared/publication";
 import type Token from "markdown-it/lib/token.mjs";
 import { comparePosition } from "../shared/outline";
 import {
@@ -43,7 +57,7 @@ import {
   removeOutline,
 } from "../shared/tree";
 import { splitMarkdownByHeading } from "../shared/markdown";
-import { assertPassiveSvg, checkMedia, detectMediaType } from "./media";
+import { assertPassiveSvg, detectMediaType } from "./media";
 import {
   createResourceFolder,
   extractResourceEntries,
@@ -52,6 +66,7 @@ import {
   resourceNameIndex,
   resourcePath,
   selectResourceEntries,
+  writeExtractedEntry,
 } from "./resource-files";
 import { isFixedResourceFolder } from "../shared/resources";
 import { rewriteResourceLinks } from "./resource-references";
@@ -68,7 +83,7 @@ import {
   type ValidationScope,
 } from "../shared/mdk-v2";
 import { inspectV2Settings, updateV2Settings } from "../shared/settings-v2";
-import { inspectV2Publication } from "../shared/publication-v2";
+import { inspectV2Publication, newV2Preset, publicationPresetInfo } from "../shared/publication-v2";
 import type {
   MdkContents,
   MdkEntry,
@@ -90,9 +105,10 @@ import type {
 export const MDK_MIMETYPE = "application/vnd.mardikor.mdk+zip";
 type Document = {
   mode: string;
-  zip: AdmZip;
+  zip: StoreArchive;
   source?: string;
   revision?: string;
+  access?: EnvelopeKey;
 };
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const markdownParser = createMdkMarkdownParser(false);
@@ -114,7 +130,7 @@ function isGeneratedContents(data: Buffer) {
 const hasControl = (value: string) =>
   [...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 export const fileRevision = (file: string) =>
-  createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  cachedArchiveRevision(new FileSnapshot(path.resolve(file)));
 export class MdkRevisionError extends Error {
   readonly code = "E_MDK_REVISION";
   constructor() {
@@ -281,23 +297,33 @@ export function unlockMdk(file: string) {
   return true;
 }
 function loadContainer(file: string, expectedRevision?: string): Document {
-  const size = fs.statSync(file).size;
-  if (size > MAX_TOTAL)
-    throw new MdkValidationError(
-      "container",
-      "unverified",
-      "mdk.limit.exceeded",
-      t("超出实现支持范围：容器超过 256 MiB。"),
-    );
-  const data = fs.readFileSync(file),
+  file = path.resolve(file);
+  const kind = probeEnvelope(file);
+  if (kind === "MDKE") throw new Error(t("请先提取 MDKE 中的 MDK 工程。"));
+  const source = new FileSnapshot(file);
+  if (kind !== "MDKP") {
+    const { zip, revision } = readArchiveFile(source);
+    if (expectedRevision !== undefined && expectedRevision !== revision) throw new MdkRevisionError();
+    return { mode: "00", zip, source: file, revision };
+  }
+  const access = accessFor(file);
+  if (!access)
+    throw new MdkValidationError("container", "unverified", "mdk.access.locked", t("此 MDK 需要访问口令。"));
+  if (source.size > maxEnvelopeBytes) archiveLimit(t("读取 MDKP 保护封装"), file, source.size, maxEnvelopeBytes);
+  const data = readBoundedFile(file),
     revision = createHash("sha256").update(data).digest("hex");
   if (expectedRevision !== undefined && expectedRevision !== revision)
     throw new MdkRevisionError();
+  if (envelopeKind(data) !== "MDKP") throw new MdkRevisionError();
+  const contents = decodeEnvelope(data, access);
+  if (contents.length > MAX_TOTAL)
+    throw new MdkValidationError("container", "unverified", "mdk.limit.exceeded", t("超出实现支持范围：容器超过 256 MiB。"));
   return {
     mode: "00",
-    zip: readArchive(data),
+    zip: readArchive(contents),
     source: path.resolve(file),
     revision,
+    access,
   };
 }
 function load(file: string, expectedRevision?: string): Document {
@@ -532,6 +558,7 @@ function project(doc: Document): MdkProject {
   } = info.metadata ?? {};
   return {
     projectId: info.projectId,
+    protected: doc.access ? true : undefined,
     metadata: {
       title,
       creators,
@@ -556,9 +583,10 @@ function projectFiles(doc: Document): MdkProject["files"] {
   return doc.zip.getEntries().map((e) => ({
     path: e.entryName.replace(/\/$/, ""),
     bytes: e.header.size,
-    is_text: !e.isDirectory && isTextData(e.getData(), e.entryName),
+    is_text: !e.isDirectory && e.header.size <= BUFFERED_ENTRY_LIMIT &&
+      !e.entryName.startsWith("resources/") && isTextData(e.header.size > 65536 ? e.prefix(65536) : e.getData(), e.entryName),
     ...(e.entryName === CONTENTS_MARKDOWN_PATH &&
-    isGeneratedContents(e.getData())
+    isGeneratedContents(e.prefix())
       ? { readonly: true }
       : {}),
     kind: e.isDirectory
@@ -601,7 +629,7 @@ function put(doc: Document, name: string, value: string | Buffer) {
     throw new Error(
       t("新建包内路径必须使用 Unicode NFC：{0}", displayArchivePath(name)),
     );
-  doc.zip.addFile(
+  doc.zip.add(
     name,
     typeof value === "string" ? Buffer.from(value, "utf8") : value,
   );
@@ -635,7 +663,7 @@ function syncContentsMarkdown(doc: Document, control: MdkContents) {
     return;
 
   const existing = doc.zip.getEntry(CONTENTS_MARKDOWN_PATH);
-  const generated = !!existing && isGeneratedContents(existing.getData());
+  const generated = !!existing && isGeneratedContents(existing.prefix());
   if (!info.settings.export.mdk.generate_contents_markdown) {
     if (generated) doc.zip.deleteFile(CONTENTS_MARKDOWN_PATH);
     return;
@@ -690,17 +718,13 @@ function syncContentsMarkdown(doc: Document, control: MdkContents) {
 function assertWritableText(doc: Document, internalPath: string) {
   if (internalPath !== CONTENTS_MARKDOWN_PATH) return;
   const entry = doc.zip.getEntry(internalPath);
-  if (entry && isGeneratedContents(entry.getData()))
+  if (entry && isGeneratedContents(entry.prefix()))
     throw new Error(
       t("contents.md 由目录生成，请编辑 contents.toml 或调整文稿目录。"),
     );
 }
 
-function commit(
-  file: string,
-  doc: Document,
-  options: { overwrite?: boolean; strict?: boolean } = {},
-) {
+function orderedMdk(doc: Document, strict = false) {
   doc.mode = manifest(doc).mode;
   assertEditable(doc);
   syncContentsMarkdown(doc, contents(doc));
@@ -709,54 +733,105 @@ function commit(
       .getEntries()
       .map((e) => ({ name: e.entryName, directory: e.isDirectory })),
   );
-  if (options.strict) {
+  if (strict) {
     const errors = deliveryIssues(doc);
     if (errors.length) throw new Error(errors.map((i) => i.message).join("\n"));
   }
-  // Rebuild so the first entry and its compression are deterministic. Unknown entries stay intact.
-  const zip = new AdmZip(undefined, { noSort: true });
-  addArchiveMember(zip, "mimetype", Buffer.from(MDK_MIMETYPE));
-  const manifestBytes = doc.zip.getEntry("mdk.toml")!.getData();
+  // Rebuild with the required physical order and STORE for every member.
+  const zip = new StoreArchive(doc.zip.comment);
+  zip.add("mimetype", Buffer.from(MDK_MIMETYPE));
+  const manifestBytes = doc.zip.getEntry("mdk.toml")!.getData(MAX_MANIFEST_BYTES);
   if (manifestBytes.length > MAX_MANIFEST_BYTES)
     throw new Error(t("mdk.toml 超过 64 KiB。"));
-  addArchiveMember(zip, "mdk.toml", manifestBytes);
-  const comment = archiveComments.get(doc.zip);
-  if (comment?.length) zip.addZipComment(comment as unknown as string);
-  let total = MDK_MIMETYPE.length + manifestBytes.length;
+  zip.add("mdk.toml", manifestBytes);
   for (const entry of doc.zip.getEntries()) {
     if (entry.entryName === "mimetype" || entry.entryName === "mdk.toml")
       continue;
-    const bytes = entry.getData();
-    total += bytes.length;
-    if (bytes.length > MAX_FILE || total > MAX_TOTAL)
-      throw new Error(t("工程超过大小限制。"));
-    addArchiveMember(zip, entry.entryName, bytes, entry.comment, entry.attr);
+    zip.set(entry);
   }
-  const output = zip.toBuffer();
-  fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-  const temporary = `${file}.${randomUUID()}.tmp`;
+  return zip;
+}
+
+function serializeProtected(zip: StoreArchive) {
+  // The authenticated-envelope implementation still has its own memory budget.
+  const entries = zip.getEntries();
+  const required = entries.reduce((total, entry) => total + entry.header.size + 76 + 2 * Buffer.byteLength(entry.entryName) + entry.comment.length, 22 + zip.comment.length);
+  const operation = t("写入 MDKP 保护封装");
+  if (required > MAX_TOTAL) archiveLimit(operation, undefined, required, MAX_TOTAL);
+  const output = new AdmZip(undefined, { noSort: true });
+  if (zip.comment.length) output.addZipComment(zip.comment as unknown as string);
+  for (const entry of entries)
+    addArchiveMember(output, entry.entryName, entry.getData(MAX_TOTAL, operation), entry.comment.toString("utf8"), entry.attr);
+  return output.toBuffer();
+}
+
+function commit(
+  file: string,
+  doc: Document,
+  options: { overwrite?: boolean; strict?: boolean } = {},
+) {
+  const zip = orderedMdk(doc, options.strict);
+  const output = doc.access ? serializeProtected(zip) : null;
   try {
-    fs.writeFileSync(temporary, output, { flag: "wx", mode: 0o600 });
-    const fd = fs.openSync(temporary, "r+");
+    const bytes = doc.access && output
+      ? encodeEnvelope(output, "MDKP", "store", doc.access)
+      : (fd: number, temporary: string) => writeStoreArchive(fd, zip, temporary);
+    doc.revision = publishVerifiedFile(file, bytes, (temporary) => {
+      const verified = withAccess(
+        doc.access && { ...doc.access, file: path.resolve(temporary) },
+        () => load(temporary),
+      );
+      project(verified);
+      if (options.strict) {
+        const errors = deliveryIssues(verified);
+        if (errors.length)
+          throw new Error(errors.map((issue) => issue.message).join("\n"));
+      }
+      return verified.revision;
+    }, {
+      overwrite: options.overwrite,
+      expectedRevision: doc.source === path.resolve(file) ? doc.revision : undefined,
+    });
+    if (!doc.access && doc.source === path.resolve(file)) doc.zip = loadContainer(file, doc.revision).zip;
+  } finally {
+    output?.fill(0);
+  }
+}
+
+function removeStagedFile(temporary: string) {
+  try {
+    fs.unlinkSync(temporary);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new Error(t("未能清理暂存文件，残留位置为 {0}。", temporary), { cause: error });
+  }
+}
+
+export function publishVerifiedFile<T>(
+  file: string,
+  output: Buffer | ((fd: number, temporary: string) => void),
+  verify: (temporary: string) => T,
+  options: { overwrite?: boolean; expectedRevision?: string } = {},
+) {
+  fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+  const temporary = file + "." + randomUUID() + ".tmp";
+  const fd = fs.openSync(temporary, "wx", 0o600);
+  try {
     try {
+      if (typeof output === "function") output(fd, temporary);
+      else fs.writeFileSync(fd, output);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
-    const verified = load(temporary);
-    project(verified);
-    if (options.strict) {
-      const errors = deliveryIssues(verified);
-      if (errors.length)
-        throw new Error(errors.map((issue) => issue.message).join("\n"));
-    }
+    const verified = verify(temporary);
     withMdkLock(file, () => {
       if (
-        doc.source === path.resolve(file) &&
-        doc.revision &&
-        fileRevision(file) !== doc.revision
+        options.expectedRevision !== undefined &&
+        fileRevision(file) !== options.expectedRevision
       )
         throw new MdkRevisionError();
+      archiveCheckpoint(0, true);
       if (options.overwrite === false) {
         try {
           fs.linkSync(temporary, file);
@@ -777,10 +852,10 @@ function commit(
         }
         fs.renameSync(temporary, file);
       }
-      doc.revision = verified.revision;
     });
+    return verified;
   } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    removeStagedFile(temporary);
   }
 }
 
@@ -807,6 +882,8 @@ function uniqueName(
   except?: string,
 ) {
   filename = filename.normalize("NFC");
+  const resourceNames = directory.startsWith("resources/") ? resourceNameIndex(doc.zip) : null;
+  if (resourceNames) resourceName(filename);
   if (
     !filename.trim() ||
     /[\\/:<>"|?*]/.test(filename) ||
@@ -820,7 +897,7 @@ function uniqueName(
     stem = filename.slice(0, filename.length - extension.length);
   for (
     let index = 2;
-    doc.zip.getEntry(candidate) && candidate !== except;
+    (resourceNames?.has(candidate.toLowerCase()) || doc.zip.getEntry(candidate)) && candidate !== except;
     index++
   )
     candidate = `${directory}/${stem}-${index}${extension}`;
@@ -831,7 +908,7 @@ function uniqueName(
 function newMdk(mode: string): Document {
   const doc = {
     mode: "00",
-    zip: new AdmZip(undefined, { noSort: true }),
+    zip: new StoreArchive(),
   };
   put(
     doc,
@@ -847,12 +924,20 @@ function newMdk(mode: string): Document {
 
 export function createMdkProject(file: string, mode: string, overwrite = true) {
   const doc = newMdk(mode);
+  const previous = overwrite && fs.existsSync(file) ? load(file) : undefined;
+  if (previous) {
+    assertEditable(previous);
+    contents(previous);
+    doc.source = previous.source;
+    doc.revision = previous.revision;
+    doc.access = previous.access;
+  }
   put(doc, "markdown/001.md", "# 001\n\n");
   putContents(doc, {
     schema_version: 2,
     entries: [{ id: randomUUID(), path: "markdown/001.md", position: "1" }],
   });
-  commit(file, doc, { overwrite });
+  commit(file, doc, { overwrite: !!previous });
   return openMdkProject(file);
 }
 
@@ -924,12 +1009,10 @@ export function readMdkPublication(file: string) {
           ? readText(doc, entry.path)
           : null,
       })),
-    files: new Map(
-      doc.zip
-        .getEntries()
-        .filter((entry) => !entry.isDirectory)
-        .map((entry) => [entry.entryName, entry.getData()]),
-    ),
+    files: {
+      has: (name: string) => !!doc.zip.getEntry(name) && !doc.zip.getEntry(name)?.isDirectory,
+      get: (name: string) => doc.zip.getEntry(name)?.getData(BUFFERED_ENTRY_LIMIT, t("读取出版资源")),
+    },
   };
 }
 export function readMdkMode(file: string) {
@@ -1185,21 +1268,13 @@ export function importMdkResource(
 ) {
   if (!["image", "video", "audio", "font", "other"].includes(kind))
     throw new Error(t("资源类型无效。"));
-  if (fs.statSync(source).size >= 2 ** 32)
-    throw new Error(t("v1 不支持 4 GiB 及以上资源。"));
-  if (fs.statSync(source).size > MAX_FILE)
-    throw new Error(t("超出实现支持范围：资源超过 64 MiB。"));
-  const bytes = fs.readFileSync(source),
-    doc = load(file, revision);
-  checkMedia(source, bytes);
-  const detected = detectMediaType(bytes);
-  if (kind !== "other" && detected && !detected.startsWith(`${kind}/`))
-    throw new Error(t("资源类型与实际文件格式不一致。"));
+  const doc = load(file, revision);
   const name = uniqueName(doc, `resources/${kind}`, path.basename(source));
-  put(doc, name, bytes);
+  const entry = addedFile(name, source);
+  doc.zip.set(entry);
   assertEditable(doc);
   commit(file, doc);
-  return { path: name, kind, bytes: bytes.length, revision: doc.revision! };
+  return { path: name, kind, bytes: entry.header.size, revision: doc.revision! };
 }
 
 export function createMdkResourceFolder(
@@ -1374,8 +1449,7 @@ function rewriteMdkPaths(
     const next = rename(member.entryName);
     return next ? [{ member, next }] : [];
   });
-  for (const { member, next } of changed) {
-    if (!member.isDirectory) checkMedia(next, member.getData());
+  for (const { member } of changed) {
     if (
       [bundledFontPath, "resources/other/Mardikor-Noto-OFL.txt"].includes(
         member.entryName,
@@ -1384,7 +1458,7 @@ function rewriteMdkPaths(
       throw new Error(t("内置字体及其许可证由 Mardikor 管理。"));
   }
   for (const { member, next } of changed)
-    doc.zip.addFile(next, member.getData(), member.comment, member.attr);
+    doc.zip.set(member.renamed(next));
   for (const { member } of changed) doc.zip.deleteFile(member.entryName);
 }
 export function renameMdkResource(
@@ -1464,15 +1538,86 @@ export function addPublicationPreset(
   const ids = new Set(presets.filter(isTable).map(({ id }) => id));
   let id = format as string;
   for (let index = 2; ids.has(id); index++) id = format + "-" + index;
-  const layout =
-    doc.mode === "02" ? "fixed" : format === "pdf" ? "flow" : "reflowable";
   const config = {
     ...raw,
-    presets: [...presets, { id, format, [format]: { layout } }],
+    presets: [...presets, newV2Preset(id, format, doc.mode)],
   };
   put(doc, "publication.toml", stringify(config));
   commit(file, doc);
   return { id, revision: doc.revision! };
+}
+
+export function saveMdkPublication(file: string, edits: PublicationPresetEdit[], revision: string) {
+  if (!/^[a-f0-9]{64}$/.test(revision)) throw new MdkRevisionError();
+  if (!Array.isArray(edits) || !edits.length)
+    throw new Error(t("出版配置无效。"));
+  const doc = load(file, revision);
+  assertEditable(doc);
+  const ids = edits.map((edit) => applyPublicationEdit(doc, edit));
+  commit(file, doc);
+  return { ids, revision: doc.revision! };
+}
+
+function applyPublicationEdit(doc: Document, edit: PublicationPresetEdit) {
+  if (!isTable(edit) || !isTable(edit.options) || !isTable(edit.metadata) ||
+    (edit.format !== "pdf" && edit.format !== "epub") ||
+    (edit.presetId !== undefined && typeof edit.presetId !== "string"))
+    throw new Error(t("出版配置无效。"));
+
+  const { format } = edit;
+  let id = edit.presetId;
+  const optionEdits = Object.entries(edit.options);
+  if (optionEdits.length) {
+    const raw = optionalTable(doc, "publication.toml");
+    const presets = raw.presets ?? [];
+    if (!Array.isArray(presets)) throw new Error(t("出版预设必须为表数组。"));
+    const fresh = newV2Preset(format, format, doc.mode);
+    const fields = publicationPresetInfo({ id: format, name: format, format, raw: fresh, issues: [] }, {}, doc.mode).options as unknown as Table;
+    for (const [key, value] of optionEdits) {
+      if (!Object.hasOwn(fields, key) || typeof value !== typeof fields[key] ||
+        (typeof value === "number" && !Number.isFinite(value)))
+        throw new Error(t("出版配置无效。"));
+    }
+    const index = id === undefined ? -1 : presets.findIndex((item) => isTable(item) && item.id === id && item.format === format);
+    if (id !== undefined && index < 0) throw new MdkRevisionError();
+    const current: Table = index < 0 ? fresh : presets[index];
+    if (id === undefined) {
+      const ids = new Set(presets.filter(isTable).map((preset) => preset.id));
+      id = format;
+      for (let suffix = 2; ids.has(id); suffix++) id = `${format}-${suffix}`;
+    }
+    const existing = current[format];
+    const options = { ...(isTable(existing) ? existing : fresh[format] as Table), ...edit.options };
+    if (format === "pdf" && options.layout === "fixed") delete options.chapter_break;
+    if (format === "epub" && options.layout === "reflowable") {
+      for (const key of ["page_width", "page_height", "spread", "first_single"]) delete options[key];
+    }
+    const next = { ...current, id, [format]: options };
+    const updated = [...presets];
+    updated[index < 0 ? updated.length : index] = next;
+    const source = stringify({ ...raw, presets: updated });
+    validateMdkText(doc, "publication.toml", source);
+    put(doc, "publication.toml", source);
+  }
+
+  const metadataEdits = Object.entries(edit.metadata);
+  if (metadataEdits.length) {
+    const raw = coreTable(doc, "mdk.toml");
+    const metadata = { ...manifest(doc).metadata };
+    for (const [key, value] of metadataEdits) {
+      if (key === "creators" && Array.isArray(value) && value.every((name) => typeof name === "string")) {
+        if (value.length) metadata[key] = value;
+        else delete metadata[key];
+      } else if (publicationMetadataFields.some((field) => field === key) && typeof value === "string") {
+        if (value) metadata[key] = value;
+        else delete metadata[key];
+      } else throw new Error(t("出版配置无效。"));
+    }
+    const source = stringify({ ...raw, metadata });
+    validateMdkText(doc, "mdk.toml", source);
+    put(doc, "mdk.toml", source);
+  }
+  return id;
 }
 export function updateMdkSettings(file: string, value: MdkSettings) {
   const doc = load(file);
@@ -1537,7 +1682,7 @@ export function createProjectDirectory(file: string, internalPath: string) {
   const doc = load(file);
   if (doc.zip.getEntry(internalPath) || doc.zip.getEntry(internalPath + "/"))
     throw new Error(t("文件或目录已存在。"));
-  doc.zip.addFile(internalPath + "/", Buffer.alloc(0));
+  doc.zip.add(internalPath + "/", Buffer.alloc(0));
   assertEditable(doc);
   commit(file, doc);
   return project(doc);
@@ -1569,14 +1714,9 @@ export function renameProjectFile(
         e.entryName.startsWith(internalPath + "/"),
     );
   if (!selected.length) throw new Error(t("文件或目录不存在。"));
-  const copies = selected.map((e) => ({
-    old: e.entryName,
-    next: newPath + e.entryName.slice(internalPath.length),
-    bytes: e.getData(),
-    attr: e.attr,
-  }));
-  copies.forEach((e) => doc.zip.deleteFile(e.old));
-  copies.forEach((e) => doc.zip.addFile(e.next, e.bytes, "", e.attr));
+  for (const entry of selected) doc.zip.deleteFile(entry.entryName);
+  for (const entry of selected)
+    doc.zip.set(entry.renamed(newPath + entry.entryName.slice(internalPath.length)));
   for (const entry of control.entries)
     if (
       entry.path === internalPath ||
@@ -1639,6 +1779,11 @@ function referenceIssues(doc: Document): ValidationIssue[] {
       .filter((e) => !e.isDirectory)
       .map((e) => e.entryName),
   );
+  const directories = new Set<string>();
+  for (const entry of doc.zip.getEntries()) {
+    const parts = entry.entryName.split("/");
+    for (let depth = 1; depth < parts.length; depth++) directories.add(parts.slice(0, depth).join("/"));
+  }
   const check = (source: string, url: string, media = false) => {
     const target = resolveReference(source, url, media);
     if (target.kind === "unsafe") {
@@ -1673,9 +1818,9 @@ function referenceIssues(doc: Document): ValidationIssue[] {
     if (!files.has(target.path))
       issues.push({
         severity: "error",
-        code: "E_RESOURCE_MISSING",
+        code: directories.has(target.path) ? "E_REFERENCE_UNSAFE" : "E_RESOURCE_MISSING",
         path: source,
-        message: t("本地引用的文件不存在：") + target.path,
+        message: directories.has(target.path) ? t("附件引用指向目录：{0}", target.path) : t("本地引用的文件不存在：") + target.path,
       });
     else {
       const hash = target.suffix.indexOf("#");
@@ -1727,18 +1872,21 @@ function referenceIssues(doc: Document): ValidationIssue[] {
           });
       }
       if (media) {
-        const bytes = doc.zip.getEntry(target.path)!.getData();
-        const kind = detectMediaType(bytes);
+        const entry = doc.zip.getEntry(target.path)!;
+        const kind = detectMediaType(entry.prefix());
+        if (!kind?.startsWith("image/")) {
+          issues.push({ severity: "error", code: "E_MEDIA", path: source,
+            message: t("图片引用指向非图像文件：{0}", target.path) });
+          return;
+        }
         try {
-          if (!kind?.startsWith("image/"))
-            throw new Error(t("无法按图像呈现引用资源。"));
-          checkMedia(target.path, bytes);
-          assertPassiveSvg(bytes);
+          if (entry.header.size > BUFFERED_ENTRY_LIMIT) archiveLimit(t("预览图片"), target.path, entry.header.size, BUFFERED_ENTRY_LIMIT);
+          if (kind === "image/svg+xml") assertPassiveSvg(entry.getData());
         } catch (error) {
           issues.push({
             severity: "error",
             status: "unverified",
-            code: "E_MEDIA",
+            code: error instanceof MdkValidationError ? error.code : "E_MEDIA_PREVIEW",
             path: source,
             message: String(error) + " " + target.path,
           });
@@ -1800,7 +1948,7 @@ function referenceIssues(doc: Document): ValidationIssue[] {
         message: t("引用的字体不存在：") + font,
       });
     else {
-      const kind = detectMediaType(doc.zip.getEntry(font)!.getData());
+      const kind = detectMediaType(doc.zip.getEntry(font)!.prefix());
       if (!kind?.startsWith("font/"))
         issues.push({
           severity: "error",
@@ -1822,7 +1970,8 @@ function referenceIssues(doc: Document): ValidationIssue[] {
     } catch (error) {
       issues.push({
         severity: "error",
-        code: "E_TEXT_ENCODING",
+        code: error instanceof MdkValidationError ? error.code : "E_TEXT_ENCODING",
+        status: error instanceof MdkValidationError ? error.status : undefined,
         path: entry.entryName,
         message: String(error),
       });
@@ -1919,14 +2068,14 @@ function diagnostics(doc: Document): ValidationIssue[] {
       (item.code === "E_EXTERNAL_MEDIA" ? "unverified" : undefined);
     issues.push({
       ...item,
-      scope: "content",
+      scope: item.code === "E_MEDIA_PREVIEW" || item.code === "mdk.limit.exceeded" ? "presentation" : "content",
       status,
       code:
         item.code === "E_RESOURCE_MISSING"
           ? "mdk.content.missing"
           : item.code.startsWith("W_")
             ? "com.mardikor.resource.unreferenced"
-            : status === "unverified"
+            : item.code === "mdk.limit.exceeded" ? item.code : status === "unverified"
               ? "mdk.capability.unsupported"
               : "com.mardikor.content.invalid",
     });
@@ -1943,7 +2092,7 @@ function diagnostics(doc: Document): ValidationIssue[] {
         message: t("封面资源缺失：{0}", header.metadata.cover),
       });
     else {
-      const kind = detectMediaType(target.getData());
+      const kind = detectMediaType(target.prefix());
       if (!kind || !["image/png", "image/jpeg", "image/svg+xml"].includes(kind))
         issues.push({
           scope: "content",
@@ -2037,21 +2186,34 @@ export function validationScopes(
     return { scope, status, issues: local };
   });
 }
+function validateDocument(doc: Document): ValidationReport {
+  const issues = diagnostics(doc);
+  return {
+    valid: !issues.some(
+      (issue) =>
+        issue.severity === "error" &&
+        ["core", "content"].includes(issue.scope ?? ""),
+    ),
+    mode: doc.mode,
+    issues,
+    scopes: validationScopes(issues),
+    summary: summary(doc),
+  };
+}
+
+export function validateBareMdk(bytes: Buffer): ValidationReport {
+  const doc: Document = { mode: "00", zip: readArchive(bytes) };
+  doc.mode = manifest(doc).mode;
+  contents(doc);
+  const report = validateDocument(doc);
+  const coreError = report.issues.find((issue) => issue.scope === "core" && issue.severity === "error");
+  if (coreError) throw new Error(coreError.message);
+  return report;
+}
+
 export function validateMdk(file: string): ValidationReport {
   try {
-    const doc = load(file);
-    const issues = diagnostics(doc);
-    return {
-      valid: !issues.some(
-        (issue) =>
-          issue.severity === "error" &&
-          ["core", "content"].includes(issue.scope ?? ""),
-      ),
-      mode: doc.mode,
-      issues,
-      scopes: validationScopes(issues),
-      summary: summary(doc),
-    };
+    return validateDocument(load(file));
   } catch (error) {
     const issue: ValidationIssue =
       error instanceof MdkValidationError
@@ -2234,6 +2396,28 @@ export function saveMdkSnapshot(
   commit(file, doc);
   return project(doc);
 }
+
+export function prepareMdkAccessSnapshot(
+  bytes: Buffer,
+  revision: string,
+  snapshot: SaveSnapshot,
+) {
+  if (bytes.length > MAX_TOTAL)
+    throw new Error(t("超出实现支持范围：容器超过 256 MiB。"));
+  const doc: Document = { mode: "00", zip: readArchive(bytes), revision };
+  doc.mode = manifest(doc).mode;
+  applySnapshot(doc, snapshot);
+  const changed = snapshot.text || snapshot.texts?.length || snapshot.positions || snapshot.settings;
+  const metadata = changed ? undefined : project(doc);
+  if (metadata) return { bytes, project: metadata };
+  const output = serializeProtected(orderedMdk(doc));
+  try {
+    return { bytes: output, project: project(doc) };
+  } catch (error) {
+    output.fill(0);
+    throw error;
+  }
+}
 export function applyMdkBatch(
   file: string,
   revision: string,
@@ -2332,11 +2516,11 @@ export function insertMdkResources(
     insertion.text.content.split(insertion.marker).length !== 2
   )
     throw new Error(t("资源插入位置无效。"));
-  const assets = loadInsertionAssets(sources);
+  const assets = inspectMdkInsertionAssets(sources);
   const resources: ResourceFile[] = assets.map((asset) => {
     const name = uniqueName(doc, "resources/" + asset.kind, asset.name);
-    put(doc, name, asset.bytes);
-    return { path: name, kind: asset.kind, bytes: asset.bytes.length };
+    doc.zip.set(asset.entry.renamed(name));
+    return { path: name, kind: asset.kind, bytes: asset.entry.header.size };
   });
   const markdown = resources
     .map((resource, index) => {
@@ -2404,10 +2588,9 @@ export function checkMdkDirectory(directory: string) {
 export function packMdk(directory: string, output: string) {
   const doc = {
     mode: checkMdkDirectory(directory),
-    zip: new AdmZip(undefined, { noSort: true }),
+    zip: new StoreArchive(),
   };
   let count = 1;
-  let bytes = Buffer.byteLength(MDK_MIMETYPE);
   const walk = (dir: string, depth: number) => {
     if (depth > MAX_OUTLINE_DEPTH)
       throw new Error(t("目录超过实现支持的 128 层。"));
@@ -2422,25 +2605,14 @@ export function packMdk(directory: string, output: string) {
         continue;
       validatePath(relative);
       if (++count > MAX_ENTRIES)
-        throw new Error(t("超出实现支持范围：最多 10,000 个 ZIP 项。"));
+        archiveLimit(t("写入 ZIP 索引（条目数）"), relative, count, MAX_ENTRIES, t("条目"));
       if (item.isDirectory()) {
-        addArchiveMember(doc.zip, relative + "/", Buffer.alloc(0));
+        doc.zip.add(relative + "/", Buffer.alloc(0));
         walk(full, depth + 1);
       } else {
         if (!item.isFile())
           throw new Error(t("仅允许普通文件和目录，不允许链接或设备。"));
-        const size = fs.statSync(full).size;
-        if (size > MAX_FILE || bytes + size > MAX_TOTAL)
-          throw new Error(
-            t("超出实现支持范围：单文件 64 MiB / 总量 256 MiB。"),
-          );
-        const data = fs.readFileSync(full);
-        bytes += data.length;
-        if (data.length > MAX_FILE || bytes > MAX_TOTAL)
-          throw new Error(
-            t("超出实现支持范围：单文件 64 MiB / 总量 256 MiB。"),
-          );
-        addArchiveMember(doc.zip, relative, data);
+        doc.zip.set(addedFile(relative, full));
       }
     }
   };
@@ -2511,34 +2683,60 @@ export function unpackMdk(file: string, directory: string) {
       parent = path.dirname(parent);
     }
   }
-  fs.mkdirSync(root, { recursive: true });
-  const realRoot = fs.realpathSync(root);
-  for (const entry of entries) {
-    const target = path.resolve(root, ...entry.entryName.split("/"));
-    noLinks(target);
-    fs.mkdirSync(entry.isDirectory ? target : path.dirname(target), {
-      recursive: true,
-    });
-    const actualParent = fs.realpathSync(
-      entry.isDirectory ? target : path.dirname(target),
-    );
-    if (
-      actualParent !== realRoot &&
-      !actualParent.startsWith(realRoot + path.sep)
-    )
-      throw new Error(t("解包目标发生链接逃逸，已停止。"));
-    if (!entry.isDirectory)
-      fs.writeFileSync(target, entry.getData(), { flag: "wx" });
+  const created: { name: string; directory: boolean }[] = [];
+  function ensureDirectory(name: string) {
+    if (fs.existsSync(name)) return;
+    ensureDirectory(path.dirname(name));
+    fs.mkdirSync(name);
+    created.push({ name, directory: true });
+  }
+  try {
+    ensureDirectory(root);
+    requireDiskSpace(path.join(root, "output"), exactSize(entries.reduce((total, entry) => total + BigInt(entry.header.size), 0n)), t("提取原文件"));
+    const realRoot = fs.realpathSync(root);
+    for (const entry of entries) {
+      archiveCheckpoint();
+      const target = path.resolve(root, ...entry.entryName.split("/"));
+      const parent = entry.isDirectory ? target : path.dirname(target);
+      noLinks(target);
+      ensureDirectory(parent);
+      const actualParent = fs.realpathSync(parent);
+      if (actualParent !== realRoot && !actualParent.startsWith(realRoot + path.sep))
+        throw new Error(t("解包目标发生链接逃逸，已停止。"));
+      if (!entry.isDirectory) {
+        writeExtractedEntry(entry, target);
+        created.push({ name: target, directory: false });
+      }
+    }
+    archiveCheckpoint(0, true);
+  } catch (error) {
+    for (const { name, directory } of created.reverse()) {
+      if (directory) fs.rmdirSync(name);
+      else fs.unlinkSync(name);
+    }
+    throw error;
   }
   return summary(doc);
 }
 
-export function readMdkResource(file: string, internalPath: string) {
+export function mdkAttachment(file: string, internalPath: string) {
   validatePath(internalPath);
-  const entry = load(file).zip.getEntry(internalPath);
-  if (!entry || entry.isDirectory) throw new Error(t("资源不存在或是目录。"));
-  const bytes = entry.getData();
-  checkMedia(internalPath, bytes);
+  if (internalPath.startsWith("state/")) throw new Error(t("正文不能引用 state/ 中的可重建数据。"));
+  const zip = load(file).zip;
+  const entry = zip.getEntry(internalPath);
+  if (!entry || entry.isDirectory) {
+    if (zip.getEntries().some(({ entryName }) => entryName.startsWith(internalPath + "/")))
+      throw new Error(t("附件引用指向目录：{0}", internalPath));
+    throw new Error(t("附件缺失：{0}", internalPath));
+  }
+  return entry;
+}
+
+export function readMdkResource(file: string, internalPath: string) {
+  const entry = mdkAttachment(file, internalPath);
+  const mime = detectMediaType(entry.prefix());
+  if (!mime?.startsWith("image/")) return "";
+  const bytes = entry.getData(BUFFERED_ENTRY_LIMIT, t("预览图片"));
   if (
     detectMediaType(bytes) === "image/svg+xml" &&
     /<\s*(?:script|foreignObject|iframe|object|embed)\b|\bon\w+\s*=|(?:href|src)\s*=\s*["']\s*(?!#)|@import|url\(\s*["']?\s*(?!#)/i.test(

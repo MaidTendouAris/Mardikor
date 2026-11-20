@@ -9,6 +9,7 @@ export default defineConfig({
   build: {
     target: "es2022",
     rolldownOptions: {
+      input: { workspace: "index.html", mediaViewer: "media-viewer.html" },
       output: {
         codeSplitting: {
           groups: [

@@ -75,6 +75,16 @@ for (const type of ["dragenter", "dragover", "dragleave"])
 window.addEventListener("drop", fileDrop, true);
 
 const api: DesktopApi = {
+  inspectEnvelope: (file) => ipcRenderer.invoke("app:inspect-envelope", file),
+  envelope: (file, action) => ipcRenderer.invoke("app:envelope", file, action),
+  lockEnvelope: (file) => ipcRenderer.invoke("app:lock-envelope", file),
+  cancelEnvelope: () => ipcRenderer.invoke("app:cancel-envelope"),
+  cancelArchive: () => ipcRenderer.invoke("app:cancel-archive"),
+  onArchiveProgress: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof callback>[0]) => callback(progress);
+    ipcRenderer.on("app:archive-progress", listener);
+    return () => { ipcRenderer.removeListener("app:archive-progress", listener); };
+  },
   convertMarkdown: () => ipcRenderer.invoke("app:convert-markdown"),
   update: (action) => ipcRenderer.invoke("app:update", action),
   onUpdate: (callback) => {
@@ -163,6 +173,8 @@ const api: DesktopApi = {
     ipcRenderer.invoke("app:rename-archive", name, revision, mode),
   openMarkdownLink: (href) =>
     ipcRenderer.invoke("app:open-markdown-link", href),
+  openMedia: (project, path, kind) =>
+    ipcRenderer.invoke("app:open-media", project, path, kind),
   revealFile: (path) => ipcRenderer.invoke("app:reveal-file", path),
   onWindowMaximized: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, maximized: boolean) =>

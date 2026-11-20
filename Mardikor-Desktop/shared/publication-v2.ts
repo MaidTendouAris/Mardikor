@@ -6,7 +6,10 @@ import { settingsFields } from "./settings-v2-fields";
 import { validFeatureToken } from "./mdk-v2";
 import {
   defaultPublication,
+  type EpubPresetOptions,
+  type PdfPresetOptions,
   type PublicationFormat,
+  type PublicationPresetInfo,
   type PublicationSettings,
 } from "./publication";
 
@@ -16,6 +19,51 @@ export interface V2Preset {
   format: PublicationFormat;
   raw: Table;
   issues: ValidationIssue[];
+}
+
+export function newV2Preset(id: string, format: PublicationFormat, mode: string): Table {
+  const layout = mode === "02" ? "fixed" : format === "pdf" ? "flow" : "reflowable";
+  return { id, format, [format]: { layout } };
+}
+
+export function publicationPresetInfo(preset: V2Preset, settings: Table, mode: string): PublicationPresetInfo {
+  const { id, name, format } = preset;
+  const raw = preset.raw[format];
+  const options = isTable(raw) ? raw : {};
+  const number = (key: string, fallback: number) => {
+    const value = options[key];
+    return (typeof value === "number" || typeof value === "bigint") && Number.isFinite(Number(value))
+      ? Number(value) : fallback;
+  };
+  const fixed = options.layout === "fixed";
+  if (format === "pdf") {
+    const pdf: PdfPresetOptions = {
+      layout: fixed ? "fixed" : "flow",
+      page_width: number("page_width", 210),
+      page_height: number("page_height", 297),
+      margin_top: number("margin_top", 20),
+      margin_bottom: number("margin_bottom", 20),
+      margin_left: number("margin_left", 20),
+      margin_right: number("margin_right", 20),
+      include_cover: options.include_cover === true,
+      include_toc: options.include_toc === true,
+      chapter_break: options.chapter_break === "page" ? "page" : "none",
+    };
+    return { id, name, format, options: pdf };
+  }
+  const reading = inspectV2Settings(publicationStyle(settings, preset), mode).settings;
+  const epub: EpubPresetOptions = {
+    layout: fixed ? "fixed" : "reflowable",
+    direction: (options.direction ?? reading.mode.comic.reading_direction) === "rtl" ? "rtl" : "ltr",
+    spread: (options.spread ?? reading.mode.comic.spread_mode) === "double" ? "double" : "single",
+    first_single: typeof options.first_single === "boolean" ? options.first_single : Boolean(reading.v2?.firstSingle),
+    page_width: number("page_width", 800),
+    page_height: number("page_height", 1200),
+    include_cover: options.include_cover === true,
+    toc_in_spine: options.toc_in_spine === true,
+    embed_font: typeof options.embed_font === "boolean" ? options.embed_font : fixed,
+  };
+  return { id, name, format, options: epub, automaticFontEmbedding: typeof options.embed_font !== "boolean" };
 }
 const styleSections = [
   "body",

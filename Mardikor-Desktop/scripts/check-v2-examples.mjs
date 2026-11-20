@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'smol-toml';
 import MarkdownIt from 'markdown-it';
 import AdmZip from 'adm-zip';
+import { crc32 } from 'node:zlib';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const examples = path.join(root, 'docs/examples/v2');
@@ -18,7 +19,7 @@ const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // oxlint-disable-next-line eslint/no-control-regex -- Format validation explicitly rejects C0 and C1 controls.
 const cc = /[\u0000-\u001f\u007f-\u009f]/u;
 const markdown = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
-const report = { revision: 'v2 Final (2026-11-16)', snippets: 0, tomlSnippets: 0, localDocLinks: 0, projects: [] };
+const report = { revision: 'MDK v2 STORE (2026-11-17)', snippets: 0, tomlSnippets: 0, localDocLinks: 0, projects: [] };
 
 assert(spec.includes('版本：2 · 定稿日期：2026-11-16') && spec.includes('状态：已定稿。'));
 assert(reference.includes('定稿日期：2026-11-16 · 对应 MDK v2 定稿版'));
@@ -170,6 +171,7 @@ const expected = {
   book: { files: 9, nodes: ['node-intro', 'node-road', 'node-home', 'node-intro-again'] },
   comic: { files: 8, nodes: ['node-one', 'node-two', 'node-three'] },
   extension: { files: 4, nodes: [] },
+  attachments: { files: 7, nodes: ['node-field'] },
 };
 fs.mkdirSync(output, { recursive: true });
 for (const [name, expectation] of Object.entries(expected)) {
@@ -188,6 +190,7 @@ for (const [name, expectation] of Object.entries(expected)) {
   assert(['default', 'book', 'comic'].includes(config.mode ?? 'default'));
   const order = sequence(parse(files.get('contents.toml').toString()), files);
   assert.deepEqual(order, expectation.nodes);
+  if (name === 'attachments') assert.equal(files.get('resources/other/run 100%#1').toString('hex'), '00ff4d444b0d0a80');
   const parsed = new Map([...files].filter(([file]) => file.endsWith('.md')).map(([file, bytes]) => {
     const tokens = markdown.parse(bytes.toString().replace(/^\uFEFF/, ''), {});
     return [file, { tokens, anchors: anchors(tokens) }];
@@ -229,7 +232,7 @@ for (const [name, expectation] of Object.entries(expected)) {
     zip.addFile(file, files.get(file));
     const entry = zip.getEntry(file);
     entry.header.flags = 0x800;
-    entry.header.method = ['mimetype', 'mdk.toml'].includes(file) ? 0 : 8;
+    entry.header.method = 0;
     entry.header.time = new Date(2026, 10, 16, 0, 0, 0);
   }
   const buffer = zip.toBuffer();
@@ -248,13 +251,26 @@ for (const [name, expectation] of Object.entries(expected)) {
   }
   const reopened = new AdmZip(buffer);
   assert.equal(reopened.getEntryCount(), files.size);
-  for (const [file, bytes] of files) assert(reopened.readFile(file).equals(bytes), `ZIP round trip: ${file}`);
+  for (const [file, bytes] of files) {
+    const entry = reopened.getEntry(file);
+    const offset = entry.header.offset;
+    assert.equal(buffer.readUInt32LE(offset), 0x04034b50, file);
+    assert.equal(buffer.readUInt16LE(offset + 8), 0, file);
+    assert.equal(entry.header.method, 0, file);
+    assert.equal(buffer.readUInt32LE(offset + 18), bytes.length, file);
+    assert.equal(buffer.readUInt32LE(offset + 22), bytes.length, file);
+    assert.equal(entry.header.compressedSize, bytes.length, file);
+    assert.equal(entry.header.size, bytes.length, file);
+    assert.equal(buffer.readUInt32LE(offset + 14), crc32(bytes), file);
+    assert.equal(entry.header.crc, crc32(bytes), file);
+    assert(reopened.readFile(file).equals(bytes), `ZIP round trip: ${file}`);
+  }
   fs.writeFileSync(path.join(output, `${name}.mdk`), buffer);
   report.projects.push({ name, files: files.size, readingSequence: order, links, bytes: buffer.length });
 }
 assert(fs.readFileSync(path.join(examples, 'book/resources/cover.svg')).equals(fs.readFileSync(path.join(examples, 'comic/resources/scene.svg'))));
 
-const docs = ['docs/MDK Format Specification v2.md', 'docs/MDK v2 Settings Reference.md', 'docs/examples/v2/README.md', 'docs/MDK v2 Finalization.md'];
+const docs = ['docs/MDK Format Specification v2.md', 'docs/MDK v2 Settings Reference.md', 'docs/examples/v2/README.md', 'docs/MDK v2 Finalization.md', 'docs/MDK Protection and MDKE Proposal.md'];
 assert(read(path.join(examples, 'README.md')).startsWith('# MDK v2 定稿版工程示例'));
 for (const file of docs) walkTokens(markdown.parse(read(path.join(root, file)), {}), token => {
   if (token.type !== 'link_open') return;

@@ -14,11 +14,15 @@ export function EditorMenu({
   y,
   items,
   onClose,
+  focusFirst = false,
+  ariaLabel,
 }: {
   x: number;
   y: number;
   items: EditorMenuItem[];
   onClose: () => void;
+  focusFirst?: boolean;
+  ariaLabel?: string;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -28,6 +32,10 @@ export function EditorMenu({
       Math.max(8, Math.min(x, window.innerWidth - box.width - 8)) + "px";
     node.style.top =
       Math.max(8, Math.min(y, window.innerHeight - box.height - 8)) + "px";
+    if (focusFirst)
+      node
+        .querySelector<HTMLButtonElement>("button:not(:disabled)")
+        ?.focus({ preventScroll: true });
     const pointer = (event: PointerEvent) => {
       if (!node.contains(event.target as Node)) onClose();
     };
@@ -75,13 +83,13 @@ export function EditorMenu({
       window.removeEventListener("scroll", scroll, true);
       window.removeEventListener("resize", onClose);
     };
-  }, [x, y, onClose]);
+  }, [x, y, onClose, focusFirst]);
   return createPortal(
     <div
       className="editor-context-menu"
       ref={menu}
       role="menu"
-      aria-label={t("正文右键菜单")}
+      aria-label={ariaLabel ?? t("正文右键菜单")}
       style={{ left: x, top: y }}
     >
       {items.map((item) => (

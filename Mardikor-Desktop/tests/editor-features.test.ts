@@ -90,7 +90,7 @@ test("dropped resources and references commit together, use classified paths and
   assert.match(result.resources[0].path, /-2\.png$/);
   assert(mdk.validateMdk(file).valid);
 });
-test("unsupported formats, forged signatures, active SVG and mixed batches leave the entire MDK unchanged", () => {
+test("general insertion keeps opaque attachments inert and is atomic when a source cannot be read", () => {
   const file = path.join(root, "reject.mdk"),
     good = path.join(root, "good.png"),
     unsupported = path.join(root, "tool.exe"),
@@ -98,7 +98,7 @@ test("unsupported formats, forged signatures, active SVG and mixed batches leave
     forged = path.join(root, "forged.png"),
     active = path.join(root, "active.svg");
   fs.writeFileSync(good, png);
-  fs.writeFileSync(unsupported, png);
+  fs.writeFileSync(unsupported, Buffer.from([0x4d, 0x5a, 0, 0xff]));
   fs.writeFileSync(prototypeName, "not supported");
   fs.writeFileSync(forged, "not an image");
   fs.writeFileSync(
@@ -113,15 +113,14 @@ test("unsupported formats, forged signatures, active SVG and mixed batches leave
     text: { path: "markdown/001.md", content: "# before\n\n" + marker },
     marker,
   };
-  for (const sources of [
-    [unsupported],
-    [prototypeName],
-    [forged],
-    [active],
-    [good, unsupported],
-  ]) {
-    assert.throws(() => mdk.insertMdkResources(file, sources, insertion));
-    assert.deepEqual(fs.readFileSync(file), before);
+  assert.throws(() => mdk.insertMdkResources(file, [good, path.join(root, "missing-input")], insertion));
+  assert.deepEqual(fs.readFileSync(file), before);
+  const result = mdk.insertMdkResources(file, [good, unsupported, prototypeName, forged, active], insertion);
+  assert.match(result.content, /!\[good\.png\]/);
+  for (const source of [unsupported, prototypeName, forged, active]) {
+    const name = path.basename(source);
+    assert.ok(result.content.includes(`\n[${name}](`));
+    assert.deepEqual(mdk.mdkAttachment(file, `resources/other/${name}`).getData(), fs.readFileSync(source));
   }
   mdk.saveMdkTextFile(file, "markdown/001.md", "external change");
   const changed = fs.readFileSync(file);

@@ -7,7 +7,7 @@ const server = await createServer();
 await server.listen();
 server.printUrls();
 const options = {
-  entryPoints: ["electron/main.ts", "electron/preload.ts"],
+  entryPoints: ["electron/main.ts", "electron/preload.ts", "electron/media-preload.ts", "electron/archive-worker.ts", "electron/envelope-worker.ts"],
   outdir: "dist-electron",
   outExtension: { ".js": ".cjs" },
   bundle: true,

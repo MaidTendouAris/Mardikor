@@ -69,14 +69,59 @@ export interface PublicationConfiguration {
   comic: MdkSettings["mode"]["comic"];
   render_containers: boolean;
 }
+
+export const publicationMetadataFields = [
+  "title", "language", "identifier", "publisher", "rights", "description", "cover",
+] as const;
+export type MdkPublicationMetadata = Record<(typeof publicationMetadataFields)[number], string> & {
+  creators: string[];
+};
+export interface PdfPresetOptions {
+  layout: "flow" | "fixed";
+  page_width: number;
+  page_height: number;
+  margin_top: number;
+  margin_bottom: number;
+  margin_left: number;
+  margin_right: number;
+  include_cover: boolean;
+  include_toc: boolean;
+  chapter_break: "none" | "page";
+}
+export interface EpubPresetOptions {
+  layout: "reflowable" | "fixed";
+  direction: "ltr" | "rtl";
+  spread: "single" | "double";
+  first_single: boolean;
+  page_width: number;
+  page_height: number;
+  include_cover: boolean;
+  toc_in_spine: boolean;
+  embed_font: boolean;
+}
+export type PublicationPresetEdit = {
+  format: PublicationFormat;
+  presetId?: string;
+  options: Record<string, string | number | boolean>;
+  metadata: Partial<MdkPublicationMetadata>;
+};
+export type PublicationPresetInfo = { id: string; name: string } & (
+  | { format: "pdf"; options: PdfPresetOptions }
+  | { format: "epub"; options: EpubPresetOptions; automaticFontEmbedding: boolean }
+);
 export interface PublicationInfo {
   revision: string;
   mode: string;
   standalone: boolean;
   saved: boolean;
   engine: string;
-  presets?: { id: string; name: string; format: PublicationFormat }[];
+  presets?: PublicationPresetInfo[];
   defaultPreset?: string;
+  mdk?: {
+    defaults: PublicationPresetInfo[];
+    metadata: MdkPublicationMetadata;
+    readonly: boolean;
+  };
   configuration: PublicationConfiguration;
   fonts: string[];
   images: string[];

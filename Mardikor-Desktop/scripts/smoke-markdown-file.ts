@@ -67,9 +67,6 @@ async function disabledMdk() {
   ).toBeDisabled();
   await expect(page!.getByLabel("新建文稿", { exact: true })).toBeDisabled();
   await expect(
-    page!.getByRole("button", { name: "导出", exact: true }),
-  ).toBeEnabled();
-  await expect(
     page!.getByRole("button", { name: "校验与导出", exact: true }),
   ).toBeEnabled();
 }
@@ -125,6 +122,11 @@ try {
   };
   await reveal(file);
   await disabledMdk();
+  await page!.getByRole("button", { name: "校验与导出", exact: true }).click();
+  const pdf = page!.getByRole("region", { name: "PDF 导出", exact: true });
+  await expect(pdf.getByRole("heading", { name: "PDF 导出", exact: true })).toBeVisible();
+  await expect(pdf.getByRole("combobox", { name: "出版导出格式", exact: true })).toHaveCount(0);
+  await page!.getByRole("button", { name: "返回文稿", exact: true }).click();
   await append("手动保存内容");
   await save();
   await expect.poll(() => fs.readFile(file, "utf8")).toContain("手动保存内容");

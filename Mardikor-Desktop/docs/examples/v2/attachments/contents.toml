@@ -1,0 +1,10 @@
+[[documents]]
+id = "doc-field"
+path = "markdown/field/day.md"
+title = "现场采样"
+
+[[nodes]]
+id = "node-field"
+kind = "document"
+order = 1
+document = "doc-field"

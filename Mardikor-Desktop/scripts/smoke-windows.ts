@@ -351,3 +351,43 @@ try {
 } finally {
   await restarted.close();
 }
+
+if (process.platform === "win32") {
+  const state = new AppState(profile);
+  state.preferences({ ...state.preferences(), autoCheckUpdates: false, language: "zh-CN" });
+  state.windowSize({ width: rememberedSize![0], height: rememberedSize![1], maximized: true });
+  const visibleEnv = { ...env };
+  delete visibleEnv.MARDIKOR_HEADLESS;
+  const visible = await electron.launch({ executablePath: binary, args: [...launchArgs, a], env: visibleEnv, timeout: 30000 });
+  try {
+    const page = await visible.firstWindow();
+    await expect(page.locator(".document-title")).toContainText(path.basename(a));
+    await expect.poll(() => visible.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      return { maximized: window.isMaximized(), opacity: window.getOpacity() };
+    })).toEqual({ maximized: true, opacity: 1 });
+    expectWindowSize(await visible.evaluate(({ BrowserWindow }) => {
+      const { width, height } = BrowserWindow.getAllWindows()[0].getNormalBounds();
+      return [width, height];
+    }));
+
+    const [opened] = await Promise.all([visible.waitForEvent("window"), visible.evaluate(({ app }, file) => {
+      const observations: { event: string; opacity: number; maximized: boolean }[] = [];
+      (globalThis as typeof globalThis & { startupObservations?: typeof observations }).startupObservations = observations;
+      app.once("browser-window-created", (_event, window) => {
+        window.once("show", () => observations.push({ event: "native show", opacity: window.getOpacity(), maximized: window.isMaximized() }));
+        window.webContents.once("dom-ready", () => observations.push({ event: "renderer ready", opacity: window.getOpacity(), maximized: window.isMaximized() }));
+      });
+      app.emit("open-file", { preventDefault() {} }, file);
+    }, c)]);
+    await expect(opened.locator(".document-title")).toContainText(path.basename(c));
+    const observations = await visible.evaluate(() =>
+      (globalThis as typeof globalThis & { startupObservations?: unknown[] }).startupObservations,
+    );
+    expect(observations).toContainEqual({ event: "native show", opacity: 0, maximized: true });
+    expect(observations).toContainEqual({ event: "renderer ready", opacity: 0, maximized: true });
+    console.log("Windows restores a maximized window before the first opaque frame.");
+  } finally {
+    await visible.close();
+  }
+}

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { serialize, deserialize } from "node:v8";
+import { openRecovery, sealRecovery, type EnvelopeKey } from "./envelope";
 import type { SaveSnapshot } from "../shared/mdk";
 import type { Preferences, RecentProject } from "../shared/desktop";
 import {
@@ -168,13 +169,15 @@ export class AppState {
     file: string,
     value?: SaveSnapshot | null,
     owner?: string,
+    access?: EnvelopeKey,
   ): SaveSnapshot | null {
     const dir = path.join(path.dirname(this.file), "recovery");
     const hash = createHash("sha256").update(path.resolve(file)).digest("hex");
-    const key = owner ? `${owner}\0${hash}` : "";
+    const suffix = access ? ".protected.draft" : ".draft";
+    const key = owner ? owner + "\0" + hash + suffix : "";
     let target = owner
       ? this.recoveryTargets.get(key)
-      : path.join(dir, hash + ".draft");
+      : path.join(dir, hash + suffix);
     if (!target) {
       // Claim one abandoned draft. Concurrent windows must never read, overwrite
       // or clear a draft already owned by another live window for the same file.
@@ -182,21 +185,43 @@ export class AppState {
         ? fs
             .readdirSync(dir)
             .filter(
-              (name) => name.startsWith(hash + ".") && name.endsWith(".draft"),
+              (name) => name.startsWith(hash + ".") && name.endsWith(suffix) &&
+                (access || !name.endsWith(".protected.draft")),
             )
             .map((name) => path.join(dir, name))
             .filter((name) => !this.recoveryClaims.has(name))
             .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
         : [];
-      target = candidates[0] ?? path.join(dir, `${hash}.${randomUUID()}.draft`);
+      target = candidates[0] ?? path.join(dir, hash + "." + randomUUID() + suffix);
       this.recoveryTargets.set(key, target);
       this.recoveryClaims.set(target, owner!);
     }
     if (value === undefined) {
       if (!fs.existsSync(target)) return null;
-      if (fs.statSync(target).size > recoveryLimit)
-        throw new Error(t("恢复草稿超过实现支持范围。"));
-      return deserialize(fs.readFileSync(target));
+      let data: Buffer | undefined;
+      try {
+        if (fs.statSync(target).size > recoveryLimit + (access ? 8192 : 0))
+          throw new Error(t("恢复草稿超过实现支持范围。"));
+        const stored = fs.readFileSync(target);
+        data = access ? openRecovery(stored, access, path.resolve(file)) : stored;
+        if (data.length > recoveryLimit) throw new Error(t("恢复草稿超过实现支持范围。"));
+        return deserialize(data);
+      } catch (error) {
+        if (!access || !owner) throw error;
+        const replacement = path.join(dir, hash + "." + randomUUID() + suffix);
+        this.recoveryTargets.set(key, replacement);
+        this.recoveryClaims.set(replacement, owner);
+        this.recoveryClaims.delete(target);
+        let retained = target + ".unreadable";
+        try {
+          fs.renameSync(target, retained);
+        } catch {
+          retained = target;
+        }
+        throw new Error(t("加密恢复草稿无法解锁，副本保存在 {0}。", retained));
+      } finally {
+        if (access) data?.fill(0);
+      }
     }
     if (value === null) {
       if (fs.existsSync(target)) fs.unlinkSync(target);
@@ -208,12 +233,24 @@ export class AppState {
     fs.mkdirSync(dir, { recursive: true });
     const temporary = target + "." + randomUUID() + ".tmp";
     try {
-      fs.writeFileSync(temporary, data, { flag: "wx" });
+      const stored = access ? sealRecovery(data, access, path.resolve(file)) : data;
+      fs.writeFileSync(temporary, stored, { flag: "wx", mode: 0o600 });
       fs.renameSync(temporary, target);
     } finally {
+      if (access) data.fill(0);
       if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
     }
     return value;
+  }
+  hasOtherRecovery(file: string, owner: string, access?: EnvelopeKey) {
+    const dir = path.join(path.dirname(this.file), "recovery");
+    const hash = createHash("sha256").update(path.resolve(file)).digest("hex");
+    const suffix = access ? ".protected.draft" : ".draft";
+    const owned = this.recoveryTargets.get(owner + "\0" + hash + suffix);
+    return fs.existsSync(dir) && fs.readdirSync(dir).some(
+      (name) => name.startsWith(hash + ".") && name.endsWith(".draft") &&
+        path.join(dir, name) !== owned,
+    );
   }
   releaseRecovery(owner: string) {
     for (const [key, target] of this.recoveryTargets) {

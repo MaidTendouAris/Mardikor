@@ -1,5 +1,7 @@
 # Mardikor Command-Line Guide
 
+The [CLI collaboration proposal (Chinese)](<CLI Collaboration Foundation Proposal.md>) describes planned commands and editing transactions.
+
 This guide applies to [MDK v2](<MDK Format Specification v2.md>).
 
 `mardikor` reads and edits `.mdk` projects directly. Use it on Linux servers, in terminal scripts, or in AI-assisted writing workflows.
@@ -10,11 +12,27 @@ This guide applies to [MDK v2](<MDK Format Specification v2.md>).
 - **Linux** requires Node.js 22.12 or later. Use the version number of the archive you downloaded.
 
 ```sh
-npm install -g ./mardikor-cli-0.2.4.tgz
+npm install -g ./mardikor-cli-0.3.4.tgz
 mardikor --version
 ```
 
 To build from source, run `npm ci` and `npm run dist:cli` in `Mardikor-Desktop/`. The archive is written to its `build-output/cli` directory. You can also run `node build-output/cli/package/bin/mardikor.cjs`. The single-file Windows portable build provides the graphical app only.
+
+## Access protection and MDKE
+
+```sh
+mardikor protect "novel.mdk" --if-revision "<revision>" --new-passphrase-file access.txt
+mardikor list "novel.mdk" --access-passphrase-file access.txt --json
+mardikor mdke-pack "novel.mdk" "novel.mdke" --compression zstd-9 --unpack-passphrase-file extraction.txt
+mardikor mdke-extract "novel.mdke" "extracted.mdk" --unpack-passphrase-file extraction.txt
+mardikor mdke-rekey "novel.mdke" "updated.mdke" --unpack-passphrase-file extraction.txt --new-passphrase-file new.txt
+```
+
+MDKP retains the `.mdk` extension and requires the access passphrase to read or edit. MDKE can have a separate extraction passphrase. Extracting restores the inner MDK byte for byte, including any access protection. `mdke-pack --compression` accepts `auto`, `store`, `zstd-3`, and `zstd-9`. The default, `auto`, uses Zstandard level 3 for plain MDK and STORE for protected MDK. Zstandard commands require Node.js 22.15 or later.
+
+Passphrase files contain a single UTF-8 line. Leading and trailing spaces are preserved. One passphrase can be read from stdin by passing `-` as its filename. Use `--access-passphrase-file` for the current access passphrase. Use `--new-passphrase-file` or `--remove` to replace or remove the appropriate layer. Use `write` to edit protected MDK. The command that starts an external editor, `edit`, is available for plain MDK only.
+
+Use `--allow-plaintext` to extract plaintext from an encrypted distribution package or unpack a protected project into a folder. Use `mdke-extract --recovery` to explicitly retain the verified outer payload as a recovery copy when the inner project fails validation.
 
 ## Create, read, and edit projects
 
@@ -32,7 +50,11 @@ mardikor validate "novel.mdk"
 
 ## Input and package limits
 
-Each input and internal file can be at most **64 MiB**. Both the MDK package and its total decompressed contents have a **256 MiB** limit. Streaming in chunks still counts as one input. Split longer manuscripts into separate contents entries and write each one individually.
+Ordinary MDK packing, import, delivery and extraction stream STORE members and use ZIP64 where required. Capacity depends on the destination filesystem, available space, and ZIP index budgets. Set `MARDIKOR_MAX_ENTRY_BYTES` or `MARDIKOR_MAX_PROJECT_BYTES` to configure inclusive write quotas in decimal bytes. Text input is limited to 64 MiB per command. MDKP and MDKE have separate envelope budgets. [MDK v2 specification, §3.5](<MDK Format Specification v2.md>)
+
+`import` accepts any regular file and uses the category to choose a directory under `resources/`. `extract <project> <member-path> <output-file>` extracts a single member byte for byte. Extracting a protected project's attachment requires its access passphrase and `--allow-plaintext`.
+
+Mardikor 0.3.3 requires STORE (ZIP method 0) for every entry under the November 17, 2026 MDK v2 revision. For an older project rejected because it contains DEFLATE entries, run `mardikor unpack "old.mdk" "unpacked"` with CLI 0.3.2, then run `mardikor pack "new.mdk" "unpacked"` with 0.3.3. Keep the original project.
 
 ## Command reference
 

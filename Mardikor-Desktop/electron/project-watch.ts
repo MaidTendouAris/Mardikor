@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { MAX_TOTAL } from "./archive";
 
 // Watching the pathname (not the inode) also catches atomic replacements.
 export function watchProjectFile(
@@ -12,7 +11,7 @@ export function watchProjectFile(
   let generation = 0;
   const changed = (stats: fs.Stats) => {
     const request = ++generation;
-    if (!stats.isFile() || stats.size > MAX_TOTAL) {
+    if (!stats.isFile()) {
       notify(null);
       return;
     }

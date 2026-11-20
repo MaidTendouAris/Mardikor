@@ -6,6 +6,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { buildSync } from "esbuild";
+import AdmZip from "adm-zip";
+import { addArchiveMember } from "../electron/archive";
 import { fileRevision, saveMdkSnapshot } from "../electron/mdk";
 
 test("CLI edits MDK directly, guards writes and shares the desktop write lock", async (t) => {
@@ -36,7 +38,7 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   };
   const created = json(["new", file, "--mode", "book"]);
   for (const args of [["--help"], ["write", "--help"]])
-    assert.match(run(args).stdout, /64 MiB.*256 MiB/);
+    assert.match(run(args).stdout, /ZIP64.*文本输入限 64 MiB.*流式处理/);
   assert.equal(created.mode, "book");
   assert.equal(created.mode_name, "book");
   assert.equal(created.format_version, 2);
@@ -55,6 +57,29 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   );
   const repacked = path.join(root, "repacked.mdk");
   assert.equal(run(["pack", repacked, unpacked]).status, 0);
+  for (const output of [file, delivered, repacked]) {
+    const bytes = fs.readFileSync(output);
+    for (const entry of new AdmZip(bytes).getEntries()) {
+      assert.equal(entry.header.method, 0, entry.entryName);
+      assert.equal(bytes.readUInt16LE(entry.header.offset + 8), 0, entry.entryName);
+    }
+  }
+  const compressed = path.join(root, "old-compressed.mdk");
+  const oldZip = new AdmZip(undefined, { noSort: true });
+  for (const entry of new AdmZip(fs.readFileSync(file)).getEntries())
+    addArchiveMember(oldZip, entry.entryName, entry.getData());
+  oldZip.getEntry("markdown/001.md")!.header.method = 8;
+  const oldBytes = oldZip.toBuffer();
+  fs.writeFileSync(compressed, oldBytes);
+  const rejected = run(["validate", compressed, "--json"]);
+  assert.equal(rejected.status, 1);
+  const report = JSON.parse(rejected.stdout);
+  assert.equal(report.valid, false);
+  assert.equal(report.scopes[0].status, "fail");
+  assert.equal(report.issues[0].code, "mdk.container.invalid");
+  assert.equal(report.issues[0].path, "markdown/001.md");
+  assert.equal(run(["unpack", compressed, path.join(root, "rejected")]).status, 1);
+  assert.deepEqual(fs.readFileSync(compressed), oldBytes);
   assert.equal(json(["list", repacked]).project_id, created.project_id);
   const packedInfo = json(["list", repacked]);
   const registration = packedInfo.documents[0].id;
@@ -301,4 +326,13 @@ test("CLI edits MDK directly, guards writes and shares the desktop write lock", 
   assert.equal(collision.status, 1);
   assert.equal(fileRevision(file), bulk.revision);
   assert.equal(json(["validate", file]).valid, true);
+  const opaque = path.join(root, "run 100%#1");
+  const bytes = Buffer.of(0, 0xff, 0x4d, 0x44, 0x4b, 0xd, 0xa, 0x80);
+  fs.writeFileSync(opaque, bytes);
+  const attachment = json(["import", file, "other", opaque, "--if-revision", bulk.revision]);
+  const extracted = path.join(root, "extracted-record");
+  assert.equal(json(["extract", file, attachment.path, extracted]).count, 1);
+  assert.deepEqual(fs.readFileSync(extracted), bytes);
+  assert.equal(run(["extract", file, attachment.path, extracted]).status, 1);
+  assert.deepEqual(fs.readFileSync(extracted), bytes);
 });

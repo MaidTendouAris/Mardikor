@@ -135,6 +135,24 @@ async function check(
     );
     await expect(page.locator("html")).toHaveAttribute("lang", locale);
   }
+  const width = en ? 1024 : 1200;
+  await app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0].setSize(value, 720), width);
+  await expect.poll(async () => Math.abs(await page.evaluate(() => innerWidth) - width)).toBeLessThanOrEqual(2);
+  await page.getByRole("button", { name: en ? "Editor" : "编辑器", exact: true }).click();
+  if (en) {
+    await expect(page.locator(".document-short-name")).toBeVisible();
+    await expect(page.locator(".document-title")).toHaveAttribute("title", "markdown/001.md");
+  }
+  await page.getByRole("button", { name: en ? "Validate & Export" : "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
+  const clipped = await page.locator(".validation-status").evaluate((card) => {
+    const boundary = card.getBoundingClientRect();
+    return Array.from(card.querySelectorAll("button")).some((button) => {
+      const bounds = button.getBoundingClientRect();
+      return bounds.right > boundary.right || bounds.left < boundary.left;
+    });
+  });
+  expect(clipped).toBe(false);
 }
 
 for (const [system, locale, saved, next] of [

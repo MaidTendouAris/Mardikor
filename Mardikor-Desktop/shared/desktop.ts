@@ -21,6 +21,7 @@ import type {
   PublicationFormat,
   PublicationInfo,
   PublicationPlan,
+  PublicationPresetEdit,
   PublicationResult,
 } from "./publication";
 
@@ -32,6 +33,10 @@ export interface MdkCommands {
     revision: string,
     format?: PublicationFormat,
   ) => PublicationInfo;
+  saveMdkPublication: (path: string, edits: PublicationPresetEdit[], revision: string) => {
+    ids: (string | undefined)[];
+    revision: string;
+  };
   planPublication: (
     path: string,
     format: PublicationFormat,
@@ -98,7 +103,7 @@ export interface MdkCommands {
     path: string,
     token: string,
     insertion: ResourceInsertion,
-  ) => ResourceInsertionResult;
+  ) => ResourceInsertionResult | Promise<ResourceInsertionResult>;
   readText: (path: string, internalPath: string) => TextFileContent;
   readDocuments: (
     path: string,
@@ -161,11 +166,20 @@ export type DialogKind =
   | "save-markdown"
   | "save-pdf"
   | "save-epub"
+  | "save-mdke"
   | "resource"
   | "directory";
 export type EditAction =
   "cut" | "copy" | "paste" | "paste-text" | "select-all" | "copy-text";
 export interface DesktopApi {
+  inspectEnvelope(file: string): Promise<import("./envelopes").EnvelopeInfo>;
+  envelope(file: string, action: import("./envelopes").EnvelopeAction): Promise<
+    import("./envelopes").EnvelopeReport | import("./envelopes").AccessChangeResult | { overlap: true } | undefined
+  >;
+  lockEnvelope(file: string): Promise<void>;
+  cancelEnvelope(): Promise<void>;
+  cancelArchive(): Promise<void>;
+  onArchiveProgress(callback: (progress: import("./archive-operation").ArchiveProgress | null) => void): () => void;
   convertMarkdown(): Promise<boolean>;
   update(
     action: import("./updates").UpdateAction,
@@ -208,6 +222,7 @@ export interface DesktopApi {
   onSaveBeforeClose(callback: () => Promise<boolean>): () => void;
   openExternal(url: string): Promise<void>;
   openMarkdownLink(href: string): Promise<void>;
+  openMedia(project: string, path: string, kind: import("./media-viewer").AttachmentViewerKind): Promise<void>;
   revealFile(path: string): Promise<void>;
   renameArchive(name: string, revision: string, mode: string): Promise<string>;
   recovery(

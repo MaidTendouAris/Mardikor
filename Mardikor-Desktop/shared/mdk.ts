@@ -123,6 +123,7 @@ export interface ProjectFile {
 }
 
 export interface MdkProject {
+  protected?: boolean;
   format?: "mdk" | "markdown";
   encoding?: "UTF-8" | "GB18030";
   revision: string;

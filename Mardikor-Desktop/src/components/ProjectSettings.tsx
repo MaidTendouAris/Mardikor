@@ -422,15 +422,20 @@ export function ProjectSettings({
                             </option>
                           ))}
                         </Select>
+                      ) : field.path === "appearance.font_family" && value.v2 ? (
+                        <>
+                          <Select aria-label={field.label} disabled={busy || formDisabled}
+                            value={String(read(field.path))} onValueChange={(font) => update(field.path, font)}>
+                            {[...new Set(["serif", "sans-serif", "monospace", ...fonts, String(read(field.path))])]
+                              .map((font) => <option key={font} value={font}>{font}</option>)}
+                          </Select>
+                          <small className="field-hint">{t("选择通用字族或已导入的工程字体。字体集可在 settings.toml 中配置。")}</small>
+                        </>
                       ) : field.path === "appearance.font_family" ? (
                         <FontCombobox
                           aria-label={field.label}
                           value={String(read(field.path))}
-                          options={
-                            value.v2
-                              ? ["serif", "sans-serif", "monospace", ...fonts]
-                              : ["system", "Arial", "Times New Roman", ...fonts]
-                          }
+                          options={["system", "Arial", "Times New Roman", ...fonts]}
                           disabled={busy}
                           onValueChange={(value) => update(field.path, value)}
                         />

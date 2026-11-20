@@ -1,5 +1,5 @@
 import { appLocale, t, type LanguagePreference } from "../../shared/i18n";
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { Check, ChevronRight, ExternalLink, Keyboard } from "lucide-react";
 import { license, version } from "../../package.json";
 import licenseText from "../../LICENSE?raw";
@@ -24,22 +24,35 @@ const cliGuideHtml = renderPreview(
 );
 const licenseHtml = renderPreview("# " + licenseText);
 
+export interface AppSettingsDraft {
+  preferences?: Preferences;
+  language?: LanguagePreference;
+}
+
 export function AppSettings({
   value,
+  draftState,
+  onDraftChange,
   onChange,
   notify,
   update,
 }: {
   value: Preferences;
+  draftState: AppSettingsDraft;
+  onDraftChange: Dispatch<SetStateAction<AppSettingsDraft>>;
   onChange: (value: Preferences) => void;
   notify: Notify;
   update: UpdateStatus | null;
 }) {
-  const [draft, setDraft] = useState(value);
-  const [draftLanguage, setDraftLanguage] = useState<LanguagePreference>();
+  const { preferences: pending, language: draftLanguage } = draftState;
+  const draft = pending ?? value;
+  const setDraft = (preferences: Preferences) => onDraftChange((current) => ({ ...current, preferences }));
   const language = draftLanguage ?? value.language ?? "system";
   const [busy, setBusy] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const changed = language !== (value.language ?? "system") || Object.entries(draft).some(
+    ([key, field]) => key !== "shortcuts" && key !== "language" && field !== value[key as keyof Preferences],
+  );
   async function save() {
     setBusy(true);
     try {
@@ -51,7 +64,10 @@ export function AppSettings({
           language,
         }),
       );
-      setDraftLanguage(undefined);
+      onDraftChange((current) => ({
+        preferences: current.preferences === pending ? undefined : current.preferences,
+        language: current.language === draftLanguage ? undefined : current.language,
+      }));
       notify(
         changedLanguage
           ? t("语言偏好已保存，重启应用后生效。")
@@ -76,7 +92,15 @@ export function AppSettings({
     );
   return (
     <section className="settings-page page-scroll">
-      <h1>{t("应用设置")}</h1>
+      <header className="app-settings-header">
+        <h1>{t("应用设置")}</h1>
+        <div className="button-row">
+          {changed && <span role="status">{t("有未保存的更改")}</span>}
+          <button className="button primary" disabled={busy || !changed} onClick={() => void save()}>
+            <Check size={16} /> {t("保存偏好")}
+          </button>
+        </div>
+      </header>
       <div className="settings-card">
         <label className="setting-row">
           <span>
@@ -87,9 +111,7 @@ export function AppSettings({
             aria-label={t("应用语言")}
             className="short-input"
             value={language}
-            onValueChange={(value) =>
-              setDraftLanguage(value as LanguagePreference)
-            }
+            onValueChange={(language) => onDraftChange((current) => ({ ...current, language: language as LanguagePreference }))}
           >
             <option value="system">{t("跟随系统")}</option>
             <option value="en">English</option>
@@ -292,16 +314,6 @@ export function AppSettings({
           />
         </label>
         <UpdateControls status={update} notify={notify} />
-      </div>
-      <div className="settings-card-footer">
-        <button
-          className="button primary"
-          disabled={busy}
-          onClick={() => void save()}
-        >
-          <Check size={16} />
-          {t("保存偏好")}
-        </button>
       </div>
       <p className="settings-storage-note">
         {t("应用设置保存在本机，不写入 .mdk 文件。")}

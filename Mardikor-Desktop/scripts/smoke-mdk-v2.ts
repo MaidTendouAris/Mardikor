@@ -6,6 +6,8 @@ import { PDFDocument } from "pdf-lib";
 import AdmZip from "adm-zip";
 import {
   MDK_MIMETYPE,
+  createMdkProject,
+  createTextFile,
   packMdk,
   readMdkTextFile,
   saveMdkTextFile,
@@ -20,11 +22,19 @@ const run = await fs.mkdtemp(path.join(root, "run-"));
 const file = path.join(run, "book.mdk");
 const comic = path.join(run, "comic.mdk");
 const minimal = path.join(run, "minimal.mdk");
+const defaultProject = path.join(run, "default.mdk");
+const missing = path.join(run, "missing.mdk");
 const readonly = path.join(run, "readonly.mdk");
+const compressed = path.join(run, "old-compressed.mdk");
 const profile = path.join(run, "profile");
 packMdk("docs/examples/v2/book", file);
 packMdk("docs/examples/v2/comic", comic);
 packMdk("docs/examples/v2/minimal", minimal);
+createMdkProject(defaultProject, "00");
+createTextFile(defaultProject, "meta/check.json", "{}");
+saveMdkTextFile(defaultProject, "markdown/001.md", "# 前言\n\n" + "正文。\n\n".repeat(75) + "## 第二节\n\n继续阅读。\n");
+await fs.copyFile(defaultProject, missing);
+saveMdkTextFile(missing, "markdown/001.md", "# 缺失资源\n\n![插图](../resources/missing.png)");
 const bad = new AdmZip(undefined, { noSort: true });
 addArchiveMember(bad, "mimetype", Buffer.from(MDK_MIMETYPE));
 addArchiveMember(
@@ -34,6 +44,18 @@ addArchiveMember(
 );
 addArchiveMember(bad, "contents.toml", Buffer.alloc(0));
 await fs.writeFile(readonly, bad.toBuffer());
+const oldZip = new AdmZip(undefined, { noSort: true });
+for (const entry of new AdmZip(await fs.readFile(file)).getEntries())
+  addArchiveMember(
+    oldZip,
+    entry.entryName,
+    entry.getData(),
+    entry.comment,
+    entry.attr,
+  );
+oldZip.getEntry("markdown/intro.md")!.header.method = 8;
+const oldBytes = oldZip.toBuffer();
+await fs.writeFile(compressed, oldBytes);
 saveMdkTextFile(
   comic,
   "publication.toml",
@@ -260,18 +282,102 @@ try {
     page.getByRole("tab", { name: "源码", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();
-  await page.getByRole("button", { name: "新建 PDF 预设" }).click();
-  await expect(
-    page.getByRole("button", { name: "导出 PDF", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "新建 EPUB 预设" }).click();
-  await expect(
-    page.getByRole("button", { name: "导出 EPUB", exact: true }),
-  ).toBeVisible();
+  const options = page.getByRole("region", { name: "PDF 与 EPUB 导出" });
+  const saveOptions = options.getByRole("button", { name: "保存导出配置至工程", exact: true });
+  const choose = async (label: string, value: string) => {
+    await options.getByRole("combobox", { name: label, exact: true }).click();
+    await page.getByRole("option", { name: value, exact: true }).click();
+  };
+  await expect(options.getByRole("button", { name: "导出 PDF", exact: true })).toBeVisible();
+  await expect(options.getByRole("button", { name: /^新建.*预设$/ })).toHaveCount(0);
+  await expect(options.getByRole("spinbutton", { name: "纸张宽度（mm）", exact: true })).toHaveValue("210");
+  await expect(saveOptions).toBeDisabled();
+  await options.getByRole("button", { name: "严格预检", exact: true }).click();
+  await expect(options.getByRole("region", { name: "出版转换校验结果" })).toContainText("严格预检未通过");
+  assert.equal(new AdmZip(await fs.readFile(minimal)).getEntry("publication.toml"), null);
+  const paperWidth = options.getByRole("spinbutton", { name: "纸张宽度（mm）", exact: true });
+  await paperWidth.fill("24");
+  await expect(paperWidth).toHaveAttribute("aria-invalid", "true");
+  await expect(paperWidth).toHaveAccessibleDescription("边距总和必须小于纸张尺寸。");
+  await saveOptions.click();
+  await expect(options.getByRole("alert")).toHaveText("边距总和必须小于纸张尺寸。");
+  assert.equal(new AdmZip(await fs.readFile(minimal)).getEntry("publication.toml"), null);
+  await paperWidth.fill("148");
+  await expect(paperWidth).not.toHaveAttribute("aria-invalid", "true");
+  await options.getByRole("spinbutton", { name: "纸张高度（mm）", exact: true }).fill("210");
+  await options.getByRole("checkbox", { name: "生成目录页", exact: true }).check();
+  await choose("出版导出格式", "EPUB 3 电子书");
+  await expect(options.getByRole("button", { name: "导出 EPUB", exact: true })).toBeVisible();
+  await choose("出版版式", "固定版式");
+  await expect(options.getByRole("checkbox", { name: "嵌入字体", exact: true })).toBeChecked();
+  await options.getByRole("spinbutton", { name: "页面宽度（px）", exact: true }).fill("900");
+  await choose("分页布局", "双页");
+  await options.getByRole("checkbox", { name: "首项单页", exact: true }).check();
+  await options.getByText("作品信息与封面", { exact: true }).click();
+  await options.getByRole("textbox", { name: "作品标题", exact: true }).fill("测试作品");
+  await options.getByRole("textbox", { name: "语言", exact: true }).fill("zh-CN");
+  await options.getByRole("textbox", { name: "出版物标识", exact: true }).fill("urn:example:export-options");
+  assert.equal(new AdmZip(await fs.readFile(minimal)).getEntry("publication.toml"), null);
+  await expect(page.locator(".editor-statusbar")).toContainText("有未保存的更改");
+  await page.getByRole("button", { name: "返回文稿", exact: true }).click();
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await expect(options.getByRole("spinbutton", { name: "页面宽度（px）", exact: true })).toHaveValue("900");
+  await page.keyboard.press("Control+s");
+  await expect(page.locator(".save-label")).toHaveText("已保存");
+  await expect(saveOptions).toBeDisabled();
+  await expect(options.getByRole("button", { name: "导出 EPUB", exact: true })).toBeVisible();
+  assert.match(readMdkTextFile(minimal, "mdk.toml").content, /测试作品/);
+  const epubOptions = readMdkTextFile(minimal, "publication.toml").content;
+  assert.match(epubOptions, /id = "epub"[\s\S]*layout = "fixed"[\s\S]*page_width = 900/);
+  assert.match(epubOptions, /first_single = true/);
+  await choose("出版导出格式", "PDF 文档");
+  await expect(options.getByRole("spinbutton", { name: "纸张宽度（mm）", exact: true })).toHaveValue("148");
+  await expect(options.getByRole("button", { name: "导出 PDF", exact: true })).toBeVisible();
   assert.match(
     readMdkTextFile(minimal, "publication.toml").content,
-    /id = "pdf"[\s\S]*id = "epub"/,
+    /id = "pdf"[\s\S]*page_width = 148[\s\S]*id = "epub"/,
   );
+  await page.screenshot({ path: path.join(run, "publication-options.png") });
+  await paperWidth.fill("152");
+  await page.getByRole("button", { name: "返回文稿", exact: true }).click();
+
+  await openProject(defaultProject);
+  assert.match(readMdkTextFile(minimal, "publication.toml").content, /page_width = 152/);
+  const beforeExport = await fs.readFile(defaultProject);
+  const defaultPdf = path.join(run, "default.pdf");
+  const secondHeading = page.locator(".reading-preview").getByRole("heading", { name: "第二节" });
+  await expect(secondHeading).toBeAttached();
+  await expect(secondHeading).not.toBeInViewport();
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath });
+  }, defaultPdf);
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "导出 PDF", exact: true }).click();
+  await expect.poll(async () => (await fs.stat(defaultPdf).catch(() => null))?.size ?? 0).toBeGreaterThan(0);
+  assert.ok((await PDFDocument.load(await fs.readFile(defaultPdf))).getPageCount() > 0);
+  assert.deepEqual(await fs.readFile(defaultProject), beforeExport);
+
+  await page.locator(".heading-outline").getByText("第二节", { exact: true }).click();
+  await expect(options).toBeHidden();
+  await expect(secondHeading).toBeInViewport();
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
+  const preflight = page.getByRole("button", { name: "交付预检", exact: true });
+  await preflight.click();
+  await page.getByRole("checkbox", { name: "meta/check.json", exact: true }).uncheck();
+  await expect(page.locator(".export-meta-plan")).toContainText("剔除：meta/check.json");
+  await expect(page.getByText("交付范围已更改，请重新预检", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "导出 .mdk", exact: true })).toBeDisabled();
+  await preflight.click();
+  await expect(page.getByRole("button", { name: "导出 .mdk", exact: true })).toBeEnabled();
+
+  await openProject(missing);
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
+  await page.getByRole("button", { name: "校验工程", exact: true }).click();
+  const issue = page.locator(".issue").filter({ hasText: "missing.png" });
+  await issue.getByRole("button", { name: "markdown/001.md", exact: true }).click();
+  await expect(page.locator(".delivery-page")).toBeHidden();
 
   await openProject(readonly);
   await expect(page.locator(".project-diagnostics summary")).toContainText(
@@ -280,9 +386,34 @@ try {
   await expect(
     page.getByRole("button", { name: "保存", exact: true }),
   ).toBeDisabled();
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [filePath],
+    });
+  }, compressed);
+  await page.getByRole("button", { name: "打开工程", exact: true }).click();
+  const rejection = page
+    .getByRole("alert")
+    .filter({ hasText: "MDK v2 禁止容器压缩" });
+  await expect(rejection).toContainText("markdown/intro.md");
+  await expect(page.locator(".titlebar-caption")).toHaveText(
+    path.basename(readonly),
+  );
+  assert.deepEqual(await fs.readFile(compressed), oldBytes);
   assert.deepEqual(errors, []);
+  await openProject(defaultProject);
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await paperWidth.fill("168");
+  await expect(page.locator(".editor-statusbar")).toContainText("有未保存的更改");
+  await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 0; });
+  await Promise.all([
+    page.waitForEvent("close"),
+    page.getByRole("button", { name: "关闭窗口", exact: true }).click(),
+  ]);
+  assert.match(readMdkTextFile(defaultProject, "publication.toml").content, /page_width = 168/);
   console.log(
-    "Electron v2 reader, named preflight, PDF, reflowable EPUB and RTL fixed EPUB:",
+    "Electron v2 reader, named preflight, PDF, EPUB, and rejection of compressed MDK:",
     run,
   );
 } finally {

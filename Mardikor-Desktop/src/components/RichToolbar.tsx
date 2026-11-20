@@ -1,6 +1,7 @@
 import { t } from "../../shared/i18n";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
+import { NodeSelection } from "@tiptap/pm/state";
 import {
   Bold,
   Italic,
@@ -43,6 +44,11 @@ import {
 import { requiresSourceMode } from "../../shared/markdown";
 import { alignTableColumns, richDropDraft } from "../services/rich-markdown";
 import { desktop } from "../services/desktop";
+import {
+  editorMediaTarget,
+  viewMediaLabel,
+  type EditorMediaTarget,
+} from "../services/editor-media";
 import { EditorDialog, EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import { Select } from "./Select";
 import type { Notify } from "../App";
@@ -63,6 +69,7 @@ interface Props {
   files: ProjectFile[];
   notify: Notify;
   onImport: () => Promise<void>;
+  onViewMedia: (target: EditorMediaTarget) => Promise<void>;
   onSourceInsert: (content: string) => Promise<void>;
 }
 function relativeResource(from: string, to: string) {
@@ -84,6 +91,7 @@ export function RichToolbar({
   files,
   notify,
   onImport,
+  onViewMedia,
   onSourceInsert,
 }: Props) {
   const formattingKey = (id: (typeof formattingShortcuts)[number]["id"]) =>
@@ -120,7 +128,12 @@ export function RichToolbar({
           ].join(":")
         : "",
   });
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    media?: EditorMediaTarget;
+    keyboard?: boolean;
+  } | null>(null);
   const [form, setForm] = useState<ToolForm | null>(null);
   const [error, setError] = useState("");
   const closeMenu = useCallback(() => {
@@ -221,21 +234,39 @@ export function RichToolbar({
         left: event.clientX,
         top: event.clientY,
       });
-      const image = (event.target as HTMLElement).closest("img");
-      if (image)
-        editor.state.doc.descendants((node, pos) => {
-          if (node.type.name === "image" && editor.view.nodeDOM(pos) === image)
-            editor.commands.setNodeSelection(pos);
-        });
-      else if (
+      const target = event.target as Element;
+      const media = editorMediaTarget(target, sourcePath);
+      if (media?.inlineImage) {
+        const image = target.closest("img")!;
+        const pos = editor.view.posAtDOM(image, 0);
+        if (editor.view.nodeDOM(pos) === image)
+          editor.commands.setNodeSelection(pos);
+        else {
+          editor.state.doc.descendants((node, position) => {
+            if (
+              node.type.name === "image" &&
+              editor.view.nodeDOM(position) === image
+            )
+              editor.commands.setNodeSelection(position);
+          });
+        }
+      } else if (media) {
+        const anchor = target.closest("a")!;
+        editor
+          .chain()
+          .setTextSelection(editor.view.posAtDOM(anchor, 0))
+          .extendMarkRange("link")
+          .run();
+      } else if (
         hit &&
-        (editor.state.selection.empty ||
+        (editor.state.selection instanceof NodeSelection ||
+          editor.state.selection.empty ||
           hit.pos < editor.state.selection.from ||
           hit.pos > editor.state.selection.to)
       )
         editor.commands.setTextSelection(hit.pos);
       editor.view.focus();
-      setMenu({ x: event.clientX, y: event.clientY });
+      setMenu({ x: event.clientX, y: event.clientY, media });
     };
     const key = (event: KeyboardEvent) => {
       if (
@@ -254,8 +285,26 @@ export function RichToolbar({
       )
         return;
       event.preventDefault();
-      const point = editor.view.coordsAtPos(editor.state.selection.head);
-      setMenu({ x: point.left, y: point.bottom });
+      const { selection } = editor.state;
+      const selected =
+        selection instanceof NodeSelection
+          ? editor.view.nodeDOM(selection.from)
+          : null;
+      const focus = window.getSelection()?.focusNode;
+      const target =
+        selected instanceof Element
+          ? selected
+          : focus instanceof Element
+            ? focus
+            : focus?.parentElement;
+      const media =
+        target &&
+        editor.view.dom.contains(target) &&
+        (selection.empty || selection instanceof NodeSelection)
+          ? editorMediaTarget(target, sourcePath)
+          : undefined;
+      const point = editor.view.coordsAtPos(selection.head);
+      setMenu({ x: point.left, y: point.bottom, media, keyboard: true });
     };
     const node = editor.view.dom;
     node.addEventListener("contextmenu", context);
@@ -264,7 +313,7 @@ export function RichToolbar({
       node.removeEventListener("contextmenu", context);
       node.removeEventListener("keydown", key);
     };
-  }, [editor]);
+  }, [editor, sourcePath]);
   function values(name: string, value: string) {
     setForm((current) =>
       current
@@ -530,6 +579,46 @@ export function RichToolbar({
         },
       ]
     : [];
+  function mediaMenuItems(media: EditorMediaTarget): EditorMenuItem[] {
+    const image = !!media.inlineImage;
+    return [
+      {
+        id: "view-media",
+        label: viewMediaLabel(media.kind),
+        run: () => safe(() => onViewMedia(media)),
+      },
+      {
+        id: "edit-media",
+        label: image ? t("编辑图片") : t("编辑链接"),
+        disabled,
+        run: () => open(image ? "image" : "link"),
+      },
+      {
+        id: "copy-reference",
+        label: image ? t("复制图片地址") : t("复制链接地址"),
+        separator: true,
+        run: () => safe(() => desktop().edit("copy-text", media.reference)),
+      },
+      {
+        id: "copy-markdown",
+        label: t("复制为 Markdown"),
+        disabled: !hasSelection,
+        run: () => safe(copyMarkdown),
+      },
+      {
+        id: "remove-media",
+        label: image ? t("移除图片") : t("移除链接"),
+        separator: true,
+        disabled,
+        run: () => {
+          const chain = editor?.chain().focus();
+          if (image && editor?.state.selection instanceof NodeSelection)
+            chain?.deleteSelection().run();
+          if (!image) chain?.extendMarkRange("link").unsetLink().run();
+        },
+      },
+    ];
+  }
   const tool = (
     label: string,
     Icon: typeof Bold,
@@ -860,7 +949,15 @@ export function RichToolbar({
           </Select>
         </div>
       )}
-      {menu && <EditorMenu {...menu} items={menuItems} onClose={closeMenu} />}
+      {menu && (
+        <EditorMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.media ? mediaMenuItems(menu.media) : menuItems}
+          onClose={closeMenu}
+          focusFirst={menu.keyboard}
+        />
+      )}
       {form && (
         <EditorDialog
           title={

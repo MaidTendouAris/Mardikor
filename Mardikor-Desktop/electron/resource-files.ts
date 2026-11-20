@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type AdmZip from "adm-zip";
 import { t } from "../shared/i18n";
 import { validatePath } from "../shared/schema";
 import {
@@ -9,8 +8,11 @@ import {
   isResourcePath,
   resourceCategories,
 } from "../shared/resources";
-import { MAX_ENTRIES, MAX_FILE, MAX_TOTAL } from "./archive";
-import { checkMedia, detectMediaType } from "./media";
+import { MAX_ENTRIES } from "./archive";
+import { addedFile, archiveLimit, exactSize, type StoreArchive, type StoreEntry } from "./archive-io";
+import { requireDiskSpace } from "./archive-write";
+import { MAX_OUTLINE_DEPTH } from "../shared/mdk-v2";
+import { archiveCheckpoint } from "./archive-operation";
 
 const nameKey = (name: string) => name.normalize("NFC").toLowerCase();
 
@@ -29,7 +31,7 @@ export function resourceName(name: string) {
     throw new Error(t("文件名为空或包含非法字符。"));
 }
 
-export function requireResourceFolder(zip: AdmZip, folder: string) {
+export function requireResourceFolder(zip: StoreArchive, folder: string) {
   resourcePath(folder);
   if (zip.getEntry(folder))
     throw new Error(t("普通文件不能作为父目录：{0}", folder));
@@ -40,7 +42,7 @@ export function requireResourceFolder(zip: AdmZip, folder: string) {
     throw new Error(t("文件或目录不存在。"));
 }
 
-export function resourceNameIndex(zip: AdmZip) {
+export function resourceNameIndex(zip: StoreArchive) {
   const names = new Map<string, string>();
   for (const entry of zip.getEntries()) {
     const parts = entry.entryName.replace(/\/$/, "").split("/");
@@ -69,7 +71,7 @@ function checkDirectorySpelling(
 }
 
 export function createResourceFolder(
-  zip: AdmZip,
+  zip: StoreArchive,
   parent: string,
   name: string,
 ) {
@@ -79,11 +81,11 @@ export function createResourceFolder(
   checkDirectorySpelling(names, parent);
   const target = parent + "/" + name;
   if (names.has(nameKey(target))) throw new Error(t("目标路径已存在。"));
-  zip.addFile(target + "/", Buffer.alloc(0));
+  zip.add(target + "/", Buffer.alloc(0));
 }
 
 export function importResourceFiles(
-  zip: AdmZip,
+  zip: StoreArchive,
   parent: string,
   paths: string[],
 ) {
@@ -94,11 +96,10 @@ export function importResourceFiles(
   checkDirectorySpelling(names, parent);
   const existing = zip.getEntries();
   let count = existing.length;
-  let size = existing.reduce((total, entry) => total + entry.header.size, 0);
-  const category = parent.split("/")[1];
-  function add(source: string, destination: string, info: fs.Stats) {
+  function add(source: string, destination: string, info: fs.Stats, depth = 1) {
     if (++count > MAX_ENTRIES)
-      throw new Error(t("超出实现支持范围：最多 10,000 个 ZIP 项。"));
+      archiveLimit(t("写入 ZIP 索引（条目数）"), destination, count, MAX_ENTRIES, t("条目"));
+    if (depth > MAX_OUTLINE_DEPTH) throw new Error(t("目录超过实现支持的 128 层。"));
     if (!info.isDirectory() && !info.isFile())
       throw new Error(t("资源导入仅支持普通文件和目录。"));
     const key = nameKey(destination);
@@ -106,65 +107,20 @@ export function importResourceFiles(
       throw new Error(t("目标路径已存在。") + " " + destination);
     names.set(key, destination);
     if (info.isDirectory()) {
-      zip.addFile(destination + "/", Buffer.alloc(0));
+      zip.add(destination + "/", Buffer.alloc(0));
       for (const item of fs.readdirSync(source)) {
-        resourceName(item);
+        const name = item.normalize("NFC");
+        resourceName(name);
         const input = path.join(source, item);
-        add(input, destination + "/" + item, fs.lstatSync(input));
+        add(input, destination + "/" + name, fs.lstatSync(input), depth + 1);
       }
       return;
     }
-    if (info.size >= 2 ** 32)
-      throw new Error(t("v1 不支持 4 GiB 及以上资源。"));
-    if (info.size > MAX_FILE)
-      throw new Error(t("超出实现支持范围：资源超过 64 MiB。"));
-    if ((size += info.size) > MAX_TOTAL)
-      throw new Error(t("超出实现支持范围：单文件 64 MiB / 总量 256 MiB。"));
-    const handle = fs.openSync(source, "r");
-    let bytes: Buffer;
-    try {
-      const current = fs.fstatSync(handle);
-      if (
-        !current.isFile() ||
-        current.ino !== info.ino ||
-        current.dev !== info.dev ||
-        current.size !== info.size
-      )
-        throw new Error(t("导入期间源文件发生变化，请重试。"));
-      bytes = Buffer.alloc(info.size);
-      let offset = 0;
-      while (offset < bytes.length) {
-        const read = fs.readSync(
-          handle,
-          bytes,
-          offset,
-          bytes.length - offset,
-          null,
-        );
-        if (!read) throw new Error(t("导入期间源文件发生变化，请重试。"));
-        offset += read;
-      }
-      const after = fs.fstatSync(handle);
-      if (after.size !== info.size || after.mtimeMs !== info.mtimeMs)
-        throw new Error(t("导入期间源文件发生变化，请重试。"));
-    } finally {
-      fs.closeSync(handle);
-    }
-    checkMedia(destination, bytes);
-    const detected = detectMediaType(bytes);
-    if (
-      category &&
-      category !== "other" &&
-      resourceCategories.some((kind) => kind === category) &&
-      detected &&
-      !detected.startsWith(category + "/")
-    )
-      throw new Error(t("资源类型与实际文件格式不一致。") + " " + destination);
-    zip.addFile(destination, bytes);
+    zip.set(addedFile(destination, source));
   }
   for (const source of paths) {
     const info = fs.lstatSync(source);
-    const basename = path.basename(source);
+    const basename = path.basename(source).normalize("NFC");
     resourceName(basename);
     const extension = info.isDirectory() ? "" : path.extname(basename);
     const stem = basename.slice(0, basename.length - extension.length);
@@ -176,7 +132,7 @@ export function importResourceFiles(
   return count - existing.length;
 }
 
-export function selectResourceEntries(zip: AdmZip, paths: string[], resourcesOnly = true) {
+export function selectResourceEntries(zip: StoreArchive, paths: string[], resourcesOnly = true) {
   if (!Array.isArray(paths) || !paths.length || paths.length > MAX_ENTRIES)
     throw new Error(t("请选择要提取的资源。"));
   const entries = zip.getEntries();
@@ -184,7 +140,7 @@ export function selectResourceEntries(zip: AdmZip, paths: string[], resourcesOnl
     entries.map((entry) => [entry.entryName.replace(/\/$/, ""), entry]),
   );
   const folders = new Set<string>();
-  const selected = new Set<AdmZip.IZipEntry>();
+  const selected = new Set<StoreEntry>();
   for (const name of new Set(paths)) {
     if (resourcesOnly) resourcePath(name);
     else validatePath(name);
@@ -208,28 +164,39 @@ export function selectResourceEntries(zip: AdmZip, paths: string[], resourcesOnl
   return [...selected];
 }
 
+export function writeExtractedEntry(entry: StoreEntry, destination: string) {
+  const fd = fs.openSync(destination, "wx", 0o600);
+  try {
+    try {
+      entry.copyTo(fd);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (error) {
+    fs.unlinkSync(destination);
+    throw error;
+  }
+}
+
 export function extractResourceEntries(
-  entries: AdmZip.IZipEntry[],
+  entries: StoreEntry[],
   destination: string,
   single: boolean,
   resourcesOnly = true,
 ) {
   if (single) {
+    requireDiskSpace(destination, entries[0].header.size, t("提取原文件"));
     const temporary = path.join(
       path.dirname(destination),
       ".mardikor-" + randomUUID() + ".tmp",
     );
     let created = false;
     try {
-      const bytes = entries[0].getData();
-      const descriptor = fs.openSync(temporary, "wx");
+      writeExtractedEntry(entries[0], temporary);
       created = true;
-      try {
-        fs.writeFileSync(descriptor, bytes);
-      } finally {
-        fs.closeSync(descriptor);
-      }
-      fs.copyFileSync(temporary, destination, fs.constants.COPYFILE_EXCL);
+      archiveCheckpoint(0, true);
+      fs.linkSync(temporary, destination);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST")
         throw new Error(t("提取目标文件已存在，请选择其他名称。"));
@@ -253,6 +220,7 @@ export function extractResourceEntries(
     }
   }
   const parent = fs.realpathSync(destination);
+  requireDiskSpace(path.join(parent, "output"), exactSize(entries.reduce((total, entry) => total + BigInt(entry.header.size), 0n)), t("提取原文件"));
   const output = fs.mkdtempSync(path.join(parent, resourcesOnly ? "Mardikor-resources-" : "Mardikor-files-"));
   let count = 0;
   try {
@@ -273,10 +241,11 @@ export function extractResourceEntries(
       }
       if (!entry.isDirectory) {
         const target = path.join(directory, parts.at(-1)!);
-        fs.writeFileSync(target, entry.getData(), { flag: "wx" });
+        writeExtractedEntry(entry, target);
         count++;
       }
     }
+    archiveCheckpoint(0, true);
   } catch (error) {
     // Only remove the fresh staging directory this operation created.
     if (

@@ -4,19 +4,39 @@
 
 `mardikor` 直接读取和编辑 `.mdk` 工程，适用于 Linux 服务器、终端脚本和 AI 写作工作流。
 
+规划中的 CLI 扩展、编辑事务和协同接口见[开发草案](<CLI Collaboration Foundation Proposal.md>)。
+
 ## 安装
 
 - **Windows 安装版**把安装目录中的 `bin` 加到 PATH。仅为当前用户安装时注册用户 PATH，为所有用户安装时注册系统 PATH。安装完成后重新打开终端，运行 `mardikor --version`。也可以直接运行安装目录下的 `bin\mardikor.exe`。
 - **Linux** 需要 Node.js 22.12 或更新版本。将示例中的版本号换成实际归档的版本号。
 
 ```sh
-npm install -g ./mardikor-cli-0.2.4.tgz
+npm install -g ./mardikor-cli-0.3.4.tgz
 mardikor --version
 ```
 
 从源码构建时，在 `Mardikor-Desktop/` 中运行 `npm ci` 和 `npm run dist:cli`。归档输出到该目录下的 `build-output/cli`。也可以直接运行 `node build-output/cli/package/bin/mardikor.cjs`。
 
 Windows 单 EXE 便携版仅提供图形界面。
+
+## 访问保护和 MDKE
+
+```sh
+mardikor protect "小说.mdk" --if-revision "<修订号>" --new-passphrase-file access.txt
+mardikor list "小说.mdk" --access-passphrase-file access.txt --json
+mardikor mdke-pack "小说.mdk" "小说.mdke" --compression zstd-9 --unpack-passphrase-file extraction.txt
+mardikor mdke-extract "小说.mdke" "提取的小说.mdk" --unpack-passphrase-file extraction.txt
+mardikor mdke-rekey "小说.mdke" "新版.mdke" --unpack-passphrase-file extraction.txt --new-passphrase-file new.txt
+```
+
+MDKP 使用 `.mdk` 扩展名，访问口令用于读取、编辑和保存。MDKE 使用 `.mdke` 扩展名，可额外设置解包口令。提取逐字节还原内层工程，有访问保护时仍需访问口令。普通 MDK 默认以 Zstandard 打包，锁定的 MDKP 原样打包并标记内层未验证。使用 Zstandard 的 CLI 命令需要 Node.js 22.15 或更新版本。
+
+`mdke-pack --compression` 接受 `auto`（默认）、`store`、`zstd-3` 和 `zstd-9`。自动模式对普通工程使用 Zstandard 等级 3，对受保护工程使用 STORE。
+
+用 `--access-passphrase-file` 读取当前访问口令，用 `--new-passphrase-file` 或 `--remove` 更改或移除当前层的口令。口令文件为私有 UTF-8 单行文件，保留首尾空格。可将其中一个口令文件参数设为 `-` 从标准输入读取。CLI 的 `write` 支持编辑受保护文件，调用外部编辑器的 `edit` 仅支持裸 MDK。
+
+加密分发包提取后若为明文，或使用 `unpack` 展开受保护工程，需显式指定 `--allow-plaintext`。`mdke-extract --recovery` 可在外层已通过验证但内层无效时写入恢复副本，其输出会单独标记内层无效。
 
 ## 创建、读取和编辑
 
@@ -35,7 +55,11 @@ mardikor validate "小说.mdk"
 
 ## 输入与容器限额
 
-单次输入和单个工程内文件最多 **64 MiB**。MDK 容器及其解压后文件总量各自最多 **256 MiB**。通过标准输入分批传输仍计为同一次输入。较长文稿可拆成多个目录项，逐篇写入。
+普通 MDK 按 STORE／ZIP64 流式打包、导入、交付和提取。存储受目标文件系统、可用空间和 ZIP 索引预算约束。`MARDIKOR_MAX_ENTRY_BYTES` 和 `MARDIKOR_MAX_PROJECT_BYTES` 可为普通 MDK 写入设置十进制字节配额，等于上限时可写入。文本命令的单次输入仍限 64 MiB。MDKP 和 MDKE 继续使用各自的封装预算。详见 [MDK v2 主规范 §3.5](<MDK Format Specification v2.md>)。
+
+通用 `import` 接收普通文件，类别参数用于决定 `resources/` 下的目录。`extract <工程> <包内文件路径> <输出文件>` 逐字节提取一个附件。受保护工程须提供访问口令，同时明确传入 `--allow-plaintext` 才能将附件写成明文文件。
+
+0.3.3 按 MDK v2 的 2026-11-17 修订检查所有 ZIP 条目，方法必须为 STORE（0）。若旧工程因 DEFLATE 被拒绝，可用 0.3.2 CLI 执行 `mardikor unpack "旧工程.mdk" "解包目录"`，再用 0.3.3 执行 `mardikor pack "新工程.mdk" "解包目录"`。原工程文件应保留。
 
 在 Linux 终端可以打开指定文稿进行编辑。
 

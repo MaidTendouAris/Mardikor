@@ -15,6 +15,20 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import * as mdk from "./mdk";
+import { initEnvelopeCrypto, passwordBytes, probeEnvelope } from "./envelope";
+import { withAccess, type AccessSession } from "./access-session";
+import { mediaScheme, openMediaWindow } from "./media-window";
+import { BUFFERED_ENTRY_LIMIT, FileSnapshot, StoreEntry } from "./archive-io";
+import { seedArchiveIndex } from "./archive";
+import type { ArchiveTask } from "./archive-worker";
+import type { ArchiveProgress } from "../shared/archive-operation";
+import {
+  publishEnvelopeOutput,
+  type EnvelopeResult,
+  type EnvelopeTask,
+} from "./envelope-operations";
+import { isMdkeCompression, type AccessChangeResult, type EnvelopeAction } from "../shared/envelopes";
+import type { SaveSnapshot } from "../shared/mdk";
 import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
 import { t, appLocale, resolveAppLocale, setAppLocale } from "../shared/i18n";
@@ -32,6 +46,7 @@ import type { MdkCommands, DialogKind, Preferences } from "../shared/desktop";
 
 interface DocumentWindow {
   window: BrowserWindow;
+  readyToShow?: boolean;
   recoveryOwner: string;
   dirty: boolean;
   activeProject: string;
@@ -42,6 +57,11 @@ interface DocumentWindow {
   stopWatching?: () => void;
   droppedFiles: Map<string, { sources: InsertionSource[]; expires: number }>;
   publicationOutputs: Map<string, { revision: string | null; expires: number }>;
+  access?: AccessSession;
+  pendingAccess?: AccessSession;
+  mediaWindows: Map<string, BrowserWindow>;
+  archiveJob?: Int32Array;
+  closeAfterArchive?: boolean;
 }
 const windows = new Map<number, DocumentWindow>();
 const pendingFiles: string[] = [];
@@ -50,6 +70,51 @@ let state: AppState;
 let updates: UpdateService;
 let pendingWindowSize: Parameters<AppState["windowSize"]>[0];
 let windowSizeTimer: ReturnType<typeof setTimeout> | undefined;
+let envelopeWork: { owner: DocumentWindow; cancel: () => void } | undefined;
+
+function windowAccess(context: DocumentWindow, file: string) {
+  return context.access?.file === path.resolve(file) ? context.access : undefined;
+}
+
+function recover(context: DocumentWindow, file: string, value?: SaveSnapshot | null) {
+  const access = windowAccess(context, file);
+  if (!access && value !== null && fs.existsSync(file) && /\.mdk$/i.test(file) &&
+    probeEnvelope(file) === "MDKP")
+    throw new Error(t("此 MDK 需要访问口令。"));
+  return state.recovery(file, value, context.recoveryOwner, access);
+}
+
+function envelopeWorker(owner: DocumentWindow, task: EnvelopeTask) {
+  if (envelopeWork) throw new Error(t("已有封装任务正在运行。"));
+  return new Promise<EnvelopeResult>((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, "envelope-worker.cjs"), {
+      workerData: { task, locale: appLocale() },
+    });
+    const timer = setTimeout(() => stop(t("封装任务超过 120 秒的处理限额。")), 120_000);
+    const finish = () => {
+      clearTimeout(timer);
+      if (envelopeWork?.cancel === cancel) envelopeWork = undefined;
+    };
+    function stop(message: string) {
+      finish();
+      reject(new Error(message));
+      void worker.terminate();
+    }
+    envelopeWork = { owner, cancel: () => stop(t("封装任务已取消。")) };
+    worker.once("message", ({ result, error }) => {
+      finish();
+      if (error) reject(new Error(error));
+      else resolve(result);
+    });
+    worker.once("error", (error) => { finish(); reject(error); });
+    worker.once("exit", (code) => {
+      if (envelopeWork?.owner === owner && envelopeWork?.cancel === cancel) {
+        stop(t("封装任务意外结束（{0}）。", code));
+      }
+    });
+    const cancel = envelopeWork.cancel;
+  });
+}
 function persistWindowSize() {
   clearTimeout(windowSizeTimer);
   if (!pendingWindowSize) return;
@@ -102,11 +167,7 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
       discarded.push({
         context,
         draft: context.activeProject
-          ? state.recovery(
-              context.activeProject,
-              undefined,
-              context.recoveryOwner,
-            )
+          ? recover(context, context.activeProject)
           : null,
       });
     else context.dirty = false;
@@ -122,11 +183,55 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
   // preserve earlier windows' dirty flags and recovery drafts.
   for (const { context } of discarded) {
     if (context.activeProject)
-      state.recovery(context.activeProject, null, context.recoveryOwner);
+      recover(context, context.activeProject, null);
     context.dirty = false;
   }
   return true;
 }
+function largeArchive(file: string) {
+  return (fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > BUFFERED_ENTRY_LIMIT;
+}
+const archiveTasks = new Set<string>(["open", "validate", "saveSnapshot", "copyDraft", "importResource", "export", "exportPlan", "pack", "unpack"] satisfies ArchiveTask[]);
+
+async function runArchiveTask<T>(context: DocumentWindow, task: ArchiveTask, args: unknown[], expected?: string): Promise<T> {
+  if (context.archiveJob) throw new Error(t("此窗口已有 MDK 文件操作正在运行。"));
+  const progress = new SharedArrayBuffer(4);
+  const state = new Int32Array(progress);
+  const worker = new Worker(path.join(__dirname, "archive-worker.cjs"), {
+    workerData: { task, args, progress, locale: appLocale(), expected },
+  });
+  context.archiveJob = state;
+  const started = Date.now();
+  const notify = (value: ArchiveProgress | null) => {
+    if (!context.window.isDestroyed()) context.window.webContents.send("app:archive-progress", value);
+  };
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      worker.on("message", (message: { progress?: ArchiveProgress; result: T; error?: string; index?: Parameters<typeof seedArchiveIndex>[1] }) => {
+        if (message.progress) {
+          if (Date.now() - started >= 300) notify(message.progress);
+        } else if (message.error !== undefined) reject(new Error(message.error));
+        else {
+          if (message.index) {
+            try { seedArchiveIndex(new FileSnapshot(path.resolve(args[0] as string)), message.index); }
+            catch { /* A later operation will recheck a changed or missing source. */ }
+          }
+          resolve(message.result);
+        }
+      });
+      worker.once("error", reject);
+      worker.once("exit", () => reject(new Error(t("MDK 文件操作意外结束。"))));
+    });
+  } finally {
+    context.archiveJob = undefined;
+    notify(null);
+    if (context.closeAfterArchive && !context.window.isDestroyed()) {
+      context.closeAfterArchive = undefined;
+      setImmediate(() => { if (!context.window.isDestroyed()) context.window.close(); });
+    }
+  }
+}
+
 function createHandlers(context: DocumentWindow): MdkCommands {
   const { droppedFiles, publicationOutputs } = context;
   async function extractFiles(
@@ -135,20 +240,21 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     revision: string,
     resourcesOnly: boolean,
   ) {
-    const plan = mdk.prepareMdkResourceExtraction(
-      file,
-      paths,
-      revision,
-      resourcesOnly,
-    );
-    if (plan.filename) {
+    const threaded = !windowAccess(context, file) && largeArchive(file);
+    const args = [file, paths, revision, resourcesOnly];
+    const plan = threaded ? undefined : mdk.prepareMdkResourceExtraction(file, paths, revision, resourcesOnly);
+    const filename = threaded ? await runArchiveTask<string | undefined>(context, "extractPlan", args) : plan?.filename;
+    const extract = (output: string) => threaded
+      ? runArchiveTask<ReturnType<NonNullable<typeof plan>["extract"]>>(context, "extractFiles", [...args, output])
+      : plan!.extract(output);
+    if (filename) {
       const result = await dialog.showSaveDialog(context.window, {
         title: resourcesOnly ? t("提取资源文件") : t("提取文件"),
-        defaultPath: plan.filename,
+        defaultPath: filename,
       });
       return result.canceled || !result.filePath
         ? null
-        : plan.extract(result.filePath);
+        : extract(result.filePath);
     }
     const result = await dialog.showOpenDialog(context.window, {
       title: resourcesOnly
@@ -158,7 +264,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
     });
     return result.canceled || !result.filePaths[0]
       ? null
-      : plan.extract(result.filePaths[0]);
+      : extract(result.filePaths[0]);
   }
   const exportRuntime = (source?: string) =>
     publicationRuntime(
@@ -205,6 +311,7 @@ function createHandlers(context: DocumentWindow): MdkCommands {
         presetId,
       ),
     create: mdk.createMdkProject,
+    saveMdkPublication: mdk.saveMdkPublication,
     open: mdk.openMdkProject,
     readEntry: mdk.readMdkEntry,
     saveEntry: mdk.saveMdkEntry,
@@ -230,6 +337,8 @@ function createHandlers(context: DocumentWindow): MdkCommands {
         ],
       });
       if (result.canceled || !result.filePaths.length) return null;
+      if (!windowAccess(context, file))
+        return runArchiveTask<ReturnType<typeof mdk.importMdkResourceBatch>>(context, "importResourcesTo", [file, folder, result.filePaths, revision]);
       return mdk.importMdkResourceBatch(
         file,
         folder,
@@ -246,9 +355,10 @@ function createHandlers(context: DocumentWindow): MdkCommands {
       droppedFiles.delete(token);
       if (!files || files.expires < Date.now())
         throw new Error(t("拖入文件授权已失效，请重新拖入。"));
-      return isMarkdownFile(file)
-        ? markdownFile.insertMarkdownResources(file, files.sources, insertion)
-        : mdk.insertMdkResources(file, files.sources, insertion);
+      if (isMarkdownFile(file)) return markdownFile.insertMarkdownResources(file, files.sources, insertion);
+      if (!windowAccess(context, file) && (largeArchive(file) || files.sources.some((source) => typeof source === "string" && largeArchive(source))))
+        return runArchiveTask<ReturnType<typeof mdk.insertMdkResources>>(context, "insertResources", [file, files.sources, insertion]);
+      return mdk.insertMdkResources(file, files.sources, insertion);
     },
     readText: mdk.readMdkTextFile,
     readDocuments: mdk.readMdkDocuments,
@@ -276,6 +386,10 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: "mardikor-export",
     privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
+  {
+    scheme: mediaScheme,
+    privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true },
   },
 ]);
 if (process.env.MARDIKOR_USER_DATA)
@@ -313,6 +427,7 @@ function assertApproved(
 }
 function watchActiveProject(context: DocumentWindow, source: string) {
   if (context.activeProject !== source) {
+    closeMediaWindows(context);
     context.stopWatching?.();
     context.activeProject = source;
     let reportedRevision: string | null | undefined;
@@ -327,9 +442,13 @@ function watchActiveProject(context: DocumentWindow, source: string) {
   }
   context.window.setTitle(`${path.basename(source)} - Mardikor`);
 }
+function closeMediaWindows(context: DocumentWindow) {
+  for (const window of context.mediaWindows.values()) window.destroy();
+}
 const counts: Record<keyof MdkCommands, [number, number]> = {
   publicationInfo: [1, 1],
   configurePublication: [3, 4],
+  saveMdkPublication: [3, 3],
   planPublication: [2, 3],
   exportPublication: [4, 5],
   create: [2, 2],
@@ -400,6 +519,10 @@ function registerInsertionSources(
   };
 }
 function registerIpc() {
+  ipcMain.handle("app:cancel-archive", (event) => {
+    const state = verifySender(event).archiveJob;
+    if (state) Atomics.compareExchange(state, 0, 0, 1);
+  });
   ipcMain.handle("app:update", async (event, action: UpdateAction) => {
     verifySender(event);
     if (action === "status") return updates.status();
@@ -413,7 +536,7 @@ function registerIpc() {
           if (context.window.isDestroyed()) continue;
           context.dirty = true;
           if (draft && context.activeProject)
-            state.recovery(context.activeProject, draft, context.recoveryOwner);
+            recover(context, context.activeProject, draft);
         }
       return result;
     }
@@ -433,12 +556,12 @@ function registerIpc() {
     const result = await dialog.showOpenDialog(context.window, {
       title: t("插入本地资源"),
       properties: ["openFile", "multiSelections"],
-      filters: [
+      filters: isMarkdownFile(context.activeProject) ? [
         {
           name: t("支持的图片、音视频及 PDF"),
           extensions: Object.keys(insertionFormats),
         },
-      ],
+      ] : undefined,
     });
     return result.canceled || !result.filePaths.length
       ? null
@@ -493,8 +616,116 @@ function registerIpc() {
         typeof value.revision !== "string")
     )
       throw new Error(t("恢复草稿参数无效。"));
-    const recovery = state.recovery(file, value, context.recoveryOwner);
+    const recovery = recover(context, file, value);
     return value === undefined ? recovery : null;
+  });
+  ipcMain.handle("app:inspect-envelope", (event, file) => {
+    const context = verifySender(event);
+    assertApproved(context, file);
+    return probeEnvelope(file)
+      ? envelopeWorker(context, { kind: "inspect", file: path.resolve(file) })
+      : { kind: "plain" };
+  });
+  ipcMain.handle("app:cancel-envelope", (event) => {
+    const context = verifySender(event);
+    if (envelopeWork?.owner === context) envelopeWork.cancel();
+  });
+  ipcMain.handle("app:lock-envelope", (event, file) => {
+    const context = verifySender(event);
+    if (typeof file !== "string" || context.activeProject !== path.resolve(file) ||
+      !context.access || context.dirty)
+      throw new Error(t("请先保存未完成的更改，再锁定工程。"));
+    context.access.key.fill(0);
+    context.access = undefined;
+    closeMediaWindows(context);
+    context.stopWatching?.();
+    context.stopWatching = undefined;
+    context.activeProject = "";
+    context.revisions.delete(path.resolve(file));
+    context.window.setTitle("Mardikor");
+  });
+  ipcMain.handle("app:envelope", async (event, file, action: EnvelopeAction) => {
+    const context = verifySender(event);
+    assertApproved(context, file);
+    file = path.resolve(file);
+    if (!action || !["unlock", "set-access", "pack", "extract", "rekey"].includes(action.kind))
+      throw new Error(t("封装操作参数无效。"));
+    if (action.passphrase !== undefined && !(action.kind === "set-access" && action.passphrase === null))
+      passwordBytes(action.passphrase).fill(0);
+    if (action.kind === "rekey" && action.nextPassphrase !== undefined)
+      passwordBytes(action.nextPassphrase).fill(0);
+    const access = windowAccess(context, file);
+    if (action.kind === "unlock") {
+      if (typeof action.passphrase !== "string") throw new Error(t("此 MDK 需要访问口令。"));
+      const value = await envelopeWorker(context, { kind: "unlock", file, passphrase: action.passphrase });
+      if (!("access" in value) || !value.access) throw new Error(t("封装操作参数无效。"));
+      try {
+        await initEnvelopeCrypto();
+        if (context.window.isDestroyed()) return;
+        context.pendingAccess?.key.fill(0);
+        context.pendingAccess = { ...value.access, file };
+        return;
+      } finally {
+        if (context.pendingAccess?.key !== value.access.key) value.access.key.fill(0);
+      }
+    }
+    if (action.kind === "set-access") {
+      if (action.passphrase === undefined || !action.snapshot || !/\.mdk$/i.test(file))
+        throw new Error(t("封装操作参数无效。"));
+      const assertActive = () => {
+        if (context.window.isDestroyed() || context.activeProject !== file ||
+          state.hasOtherRecovery(file, context.recoveryOwner, access) ||
+          [...windows.values()].some((other) => other !== context && other.activeProject === file))
+          throw new Error(t("请先处理此工程的其他恢复草稿并关闭其他窗口。"));
+      };
+      assertActive();
+      const revision = context.revisions.get(file);
+      if (!revision || action.snapshot.revision !== revision) throw new mdk.MdkRevisionError();
+      const value = await envelopeWorker(context, {
+        kind: "set-access", file, passphrase: action.passphrase, access, revision, snapshot: action.snapshot,
+      });
+      if (!("bytes" in value)) throw new Error(t("封装操作参数无效。"));
+      let adopted = false;
+      try {
+        await initEnvelopeCrypto();
+        assertActive();
+        if (!value.project) throw new Error(t("封装操作参数无效。"));
+        const updated = publishEnvelopeOutput(file, file, value, true);
+        let recoveryWarning: string | undefined;
+        try {
+          state.recovery(file, null, context.recoveryOwner, access);
+        } catch (error) {
+          recoveryWarning = t("旧恢复草稿清理失败：{0}", String(error));
+        }
+        context.access?.key.fill(0);
+        context.access = value.access && { ...value.access, file };
+        adopted = true;
+        context.revisions.set(file, updated);
+        return {
+          project: { ...value.project, revision: updated, protected: Boolean(value.access) },
+          recoveryWarning,
+        } satisfies AccessChangeResult;
+      } finally {
+        if (!adopted) { value.access?.key.fill(0); value.bytes.fill(0); }
+      }
+    }
+    assertApproved(context, action.output);
+    if (!(action.kind === "extract" ? /\.mdk$/i : /\.mdke$/i).test(action.output))
+      throw new Error(t("封装输出的文件扩展名无效。"));
+    if (action.kind === "pack" && action.compression !== undefined && !isMdkeCompression(action.compression))
+      throw new Error(t("MDKE 压缩配置无效。"));
+    const task: EnvelopeTask = action.kind === "pack"
+      ? { kind: "pack", file, passphrase: action.passphrase, access, allowOverlap: action.allowOverlap === true, compression: action.compression }
+      : { kind: action.kind, file, passphrase: action.passphrase, nextPassphrase: action.kind === "rekey" ? action.nextPassphrase : undefined };
+    const value = await envelopeWorker(context, task);
+    if ("overlap" in value) return value;
+    if (!("bytes" in value)) throw new Error(t("封装操作参数无效。"));
+    if (context.window.isDestroyed()) {
+      value.bytes.fill(0);
+      return;
+    }
+    publishEnvelopeOutput(file, path.resolve(action.output), value);
+    return value.report;
   });
   ipcMain.handle("app:open-url", (event, url) => {
     verifySender(event);
@@ -520,6 +751,35 @@ function registerIpc() {
       const error = await shell.openPath(target.path);
       if (error) throw new Error(t("无法用默认应用打开文件：{0}", error));
     }
+  });
+  ipcMain.handle("app:open-media", (event, project, resource, kind) => {
+    const context = verifySender(event);
+    assertApproved(context, project);
+    if (
+      context.activeProject !== path.resolve(project) ||
+      typeof resource !== "string" || resource.length > 65535 ||
+      (kind !== "image" && kind !== "video" && kind !== "audio" && kind !== "attachment")
+    ) throw new Error(t("媒体预览参数无效。"));
+    const key = `${kind}:${resource}`;
+    const existing = context.mediaWindows.get(key);
+    if (existing) {
+      if (!process.env.MARDIKOR_HEADLESS) {
+        if (existing.isMinimized()) existing.restore();
+        existing.show();
+      }
+      return;
+    }
+    const entry = withAccess(windowAccess(context, project), () =>
+      isMarkdownFile(project)
+        ? new StoreEntry(resource, markdownFile.readMarkdownResourceBytes(project, resource))
+        : mdk.mdkAttachment(project, resource),
+    );
+    const window = openMediaWindow({
+      owner: context.window, project, resource, kind, entry, devUrl,
+      theme: state.preferences().appTheme ?? "light",
+    });
+    context.mediaWindows.set(key, window);
+    window.once("closed", () => context.mediaWindows.delete(key));
   });
   ipcMain.handle("app:convert-markdown", async (event) => {
     const { window } = verifySender(event);
@@ -596,7 +856,8 @@ function registerIpc() {
       if (resolved === sourcePath)
         throw new Error(t("请先关闭其他打开此工程的窗口。"));
     }
-    const draft = state.recovery(file, undefined, context.recoveryOwner);
+    const access = windowAccess(context, file);
+    const draft = recover(context, file);
     mdk.renameMdkArchive(file, target, revision);
     for (const other of windows.values()) {
       other.approvedFiles.delete(file);
@@ -604,12 +865,13 @@ function registerIpc() {
     }
     context.approvedFiles.add(target);
     context.revisions.set(target, revision);
+    if (access) access.file = path.resolve(target);
     watchActiveProject(context, target);
     try {
       state.remember(target, mode, file);
       if (draft) {
-        state.recovery(target, draft, context.recoveryOwner);
-        state.recovery(file, null, context.recoveryOwner);
+        state.recovery(target, draft, context.recoveryOwner, access);
+        state.recovery(file, null, context.recoveryOwner, access);
       }
     } catch (error) {
       console.error(error);
@@ -639,6 +901,7 @@ function registerIpc() {
             "updateSettings",
             "saveSnapshot",
             "configurePublication",
+            "saveMdkPublication",
           ].includes(command)
         )
           return;
@@ -690,6 +953,7 @@ function registerIpc() {
       const source = path.resolve(args[0]);
       const mutating = [
         "configurePublication",
+        "saveMdkPublication",
         "saveEntry",
         "indexFile",
         "addEntry",
@@ -710,8 +974,12 @@ function registerIpc() {
         "importResourcesTo",
         "saveSnapshot",
       ].includes(command);
+      const threaded = archiveTasks.has(command) && !isMarkdownFile(source) &&
+        !windowAccess(context, source) && context.pendingAccess?.file !== source &&
+        (command === "pack" || largeArchive(source) ||
+          (command === "importResource" && largeArchive(args[1] as string)));
       if (
-        mutating &&
+        mutating && !threaded && command !== "insertResources" && command !== "importResourcesTo" &&
         revisions.has(source) &&
         mdk.fileRevision(source) !== revisions.get(source)
       )
@@ -739,9 +1007,30 @@ function registerIpc() {
           : handlers[command];
       if (!handler)
         throw new Error(t("此功能仅适用于 MDK 工程，单 Markdown 模式不可用。"));
-      const pending = (handler as (...values: unknown[]) => unknown)(...args);
-      const result = command === "importResourcesTo" ? await pending : pending;
-      if (command === "open" || command === "create") {
+      const opening = command === "open" || command === "create";
+      const access = opening && context.pendingAccess?.file === source
+        ? context.pendingAccess
+        : windowAccess(context, source);
+      let result: unknown;
+      try {
+        result = threaded
+          ? await runArchiveTask(context, command as ArchiveTask, args, mutating ? revisions.get(source) : undefined)
+          : await withAccess(access, () =>
+          (handler as (...values: unknown[]) => unknown)(...args),
+        );
+      } catch (error) {
+        if (opening) {
+          context.pendingAccess?.key.fill(0);
+          context.pendingAccess = undefined;
+        }
+        throw error;
+      }
+      if (opening) {
+        if (context.access !== access) context.access?.key.fill(0);
+        if (context.pendingAccess !== access) context.pendingAccess?.key.fill(0);
+        context.pendingAccess = undefined;
+        context.access = (result as { protected?: boolean }).protected ? access : undefined;
+        if (!context.access) access?.key.fill(0);
         state.remember(
           args[0],
           isMarkdownFile(source)
@@ -780,6 +1069,7 @@ function registerIpc() {
           "save-markdown",
           "save-pdf",
           "save-epub",
+          "save-mdke",
           "resource",
           "directory",
         ].includes(kind) ||
@@ -787,7 +1077,9 @@ function registerIpc() {
       )
         throw new Error(t("文件对话框参数无效。"));
       const filters =
-        kind === "save-pdf" || kind === "save-epub"
+        kind === "save-mdke"
+          ? [{ name: t("MDKE 分发包"), extensions: ["mdke"] }]
+          : kind === "save-pdf" || kind === "save-epub"
           ? [
               {
                 name: kind === "save-pdf" ? t("PDF 文档") : t("EPUB 电子书"),
@@ -798,14 +1090,15 @@ function registerIpc() {
             ? [{ name: t("Markdown 文件"), extensions: ["md"] }]
             : kind === "open-project"
               ? [
-                  { name: "Mardikor / Markdown", extensions: ["mdk", "md"] },
+                  { name: "Mardikor / Markdown", extensions: ["mdk", "mdke", "md"] },
+                  { name: t("MDKE 分发包"), extensions: ["mdke"] },
                   { name: t("MDK 工程"), extensions: ["mdk"] },
                   { name: t("Markdown 文件"), extensions: ["md"] },
                 ]
               : [{ name: t("Mardikor 工程"), extensions: ["mdk"] }];
       let selected: string | undefined;
       if (
-        ["save-project", "save-markdown", "save-pdf", "save-epub"].includes(
+        ["save-project", "save-markdown", "save-pdf", "save-epub", "save-mdke"].includes(
           kind,
         )
       ) {
@@ -925,6 +1218,9 @@ function openArguments(argv: string[], workingDirectory = process.cwd()) {
 }
 function createWindow(file?: string, fragment?: string) {
   const previous = pendingWindowSize ?? state.windowSize();
+  // Electron reveals a hidden window when maximizing it. Keep that native
+  // transition transparent and start Chromium at the final window size.
+  const concealMaximize = Boolean(previous?.maximized && !process.env.MARDIKOR_HEADLESS && process.platform !== "linux");
   const focused = BrowserWindow.getFocusedWindow();
   const { workAreaSize } = focused
     ? screen.getDisplayMatching(focused.getBounds())
@@ -946,6 +1242,7 @@ function createWindow(file?: string, fragment?: string) {
     minHeight,
     frame: false,
     show: false,
+    opacity: concealMaximize ? 0 : 1,
     backgroundColor: "#f4f6fa",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -972,6 +1269,7 @@ function createWindow(file?: string, fragment?: string) {
     revisions: new Map(),
     droppedFiles: new Map(),
     publicationOutputs: new Map(),
+    mediaWindows: new Map(),
   };
   if (file) context.approvedFiles.add(file);
   const id = window.webContents.id;
@@ -1005,6 +1303,12 @@ function createWindow(file?: string, fragment?: string) {
     },
   );
   window.on("close", (event) => {
+    if (context.archiveJob) {
+      event.preventDefault();
+      context.closeAfterArchive = true;
+      Atomics.compareExchange(context.archiveJob, 0, 0, 1);
+      return;
+    }
     if (context.dirty) {
       const choice = dialog.showMessageBoxSync(window!, {
         type: "question",
@@ -1012,10 +1316,10 @@ function createWindow(file?: string, fragment?: string) {
         defaultId: 0,
         cancelId: 2,
         title: t("尚有未保存的更改"),
-        message: t("关闭后，未保存的正文、源码或目录更改会丢失。"),
+        message: t("关闭后，未保存的工程更改和导出配置会丢失。"),
       });
       if (choice === 1 && context.activeProject)
-        state.recovery(context.activeProject, null, context.recoveryOwner);
+        recover(context, context.activeProject, null);
       if (choice !== 1) {
         event.preventDefault();
         if (choice === 0) window?.webContents.send("app:save-before-close");
@@ -1023,6 +1327,11 @@ function createWindow(file?: string, fragment?: string) {
     }
   });
   window.on("closed", () => {
+    if (context.archiveJob) Atomics.compareExchange(context.archiveJob, 0, 0, 1);
+    closeMediaWindows(context);
+    if (envelopeWork?.owner === context) envelopeWork.cancel();
+    context.access?.key.fill(0);
+    context.pendingAccess?.key.fill(0);
     context.stopWatching?.();
     persistWindowSize();
     for (const pending of updateSaves.values())
@@ -1031,8 +1340,12 @@ function createWindow(file?: string, fragment?: string) {
     state.releaseRecovery(context.recoveryOwner);
   });
   window.once("ready-to-show", () => {
-    if (previous?.maximized) window.maximize();
-    if (!process.env.MARDIKOR_HEADLESS) window?.show();
+    if (previous?.maximized && !concealMaximize) window.maximize();
+    context.readyToShow = true;
+    if (!process.env.MARDIKOR_HEADLESS) {
+      if (concealMaximize) window.setOpacity(1);
+      window.show();
+    }
     window.on("resize", rememberSize);
     const maximizedChanged = () => {
       rememberSize();
@@ -1045,6 +1358,7 @@ function createWindow(file?: string, fragment?: string) {
   window.webContents.on("did-start-loading", () => {
     context.queuedFile ??= context.activeProject || undefined;
   });
+  if (concealMaximize) window.maximize();
   if (devUrl) void window.loadURL(devUrl);
   else void window.loadFile(rendererFile);
 }
@@ -1059,6 +1373,8 @@ else {
         BrowserWindow.getFocusedWindow() ??
         [...windows.values()].at(-1)?.window;
       if (window) {
+        const context = windows.get(window.webContents.id);
+        if (context && !context.readyToShow) return;
         if (window.isMinimized()) window.restore();
         window.show();
         window.focus();

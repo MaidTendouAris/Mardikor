@@ -1,4 +1,5 @@
 import { t } from "../../shared/i18n";
+import { navigateTabs } from "../services/tab-navigation";
 import {
   forwardRef,
   lazy,
@@ -36,8 +37,15 @@ import {
 import { PageNavigation } from "./PageNavigation";
 import { DocumentFindBar } from "./DocumentFindBar";
 import { MediaPreview } from "./MediaPreview";
+import { EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import type { SourceEditorHandle, SourceModelPool } from "./SourceEditor";
-import { desktop } from "../services/desktop";
+import { desktop, desktopErrorMessage } from "../services/desktop";
+import {
+  editorMediaTarget,
+  viewMediaLabel,
+  type EditorMediaTarget,
+} from "../services/editor-media";
+import { previewMediaKind, previewMediaMime } from "../../shared/media-viewer";
 import {
   mayContainMath,
   renderPreview,
@@ -409,15 +417,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       [project?.contents.entries],
     );
     const activeFile = project?.files.find((f) => f.path === activePath);
-    const [resourceData, setResourceData] = useState("");
+    const [resource, setResource] = useState<{ file: string; path: string; data: string }>();
+    const resourceData = resource?.file === file && resource.path === activePath ? resource.data : "";
     useEffect(() => {
       let live = true;
-      setResourceData("");
+      setResource(undefined);
       if (fileKind === "media") {
         void desktop()
           .invoke("readResource", file, activePath)
           .then((data) => {
-            if (live) setResourceData(data);
+            if (live) setResource({ file, path: activePath, data });
           })
           .catch((error) => {
             if (live) notify(String(error), true);
@@ -436,6 +445,122 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       },
       [file, activePath],
     );
+    const [previewMenu, setPreviewMenu] = useState<{
+      x: number;
+      y: number;
+      items: EditorMenuItem[];
+      keyboard: boolean;
+    } | null>(null);
+    const previewMenuFocus = useRef<HTMLElement | null>(null);
+    const closePreviewMenu = useCallback(() => {
+      setPreviewMenu(null);
+      if (document.activeElement?.closest(".editor-context-menu"))
+        previewMenuFocus.current?.focus({ preventScroll: true });
+      previewMenuFocus.current = null;
+    }, []);
+    useEffect(closePreviewMenu, [file, activePath, tab, closePreviewMenu]);
+    const currentMediaKind = fileKind === "media"
+      ? previewMediaKind(previewMediaMime(activePath)) ??
+        previewMediaKind(resourceData.match(/^data:([^;]+)/)?.[1])
+      : undefined;
+    const currentMedia: EditorMediaTarget | undefined = fileKind === "media" && (currentMediaKind || !standalone)
+      ? { kind: currentMediaKind ?? "attachment", path: activePath, reference: activePath }
+      : undefined;
+    async function viewMedia(media: EditorMediaTarget) {
+      if (media.path === null) {
+        notify(t("媒体查看器仅支持工程内或 Markdown 目录内的本地资源。"), true);
+        return;
+      }
+      try {
+        await desktop().openMedia(file, media.path, media.kind);
+      } catch (error) {
+        notify(desktopErrorMessage(error), true);
+      }
+    }
+    function openPreviewTarget(target: string, fragment?: string) {
+      if (standalone || target === CONTENTS_MARKDOWN_PATH ||
+        project?.contents.documents?.some(({ path }) => path === target) ||
+        project?.contents.entries.some(({ path }) => path === target)) {
+        void openFile(target, fragment);
+      } else {
+        void viewMedia({ kind: "attachment", path: target, reference: target });
+      }
+    }
+    function showPreviewMenu(element: Element, x: number, y: number, keyboard = false) {
+      if (element.closest("button,input,select,textarea,[contenteditable='true']"))
+        return false;
+      const resource = element.closest(".resource-preview");
+      const preview = !resource && (
+        element.closest("article.preview-body") ??
+        element.closest(".preview-body") ??
+        element.closest(".reading-preview,.inline-preview,.reader-viewport")
+          ?.querySelector(".preview-body")
+      );
+      if (!preview && !resource) return false;
+
+      const copy = (text: string) =>
+        void desktop().edit("copy-text", text)
+          .catch((error) => notify(desktopErrorMessage(error), true));
+      const items: EditorMenuItem[] = [];
+      if (resource) {
+        if (currentMedia)
+          items.push({
+            id: "view-media",
+            label: viewMediaLabel(currentMedia.kind),
+            run: () => void viewMedia(currentMedia),
+          });
+        items.push({
+          id: "copy-path",
+          label: t("复制资源路径"),
+          run: () => copy(activePath),
+        });
+      } else if (preview) {
+        const source = element.closest<HTMLElement>("[data-source-path]")
+          ?.dataset.sourcePath ?? activePath;
+        const media = editorMediaTarget(element, source);
+        const anchor = element.closest<HTMLAnchorElement>("a");
+        const href = anchor?.dataset.mdkLink ?? anchor?.getAttribute("href");
+        if (media) {
+          items.push(
+            { id: "view-media", label: viewMediaLabel(media.kind), run: () => void viewMedia(media) },
+            {
+              id: "copy-reference",
+              label: media.inlineImage ? t("复制图片地址") : t("复制链接地址"),
+              run: () => copy(media.reference),
+            },
+          );
+        } else if (anchor && href && href !== "#") {
+          items.push(
+            { id: "open-link", label: t("打开链接"), run: () => anchor.click() },
+            { id: "copy-link", label: t("复制链接地址"), run: () => copy(href) },
+          );
+        }
+        const selection = window.getSelection();
+        const selected = selection && preview.contains(selection.anchorNode) && preview.contains(selection.focusNode)
+          ? selection.toString()
+          : "";
+        items.push(
+          {
+            id: "copy",
+            label: t("复制"),
+            shortcut: "Ctrl+C",
+            separator: items.length > 0,
+            disabled: !selected,
+            run: () => copy(selected),
+          },
+          {
+            id: "select-preview",
+            label: t("全选当前预览"),
+            run: () => window.getSelection()?.selectAllChildren(preview),
+          },
+        );
+      }
+      previewMenuFocus.current = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      setPreviewMenu({ x, y, items, keyboard });
+      return true;
+    }
     const previewMarkdown = settings.preview.live_preview
       ? markdown
       : isMarkdown
@@ -1068,12 +1193,12 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         data-document-drop-zone="write"
         data-document-path={activePath}
         onClick={(event) => {
-          if (standalone && (event.ctrlKey || event.metaKey))
+          if (event.ctrlKey || event.metaKey)
             followPreviewLink(
               event,
               activePath,
-              true,
-              () => {},
+              standalone,
+              openPreviewTarget,
               (error) => notify(error, true),
             );
         }}
@@ -1119,6 +1244,24 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         role="region"
         aria-label={label + t("编辑组")}
         tabIndex={-1}
+        onContextMenu={(event) => {
+          const element = event.target;
+          if (
+            !event.defaultPrevented && element instanceof Element &&
+            event.currentTarget.contains(element) &&
+            showPreviewMenu(element, event.clientX, event.clientY)
+          ) event.preventDefault();
+        }}
+        onKeyDown={(event) => {
+          const element = event.target;
+          if (
+            event.defaultPrevented || !(element instanceof Element) ||
+            !event.currentTarget.contains(element) ||
+            (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+          ) return;
+          const bounds = element.getBoundingClientRect();
+          if (showPreviewMenu(element, bounds.left + 12, bounds.top + 12, true)) event.preventDefault();
+        }}
         onPointerDownCapture={() => {
           sourceCursorMoved.current = 0;
           onActivate();
@@ -1150,6 +1293,16 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           followViewport(node);
         }}
       >
+        {previewMenu && (
+          <EditorMenu
+            x={previewMenu.x}
+            y={previewMenu.y}
+            ariaLabel={t("预览右键菜单")}
+            focusFirst={previewMenu.keyboard}
+            onClose={closePreviewMenu}
+            items={previewMenu.items}
+          />
+        )}
         {split && (
           <header className="editor-group-heading">
             <span>{label}</span>
@@ -1185,6 +1338,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             className="document-mode-tabs"
             role="tablist"
             aria-label={t("编辑模式")}
+            onKeyDown={navigateTabs}
           >
             {[
               { id: "source", name: t("源码"), icon: Braces },
@@ -1200,6 +1354,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                 key={item.id}
                 aria-label={item.name}
                 aria-selected={tab === item.id}
+                tabIndex={tab === item.id ? 0 : -1}
                 title={
                   item.id === "write" && isMarkdown && !visualAvailable
                     ? t("此文稿可使用源码编辑或分页预览")
@@ -1219,9 +1374,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     readingAvailable,
                   ) !== item.id
                 }
-                onClick={() =>
-                  void execute(() => changeTab(item.id as EditorTab))
-                }
+                onClick={(event) => {
+                  const trigger = event.currentTarget;
+                  const keyboard = event.detail === 0;
+                  void execute(() => changeTab(item.id as EditorTab)).then(() => {
+                    if (keyboard && document.activeElement === document.body) trigger.focus();
+                  });
+                }}
               >
                 <item.icon size={15} />
                 <span>{item.name}</span>
@@ -1335,6 +1494,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             sourceText={paged ? windowText : markdown}
             notify={notify}
             sourcePath={activePath}
+            onViewMedia={viewMedia}
             files={project?.files ?? []}
             onImport={importResources}
             onSourceInsert={async (text) => {
@@ -1524,7 +1684,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                   patch({ outlinePath: path, activeHeading: index });
               }}
               onScroll={onScroll}
-              openFile={(path) => void openFile(path)}
+              openFile={openPreviewTarget}
             />
           ) : tab === "settings" ? (
             <ProjectSettings
@@ -1581,7 +1741,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               initialFragment={initialFragment}
               style={style}
               resolveResource={resolveResource}
-              onOpen={(path, fragment) => void openFile(path, fragment)}
+              onOpen={openPreviewTarget}
               onError={(error) => notify(error, true)}
               onScroll={(ratio, viewport, programmatic) => {
                 if (!programmatic) reportScroll(ratio, viewport);
@@ -1593,12 +1753,13 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             activeFile &&
             project ? (
             <MediaPreview
-              file={file}
               current={activeFile}
               data={resourceData}
               files={project.files}
-              settings={settings}
-              mode={project.mode}
+              view={currentMedia && {
+                label: viewMediaLabel(currentMedia.kind),
+                open: () => void viewMedia(currentMedia),
+              }}
               onSelect={(path) => void openFile(path)}
             />
           ) : tab === "preview" && project ? (
@@ -1611,7 +1772,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               standalone={standalone}
               settings={previewSettings}
               style={style}
-              onOpen={(path, fragment) => void openFile(path, fragment)}
+              onOpen={openPreviewTarget}
               onError={(error) => notify(error, true)}
               initialFragment={initialFragment}
               activeDocument={
@@ -1638,7 +1799,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                           event,
                           activePath,
                           standalone,
-                          (path, fragment) => void openFile(path, fragment),
+                          openPreviewTarget,
                           (error) => notify(error, true),
                         )
                       }
@@ -1665,7 +1826,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                         event,
                         activePath,
                         standalone,
-                        (path, fragment) => void openFile(path, fragment),
+                        openPreviewTarget,
                         (error) => notify(error, true),
                       )
                     }

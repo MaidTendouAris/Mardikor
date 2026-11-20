@@ -3,7 +3,7 @@ import { assignedUnicode151, outsideHeadingUnicode151 } from "./unicode-15-1";
 
 // Normalization is stable for characters assigned in 15.1. Characters added
 // later remain inert boundaries, as they would on the reference version.
-function normalizeUnicode151(text: string) {
+export function normalizeUnicode151(text: string) {
   return text.replace(assignedUnicode151, (run) => run.normalize("NFC"));
 }
 

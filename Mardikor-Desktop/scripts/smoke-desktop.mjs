@@ -345,6 +345,7 @@ try {
     page.locator('.project-tree-row[data-path="markdown/001-2.md"]'),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
   await page.getByRole("button", { name: "校验工程", exact: true }).click();
   await expect(page.getByText("工程校验通过", { exact: true })).toBeVisible();
   await capture("05-delivery.png");
@@ -456,6 +457,7 @@ try {
     { unpacked, repacked },
   );
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
   await page.getByRole("button", { name: "解包工程目录", exact: true }).click();
   await expect(page.locator('.toast[role="status"]')).toContainText(
     "工程已解包",

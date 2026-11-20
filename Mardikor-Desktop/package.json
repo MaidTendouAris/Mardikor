@@ -1,6 +1,6 @@
 {
   "name": "mardikor",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "A portable creative workspace for MDK projects.",
   "author": "Mardikor",
   "private": true,
@@ -33,11 +33,14 @@
     "test:save-shortcuts": "tsx scripts/smoke-save-shortcuts.ts",
     "test:pagination": "tsx scripts/smoke-continuous-pages.ts",
     "test:resources": "tsx scripts/smoke-resources.ts",
+    "test:media-viewer": "tsx scripts/smoke-media-viewer.ts",
     "test:large-book": "tsx scripts/smoke-large-book.ts",
+    "test:large-attachments": "tsx scripts/smoke-large-attachments.ts",
     "test:reader": "tsx scripts/smoke-reader.ts",
     "test:find": "tsx scripts/smoke-find.ts",
     "test:publication": "tsx scripts/smoke-publication.ts",
     "test:mdk-v2": "tsx scripts/smoke-mdk-v2.ts",
+    "test:envelopes": "tsx scripts/smoke-envelope.ts",
     "package": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --publish never",
     "format": "prettier --write src electron shared scripts tests *.json *.ts README.md \"docs/**/*.md\"",
@@ -67,6 +70,7 @@
     "adm-zip": "^0.6.1",
     "electron-updater": "6.8.12",
     "katex": "0.16.47",
+    "libsodium-wrappers-sumo": "0.8.4",
     "lucide-react": "^0.468.0",
     "markdown-it": "^14.2.0",
     "markdown-it-container": "^4.0.0",
@@ -140,6 +144,13 @@
         "description": "Mardikor Project",
         "icon": "assets/icons/mdk-default.ico",
         "role": "Editor"
+      },
+      {
+        "ext": "mdke",
+        "name": "Mardikor Distribution Package",
+        "description": "Mardikor Distribution Package",
+        "icon": "assets/icons/mdk-default.ico",
+        "role": "Viewer"
       }
     ],
     "win": {

@@ -3,8 +3,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { insertionFormats } from "../shared/resources";
 import { checkMedia, detectMediaType, assertPassiveSvg } from "./media";
+import { addedFile, StoreEntry } from "./archive-io";
+import { resourceName } from "./resource-files";
 
 export type InsertionSource = string | { name: string; bytes: Buffer };
+
+export function inspectMdkInsertionAssets(sources: InsertionSource[]) {
+  if (!Array.isArray(sources) || !sources.length || sources.length > 16)
+    throw new Error(t("一次最多插入 16 个文件。"));
+  return sources.map((source) => {
+    const name = path.basename(typeof source === "string" ? source : source.name).normalize("NFC");
+    resourceName(name);
+    const entry = typeof source === "string" ? addedFile(name, source) : new StoreEntry(name, source.bytes);
+    const type = detectMediaType(entry.prefix());
+    let kind = type?.split("/", 1)[0];
+    if (type === "image/svg+xml") {
+      try { assertPassiveSvg(entry.getData()); }
+      catch { kind = "other"; }
+    }
+    return { name, entry, kind: kind === "image" || kind === "video" || kind === "audio" || kind === "font" ? kind : "other" } as const;
+  });
+}
 
 export function loadInsertionAssets(sources: InsertionSource[]) {
   if (!Array.isArray(sources) || !sources.length || sources.length > 16)

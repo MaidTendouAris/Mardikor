@@ -112,6 +112,7 @@ try {
   if (!packaged)
     await page.screenshot({ path: path.join(root, "comic-full-markdown.png") });
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
   await page.getByRole("button", { name: "导出 .mdk", exact: true }).click();
   await expect(page.locator('.toast[role="status"]')).toContainText(
     "工程已导出",
@@ -128,6 +129,7 @@ try {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: output });
   }, stripped);
   await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  await page.getByRole("button", { name: "MDK / MDKE", exact: true }).click();
   await page.getByRole("button", { name: "导出 .mdk", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText("meta/annotations.json");
   await expect(page.getByRole("dialog")).toContainText("meta/unknown.json");

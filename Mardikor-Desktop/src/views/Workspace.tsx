@@ -28,6 +28,8 @@ import {
   Send,
   Columns2,
   ListTree,
+  LockKeyhole,
+  ArrowLeft,
   Files,
 } from "lucide-react";
 import { stringify } from "smol-toml";
@@ -38,6 +40,11 @@ import {
   type SearchResults,
 } from "../services/document-find";
 import { Select } from "../components/Select";
+import { Delivery } from "./Delivery";
+import type { PublicationHandle } from "../components/PublicationExport";
+import { navigateTabs } from "../services/tab-navigation";
+import type { AccessChangeResult } from "../../shared/envelopes";
+import type { SaveSnapshot } from "../../shared/mdk";
 import { EditorGroup, type EditorGroupHandle } from "../components/EditorGroup";
 import { SplitHandle } from "../components/SplitHandle";
 import { EditorDialog } from "../components/EditorMenu";
@@ -99,7 +106,8 @@ import {
 
 export interface WorkspaceHandle {
   flush: () => Promise<boolean>;
-  refresh: () => Promise<void>;
+  changeAccess: (save: (snapshot: SaveSnapshot) => Promise<AccessChangeResult>) => Promise<boolean>;
+  showEditor: () => void;
 }
 const basename = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const sourceOnly = requiresSourceMode;
@@ -127,8 +135,9 @@ export const Workspace = forwardRef<
     notify: Notify;
     onDirty: (dirty: boolean) => void;
     onOpen: () => void;
+    onManageAccess: (isProtected: boolean) => void;
+    onPackDistribution: () => void;
     onRename: (path: string) => void;
-    onDeliver: () => void;
   }
 >(function Workspace(
   {
@@ -145,8 +154,9 @@ export const Workspace = forwardRef<
     notify,
     onDirty,
     onOpen,
+    onManageAccess,
+    onPackDistribution,
     onRename,
-    onDeliver,
   },
   ref,
 ) {
@@ -158,12 +168,22 @@ export const Workspace = forwardRef<
     setProjectState(loaded);
   }
   const standalone = project?.format === "markdown";
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const publicationRef = useRef<PublicationHandle>(null);
+  const [publicationDirty, setPublicationDirty] = useState(false);
+  const [publicationBusy, setPublicationBusy] = useState(false);
+  const issueFiles = useMemo(() => new Set(project?.files.filter((entry) => entry.kind !== "directory").map((entry) => entry.path)), [project]);
+  const deliveryButton = useRef<HTMLButtonElement>(null);
+  const closeDelivery = () => {
+    setDeliveryOpen(false);
+    requestAnimationFrame(() => deliveryButton.current?.focus());
+  };
   const [treeView, setTreeView] = useState<"outline" | "files">("outline");
   const [settings, setSettings] = useState<MdkSettings>(defaultSettings);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [directoryDirty, setDirectoryDirty] = useState(false);
   const [operation, setOperation] = useState<"work" | "save" | null>(null);
-  const busy = operation !== null;
+  const busy = operation !== null || publicationBusy;
   const [query, setQuery] = useState("");
   const [resourceKind, setResourceKind] = useState<ResourceKind>("image");
   const [fileSelection, setFileSelection] = useState<Set<string>>();
@@ -279,6 +299,7 @@ export const Workspace = forwardRef<
     (b) => b.content !== b.saved,
   );
   const dirty = dirtyBuffers.length > 0 || directoryDirty || settingsDirty;
+  const hasUnsavedChanges = dirty || publicationDirty;
   const activeEntry = project?.contents.entries.find(
     (entry) => entry.path === activePath,
   );
@@ -408,7 +429,7 @@ export const Workspace = forwardRef<
       if (font) document.fonts.delete(font);
     };
   }, [file, settings.appearance.font_family, notify]);
-  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useEffect(() => onDirty(hasUnsavedChanges), [hasUnsavedChanges, onDirty]);
   useEffect(
     () =>
       window.mardikor?.onProjectChanged((target, revision) => {
@@ -461,7 +482,7 @@ export const Workspace = forwardRef<
     notify,
   ]);
   async function execute(work: () => Promise<unknown>) {
-    if (locked.current) return;
+    if (locked.current || publicationBusy) return;
     locked.current = true;
     setOperation("work");
     try {
@@ -474,9 +495,12 @@ export const Workspace = forwardRef<
     }
   }
   async function jumpHeading(heading: MarkdownHeading) {
+    setDeliveryOpen(false);
     setActiveHeading(heading.index);
     if (tab === "write") {
-      groupEditors.current[activeId]?.jumpHeading(heading);
+      const reveal = () => groupEditors.current[activeId]?.jumpHeading(heading);
+      if (deliveryOpen) requestAnimationFrame(reveal);
+      else reveal();
       return;
     }
     if (tab === "preview" || tab === "reader") {
@@ -752,7 +776,10 @@ export const Workspace = forwardRef<
         first?.id,
       );
       if (!live) return;
-      const draft = await desktop().recovery(file);
+      const draft = await desktop().recovery(file).catch((error: unknown) => {
+        if (live) notify(String(error), true);
+        return null;
+      });
       if (!live) return;
       if (
         draft &&
@@ -939,7 +966,10 @@ export const Workspace = forwardRef<
     });
   }
 
-  async function flush(syncDirectory = true): Promise<boolean> {
+  async function flush(
+    syncDirectory = true,
+    changeAccess?: (snapshot: SaveSnapshot) => Promise<AccessChangeResult>,
+  ): Promise<boolean> {
     const project = projectRef.current;
     // The watcher is advisory. The atomic save verifies the current revision,
     // even if the original bytes were restored after a conflict notification.
@@ -949,17 +979,25 @@ export const Workspace = forwardRef<
     if (
       !project ||
       !file ||
-      !(submitted.length || directoryDirty || settingsDirty)
+      !(changeAccess || submitted.length || directoryDirty || settingsDirty)
     )
       return true;
     const snapshot = makeSnapshot(submitted);
-    await desktop()
-      .recovery(file, snapshot)
-      .catch((error) => notify(t("恢复草稿保存失败：") + String(error), true));
-    const loaded = await desktop().invoke("saveSnapshot", file, {
-      ...snapshot,
-      ...(!syncDirectory ? { positions: undefined } : {}),
-    });
+    let loaded: MdkProject;
+    let recoveryWarning: string | undefined;
+    if (changeAccess) {
+      const result = await changeAccess(snapshot);
+      loaded = result.project;
+      recoveryWarning = result.recoveryWarning;
+    } else {
+      await desktop()
+        .recovery(file, snapshot)
+        .catch((error) => notify(t("恢复草稿保存失败：") + String(error), true));
+      loaded = await desktop().invoke("saveSnapshot", file, {
+        ...snapshot,
+        ...(!syncDirectory ? { positions: undefined } : {}),
+      });
+    }
     for (const b of submitted)
       putBuffer({ ...buffersRef.current[b.path], saved: b.content });
     if (directoryDirty && syncDirectory) setDirectoryDirty(false);
@@ -998,7 +1036,7 @@ export const Workspace = forwardRef<
       !loaded.files.some((item) => item.path === CONTENTS_MARKDOWN_PATH)
     )
       await refreshBuffers(loaded);
-    if (syncDirectory) {
+    if (syncDirectory && !changeAccess) {
       const unsaved = textSnapshot(Object.values(buffersRef.current));
       await desktop().recovery(
         file,
@@ -1013,6 +1051,8 @@ export const Workspace = forwardRef<
         minute: "2-digit",
       }),
     );
+    if (recoveryWarning) notify(recoveryWarning, true);
+    else if (changeAccess) notify(t("访问保护已更新。"));
     return true;
   }
   const flushRef = useRef(flush);
@@ -1040,6 +1080,7 @@ export const Workspace = forwardRef<
     if (
       !projectRef.current ||
       projectRef.current.readonly ||
+      publicationBusy ||
       manualSavePending.current ||
       (locked.current && !pendingSave.current)
     )
@@ -1047,16 +1088,15 @@ export const Workspace = forwardRef<
     manualSavePending.current = true;
     clearTimeout(saveFeedbackTimer.current);
     setManualSave("saving");
-    const saved =
-      (!pendingSave.current || (await pendingSave.current)) &&
-      (await startSave());
-    manualSavePending.current = false;
-    setManualSave(saved ? "saved" : undefined);
-    if (saved)
-      saveFeedbackTimer.current = setTimeout(
-        () => setManualSave(undefined),
-        2400,
-      );
+    let saved = false;
+    try {
+      saved = (!pendingSave.current || (await pendingSave.current)) &&
+        (await startSave()) && ((await publicationRef.current?.save()) ?? true);
+    } finally {
+      manualSavePending.current = false;
+      setManualSave(saved ? "saved" : undefined);
+      if (saved) saveFeedbackTimer.current = setTimeout(() => setManualSave(undefined), 2400);
+    }
   }
   async function renameArchive() {
     if (standalone || !projectRef.current) return;
@@ -1067,7 +1107,7 @@ export const Workspace = forwardRef<
       input: true,
       confirm: t("重命名"),
     });
-    if (!name || !(await flush())) return;
+    if (!name || !(await flush()) || (await publicationRef.current?.save()) === false) return;
     const target = await desktop().renameArchive(
       name,
       projectRef.current!.revision,
@@ -1092,6 +1132,7 @@ export const Workspace = forwardRef<
     settingsDirty,
     directoryDirty,
     externalChange: false,
+    publicationBusy: false,
   });
   saveState.current = {
     hasTextChanges: dirtyBuffers.length > 0,
@@ -1101,27 +1142,26 @@ export const Workspace = forwardRef<
     settingsDirty,
     directoryDirty,
     externalChange: !!diskChange && diskChange.revision !== project?.revision,
+    publicationBusy,
   };
-  useImperativeHandle(
-    ref,
-    () => ({
-      refresh: () => refreshRef.current(),
-      flush: async () => {
-        while (pendingSave.current)
-          if (!(await pendingSave.current)) return false;
-        if (locked.current) throw new Error(t("正在处理工程，请稍后再试。"));
-        locked.current = true;
-        setOperation("work");
-        try {
-          return await flushRef.current();
-        } finally {
-          locked.current = false;
-          setOperation(null);
-        }
-      },
-    }),
-    [],
-  );
+  async function saveWorkspace(changeAccess?: (snapshot: SaveSnapshot) => Promise<AccessChangeResult>) {
+    while (pendingSave.current)
+      if (!(await pendingSave.current)) return false;
+    if (locked.current) throw new Error(t("正在处理工程，请稍后再试。"));
+    locked.current = true;
+    setOperation("work");
+    try {
+      return await flushRef.current(true, changeAccess);
+    } finally {
+      locked.current = false;
+      setOperation(null);
+    }
+  }
+  useImperativeHandle(ref, () => ({
+    flush: async () => !publicationBusy && await saveWorkspace() && ((await publicationRef.current?.save()) ?? true),
+    changeAccess: saveWorkspace,
+    showEditor: () => setDeliveryOpen(false),
+  }));
   useEffect(() => {
     if (!preferences.autosave) return;
     const timer = setInterval(() => {
@@ -1133,7 +1173,7 @@ export const Workspace = forwardRef<
           state.directoryDirty
         ) ||
         state.criticalDirty ||
-        state.externalChange
+        state.externalChange || state.publicationBusy
       )
         return;
       void startSave();
@@ -1189,7 +1229,8 @@ export const Workspace = forwardRef<
     fragment?: string,
   ) {
     if (pendingSave.current && !(await pendingSave.current)) return;
-    if (locked.current && !navigating.current) return;
+    if (publicationBusy || (locked.current && !navigating.current)) return;
+    setDeliveryOpen(false);
     queuedNavigation.current.set(groupId, { path, entryId, fragment });
     if (navigating.current) return;
     navigating.current = true;
@@ -1562,6 +1603,15 @@ export const Workspace = forwardRef<
         target?.closest('dialog, [role="dialog"], [role="listbox"]')
       )
         return;
+      if (deliveryOpen) {
+        const action = bindings.get(shortcutFromEvent(event) ?? "");
+        if (action && "id" in action && action.id === "save") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.repeat) void shortcutActions.current.saveDocument();
+        }
+        return;
+      }
       const mac = /Mac/i.test(navigator.platform);
       if (
         event.key.toLowerCase() === "f" &&
@@ -1624,7 +1674,7 @@ export const Workspace = forwardRef<
     };
     window.addEventListener("keydown", keydown, true);
     return () => window.removeEventListener("keydown", keydown, true);
-  }, [shortcutsEnabled, preferences.shortcuts, activeId]);
+  }, [shortcutsEnabled, deliveryOpen, preferences.shortcuts, activeId]);
   function startResize(event: React.MouseEvent) {
     const start = event.clientX,
       width = sidebarWidth;
@@ -1649,9 +1699,10 @@ export const Workspace = forwardRef<
         </button>
       </div>
     );
+  const documentPath = (tab === "reader" ? outlinePath : activePath) || t("未选择文件");
   return (
     <div
-      className={`editor-workspace ${project?.mode === "00" ? "mode-default" : ""} ${busy ? "is-busy" : ""} ${tab === "reader" && supportsReadingMode(project) && reading.style.hideSidebars ? "reader-hide-sidebars" : ""}`}
+      className={`editor-workspace ${project?.mode === "00" ? "mode-default" : ""} ${busy ? "is-busy" : ""} ${!deliveryOpen && tab === "reader" && supportsReadingMode(project) && reading.style.hideSidebars ? "reader-hide-sidebars" : ""}`}
     >
       <aside className="outline-panel" style={{ width: sidebarWidth }}>
         <div className="project-heading">
@@ -1678,10 +1729,12 @@ export const Workspace = forwardRef<
           className="explorer-tabs"
           role="tablist"
           aria-label={t("目录视图")}
+          onKeyDown={navigateTabs}
         >
           <button
             role="tab"
             aria-selected={treeView === "outline"}
+            tabIndex={treeView === "outline" ? 0 : -1}
             className={treeView === "outline" ? "active" : ""}
             onClick={() => setTreeView("outline")}
           >
@@ -1691,6 +1744,7 @@ export const Workspace = forwardRef<
           <button
             role="tab"
             aria-selected={treeView === "files"}
+            tabIndex={treeView === "files" ? 0 : -1}
             className={treeView === "files" ? "active" : ""}
             onClick={() => setTreeView("files")}
           >
@@ -1923,20 +1977,21 @@ export const Workspace = forwardRef<
       </div>
       <div className="writing-area">
         <div className="document-topbar">
-          <div className="document-title">
+          <div className="document-title" title={documentPath}>
             <FileCode2 size={17} />
-            <strong>
-              {(tab === "reader" ? outlinePath : activePath) || t("未选择文件")}
+            <strong aria-label={documentPath}>
+              <span className="document-full-name">{documentPath}</span>
+              <span className="document-short-name" aria-hidden="true">{basename(documentPath)}</span>
             </strong>
             <span>
-              {dirty
+              {hasUnsavedChanges
                 ? t("未保存")
                 : lastSaved
                   ? t("已保存 {0}", lastSaved)
                   : t("已就绪")}
             </span>
           </div>
-          <div className="button-row">
+          <div className="button-row document-topbar-actions">
             <button
               className="icon-button"
               aria-label={t("打开文件所在位置")}
@@ -1954,6 +2009,9 @@ export const Workspace = forwardRef<
             </button>
             {project && !standalone && (
               <>
+                <button className="icon-button" aria-label={t("访问保护")} title={t("访问保护")} aria-pressed={Boolean(project.protected)} disabled={busy || project.readonly} onClick={() => onManageAccess(Boolean(project.protected))}>
+                  <LockKeyhole size={17} />
+                </button>
                 <button
                   className="icon-button"
                   aria-label={t("重命名 MDK 工程")}
@@ -1977,7 +2035,7 @@ export const Workspace = forwardRef<
               title={[t("向右拆分编辑器"), splitKey]
                 .filter(Boolean)
                 .join(" · ")}
-              disabled={busy || !project}
+              disabled={busy || !project || deliveryOpen}
               onClick={() => splitEditor()}
             >
               <Columns2 size={17} />
@@ -1999,15 +2057,21 @@ export const Workspace = forwardRef<
               <span role="status" className="save-label">
                 {manualSave === "saving"
                   ? t("正在保存…")
-                  : manualSave === "saved"
+                  : manualSave === "saved" && !hasUnsavedChanges
                     ? t("已保存")
                     : t("保存")}
               </span>
               {saveKey && <kbd>{saveKey}</kbd>}
             </button>
-            <button className="button primary small" onClick={onDeliver}>
-              <Send size={14} />
-              {standalone ? t("导出") : t("交付")}
+            <button
+              ref={deliveryButton}
+              className={`button small ${deliveryOpen ? "" : "primary"}`}
+              aria-expanded={deliveryOpen}
+              disabled={busy || !project || !draftReady}
+              onClick={deliveryOpen ? closeDelivery : () => setDeliveryOpen(true)}
+            >
+              {deliveryOpen ? <ArrowLeft size={14} /> : <Send size={14} />}
+              {deliveryOpen ? t("返回文稿") : t("校验与导出")}
             </button>
           </div>
         </div>
@@ -2050,7 +2114,30 @@ export const Workspace = forwardRef<
             )}
           </div>
         )}
+        {(deliveryOpen || publicationDirty || publicationBusy) && project && (
+          <Delivery
+            key={file}
+            hidden={!deliveryOpen}
+            file={file}
+            revision={project.revision}
+            getRevision={() => projectRef.current?.revision}
+            flush={() => saveWorkspace()}
+            notify={notify}
+            ask={ask}
+            onConfigured={async () => {
+              if (!standalone) await refreshRef.current();
+            }}
+            onPackDistribution={onPackDistribution}
+            publicationRef={publicationRef}
+            onPublicationDirty={setPublicationDirty}
+            onPublicationBusy={setPublicationBusy}
+            issueFiles={issueFiles}
+            onOpenIssue={(path) => void selectFile(path)}
+            busy={busy}
+          />
+        )}
         <div
+          hidden={deliveryOpen}
           className={
             "editor-groups " + (groups.length === 2 ? "two-editor-groups" : "")
           }
@@ -2105,7 +2192,7 @@ export const Workspace = forwardRef<
                 split={groups.length === 2}
                 label={index === 0 ? t("左栏") : t("右栏")}
                 busy={busy}
-                editingBlocked={operation === "work"}
+                editingBlocked={operation === "work" || publicationBusy}
                 shortcutOverrides={preferences.shortcuts}
                 directoryDirty={directoryDirty}
                 notify={notify}
@@ -2204,8 +2291,8 @@ export const Workspace = forwardRef<
         </div>
         <footer className="editor-statusbar">
           <div>
-            <span className={`status-dot ${dirty ? "unsaved" : ""}`} />
-            {dirty ? t("有未保存的更改") : t("所有更改已保存")}
+            <span className={`status-dot ${hasUnsavedChanges ? "unsaved" : ""}`} />
+            {hasUnsavedChanges ? t("有未保存的更改") : t("所有更改已保存")}
             {busy ? t(" · 正在处理") : ""}
           </div>
           <span>

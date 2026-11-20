@@ -1,5 +1,5 @@
 import { t } from "../shared/i18n";
-import { resolveV2Publication } from "../shared/publication-v2";
+import { inspectV2Publication, newV2Preset, publicationPresetInfo, resolveV2Publication } from "../shared/publication-v2";
 import { v2HeadingAnchors, headingText } from "../shared/mdk-anchors";
 import { createMdkMarkdownParser } from "../shared/markdown-parser";
 import { entryDisplayName } from "../shared/mdk";
@@ -26,11 +26,13 @@ import {
   configurationFrom,
   defaultPublication,
   inspectPublication,
+  publicationMetadataFields,
   publicationFrom,
   publicationLabels,
   type PublicationConfiguration,
   type PublicationFormat,
   type PublicationInfo,
+  type MdkPublicationMetadata,
   type PublicationPlan,
   type PublicationResult,
   type PublicationStage,
@@ -86,7 +88,7 @@ export interface PublicationRuntime {
 type Snapshot = {
   project: MdkProject;
   units: ReadingUnit[];
-  files: Map<string, Buffer>;
+  files: Pick<Map<string, Buffer>, "has" | "get">;
   presets?: ReturnType<typeof readMdkPublication>["presets"];
   rawSettings?: Table;
 };
@@ -228,11 +230,12 @@ export function publicationInfo(
   const source = snapshot(file, runtime),
     { project } = source;
   const stored = source.presets ? undefined : publicationFrom(project.settings);
-  const presets = source.presets?.presets.map(({ id, name, format }) => ({
-    id,
-    name,
-    format,
-  }));
+  const style = source.rawSettings ?? {};
+  const presets = source.presets?.presets.map((preset) =>
+    publicationPresetInfo(preset, style, project.mode),
+  );
+  const metadata = project.metadata ?? {};
+  const metadataFields = Object.fromEntries(publicationMetadataFields.map((key) => [key, typeof metadata[key] === "string" ? metadata[key] : ""]));
   const publication =
     stored === undefined
       ? defaultPublication(
@@ -247,6 +250,16 @@ export function publicationInfo(
     saved: stored !== undefined,
     presets,
     defaultPreset: source.presets?.preferred,
+    mdk: presets && {
+      defaults: (["pdf", "epub"] as const).map((format) => publicationPresetInfo(
+        defaultV2Preset(format, project.mode, style), style, project.mode,
+      )),
+      metadata: {
+        ...metadataFields,
+        creators: Array.isArray(metadata.creators) ? metadata.creators : [],
+      } as MdkPublicationMetadata,
+      readonly: project.readonly,
+    },
     engine: runtime.engine,
     configuration: configurationFrom(project.settings, publication),
     fonts: project.files
@@ -261,6 +274,10 @@ export function publicationInfo(
       )
       .map((f) => f.path),
   };
+}
+
+function defaultV2Preset(format: PublicationFormat, mode: string, style: Table) {
+  return inspectV2Publication({ presets: [newV2Preset(format, format, mode)] }, style, mode).presets[0];
 }
 export function configurePublication(
   file: string,
@@ -332,8 +349,9 @@ export function preparePublication(
         item.id === (presetId ?? source.presets?.preferred) &&
         item.format === format,
     ) ??
-    (presetId === undefined
-      ? source.presets?.presets.find((item) => item.format === format)
+    (presetId === undefined && source.presets
+      ? source.presets.presets.find((item) => item.format === format) ??
+        defaultV2Preset(format, project.mode, source.rawSettings ?? {})
       : undefined);
   const issue = (
     code: string,

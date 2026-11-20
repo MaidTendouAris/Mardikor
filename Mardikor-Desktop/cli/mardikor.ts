@@ -5,12 +5,20 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import * as mdk from "../electron/mdk";
+import { withAccess, type AccessSession } from "../electron/access-session";
+import { initEnvelopeCrypto, probeEnvelope } from "../electron/envelope";
+import {
+  publishEnvelopeOutput,
+  runEnvelopeTask,
+  type EnvelopeTask,
+} from "../electron/envelope-operations";
 import { MAX_OUTLINE_DEPTH, modeName } from "../shared/mdk-v2";
 import { MAX_ENTRIES, MAX_FILE } from "../electron/archive";
 import { watchProjectFile } from "../electron/project-watch";
 import { comparePosition } from "../shared/outline";
 import { moveOutline } from "../shared/tree";
 import { displayArchivePath, isTable } from "../shared/schema";
+import { isMdkeCompression } from "../shared/envelopes";
 import {
   entryDisplayName,
   type MdkProject,
@@ -19,13 +27,14 @@ import {
 } from "../shared/mdk";
 
 const limits =
-  "实现限额：单次输入及单个内部文件最多 64 MiB；MDK 容器及解压后总量最多 256 MiB。";
+  "普通 MDK 使用 STORE／ZIP64。文本输入限 64 MiB；附件导入与提取按磁盘空间和操作配额流式处理。";
 const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
 
   new <工程> [--mode default|book|comic]
   list <工程>
   pack <输出工程> <解包目录>
   unpack <工程> <输出目录>
+  extract <工程> <包内文件路径> <输出文件> [--allow-plaintext]
   deliver <工程> <输出工程> [--include-state] [--exclude <内部路径> --if-revision <修订号>]
   read <工程> <文稿ID>
   write <工程> <文稿ID> --if-revision <修订号> [--from <文件>] [--encoding <编码>]
@@ -42,8 +51,13 @@ const usage = `用法：mardikor <命令> <工程.mdk> [参数] [选项]
   validate <工程>
   watch <工程>
   unlock <工程>
+  protect <工程> --if-revision <修订号> [--access-passphrase-file <文件>] (--new-passphrase-file <文件> | --remove)
+  mdke-pack <工程> <输出.mdke> [--compression auto|store|zstd-3|zstd-9] [--unpack-passphrase-file <文件>]
+  mdke-extract <分发包.mdke> <输出.mdk> [--unpack-passphrase-file <文件>] [--allow-plaintext] [--recovery]
+  mdke-rekey <分发包.mdke> <输出.mdke> [--unpack-passphrase-file <文件>] (--new-passphrase-file <文件> | --remove)
 
 使用 --json 获取结构化结果。write、write-file、apply 默认从标准输入读取。
+访问受保护 MDK 时使用 --access-passphrase-file。口令文件为 UTF-8 单行，- 表示标准输入。
 使用 --help 查看用法，--version 查看版本。
 ${limits}
 退出码 0 为成功，1 为操作或校验失败，2 为参数错误（E_USAGE），3 为修订冲突或写入锁。
@@ -53,10 +67,28 @@ const commands: Record<
   string,
   { args: number; revision?: true; options?: string[] }
 > = {
+  protect: {
+    args: 0,
+    revision: true,
+    options: ["new-passphrase-file", "remove"],
+  },
+  "mdke-pack": {
+    args: 1,
+    options: ["unpack-passphrase-file", "allow-overlap", "compression"],
+  },
+  "mdke-extract": {
+    args: 1,
+    options: ["unpack-passphrase-file", "allow-plaintext", "recovery"],
+  },
+  "mdke-rekey": {
+    args: 1,
+    options: ["unpack-passphrase-file", "new-passphrase-file", "remove"],
+  },
   new: { args: 0, options: ["mode"] },
   list: { args: 0 },
   pack: { args: 1 },
-  unpack: { args: 1 },
+  unpack: { args: 1, options: ["allow-plaintext"] },
+  extract: { args: 2, options: ["allow-plaintext"] },
   deliver: { args: 1, options: ["include-state", "exclude", "if-revision"] },
   group: { args: 1, revision: true, options: ["parent"] },
   read: { args: 1 },
@@ -293,7 +325,44 @@ async function edit(
   }
 }
 
+function readPassphrase(file: string | undefined) {
+  if (file === undefined) return undefined;
+  const input = file === "-" ? 0 : fs.openSync(file, "r");
+  const bytes = Buffer.alloc(4099);
+  try {
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(
+        input,
+        bytes,
+        length,
+        bytes.length - length,
+        null,
+      );
+      if (!count) break;
+      length += count;
+    }
+    if (length === bytes.length) throw new UsageError("口令文件超过字节限额。");
+    if (length && bytes[length - 1] === 10) {
+      length--;
+      if (length && bytes[length - 1] === 13) length--;
+    }
+    if (length > 4096) throw new UsageError("口令文件超过字节限额。");
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        bytes.subarray(0, length),
+      );
+    } catch {
+      throw new UsageError("口令文件必须使用有效 UTF-8。");
+    }
+  } finally {
+    bytes.fill(0);
+    if (file !== "-") fs.closeSync(input);
+  }
+}
+
 async function run(args: string[]) {
+  let access: AccessSession | undefined;
   let json = args
     .slice(0, args.includes("--") ? args.indexOf("--") : args.length)
     .includes("--json");
@@ -325,6 +394,14 @@ async function run(args: string[]) {
           parent: { type: "string" },
           "include-state": { type: "boolean" },
           exclude: { type: "string", multiple: true },
+          "access-passphrase-file": { type: "string" },
+          "unpack-passphrase-file": { type: "string" },
+          "new-passphrase-file": { type: "string" },
+          "allow-plaintext": { type: "boolean" },
+          "allow-overlap": { type: "boolean" },
+          compression: { type: "string" },
+          remove: { type: "boolean" },
+          recovery: { type: "boolean" },
         },
       });
     } catch (error) {
@@ -369,18 +446,24 @@ async function run(args: string[]) {
     const spec = Object.hasOwn(commands, command)
       ? commands[command]
       : undefined;
+    const expectsMdke = command === "mdke-extract" || command === "mdke-rekey";
     if (
       !spec ||
       !file ||
       positionals.length !== spec.args + 2 ||
-      !/\.mdk$/i.test(file)
+      !(expectsMdke ? /\.mdke$/i : /\.mdk$/i).test(file)
     )
       throw new UsageError(
-        "命令、参数数量或 .mdk 路径无效。请运行 mardikor --help。",
+        "命令、参数数量或工程文件扩展名无效。请运行 mardikor --help。",
       );
     for (const option of Object.keys(values))
       if (
         option !== "json" &&
+        !(
+          option === "access-passphrase-file" &&
+          !expectsMdke &&
+          !["new", "pack", "watch", "unlock"].includes(command)
+        ) &&
         !(option === "if-revision" && spec.revision) &&
         !spec.options?.includes(option)
       )
@@ -391,174 +474,312 @@ async function run(args: string[]) {
         "请通过 --if-revision 提供 list 或 read 返回的修订号。",
       );
 
-    switch (command) {
-      case "deliver":
-        if (values.exclude?.length && !/^[a-f0-9]{64}$/.test(revision))
-          throw new UsageError("剔除持久资料时须提供当前 --if-revision。");
-        output(
-          mdk.exportMdk(file, first, revision, {
-            includeState: values["include-state"],
-            exclude: values.exclude,
-          }),
-        );
-        break;
-      case "new": {
-        const name = values.mode ?? "default";
-        if (name !== "default" && name !== "book" && name !== "comic")
-          throw new UsageError("--mode 只支持 default、book 或 comic。");
-        const mode = { default: "00", book: "01", comic: "02" }[name];
-        output(projectView(mdk.createMdkProject(file, mode, false)));
-        break;
-      }
-      case "list": {
-        const project = projectView(mdk.openMdkProject(file));
-        if (json) output(project);
-        else {
-          console.log("修订号 " + project.revision);
-          for (const entry of project.entries)
-            console.log(
-              [entry.position, entry.id, displayArchivePath(entry.path)].join(
-                "\t",
-              ),
-            );
-        }
-        break;
-      }
-      case "pack":
-        output(mdk.packMdk(first, file));
-        break;
-      case "unpack":
-        output(mdk.unpackMdk(file, first));
-        break;
-      case "group":
-        output(
-          projectView(mdk.addMdkGroup(file, first, values.parent, revision)),
-        );
-        break;
-      case "read": {
-        const entry = mdk.readMdkEntry(file, first);
-        if (json) output(entry);
-        else process.stdout.write(entry.markdown);
-        break;
-      }
-      case "read-file": {
-        const fileText = mdk.readMdkTextFile(file, first);
-        if (json) output(fileText);
-        else process.stdout.write(fileText.content);
-        break;
-      }
-      case "write": {
-        const content = await input(values.from, values.encoding ?? "auto");
-        const entry = mdk.readMdkEntry(file, first);
-        if (entry.revision !== revision) throw new mdk.MdkRevisionError();
-        output(save(file, { revision, text: { path: entry.path, content } }));
-        break;
-      }
-      case "write-file": {
-        const content = await input(values.from, values.encoding ?? "utf-8");
-        output(save(file, { revision, text: { path: first, content } }));
-        break;
-      }
-      case "edit": {
-        if (json) throw new UsageError("交互式 edit 请直接在终端运行。");
-        output(await edit(file, first, values.editor, values["editor-arg"]));
-        break;
-      }
-      case "apply": {
-        const project = apply(file, revision, await input(values.from));
-        output(
-          values.quiet ? { revision: project.revision } : projectView(project),
-        );
-        break;
-      }
-      case "add":
-        output(
-          projectView(
-            mdk.addMdkEntry(file, first, values.after, revision, values.title),
-          ),
-        );
-        break;
-      case "rename":
-        output(projectView(mdk.renameMdkEntry(file, first, second, revision)));
-        break;
-      case "remove":
-        output(projectView(mdk.deleteMdkEntry(file, first, revision)));
-        break;
-      case "move": {
-        if (second !== "before" && second !== "after" && second !== "inside")
-          throw new UsageError("移动位置只能是 before、after 或 inside。");
-        const project = readProject(file, revision);
-        const entries = moveOutline(
-          project.contents.entries,
-          first,
-          projectEntry(project, third).position,
-          second,
-        );
-        output(
-          save(file, {
-            revision,
-            positions: entries.map(({ id, position }) => ({ id, position })),
-          }),
-        );
-        break;
-      }
-      case "import":
-        output(
-          mdk.importMdkResource(file, second, first as ResourceKind, revision),
-        );
-        break;
-      case "validate": {
-        const report = mdk.validateMdk(file);
-        if (json)
-          output({
-            ...report,
-            mode: report.mode && modeName(report.mode),
-            summary: report.summary && {
-              ...report.summary,
-              mode: modeName(report.summary.mode),
-            },
-          });
-        else {
-          console.log(report.valid ? "MDK 校验通过。" : "MDK 校验未通过。");
-          for (const issue of report.issues)
-            console.log(
-              [
-                issue.scope,
-                issue.severity,
-                issue.code,
-                issue.path,
-                issue.field,
-                issue.message,
-              ]
-                .filter(Boolean)
-                .join("\t"),
-            );
-        }
-        return report.valid ? 0 : 1;
-      }
-      case "watch": {
-        let previous: string | null = mdk.fileRevision(file);
-        const event = (revision: string | null) => {
-          if (json) output({ path: path.resolve(file), revision });
-          else console.log(revision ?? "文件暂不可读取");
-        };
-        event(previous);
-        watchProjectFile(
-          file,
-          (revision) => {
-            if (revision === previous) return;
-            previous = revision;
-            event(revision);
-          },
-          true,
-        );
-        break;
-      }
-      case "unlock":
-        output({ unlocked: mdk.unlockMdk(file) });
-        break;
+    const passphraseFiles = [
+      values["access-passphrase-file"],
+      values["unpack-passphrase-file"],
+      values["new-passphrase-file"],
+    ];
+    const stdinSecrets = passphraseFiles.filter((name) => name === "-").length;
+    if (
+      stdinSecrets > 1 ||
+      (stdinSecrets &&
+        ["write", "write-file", "apply"].includes(command) &&
+        !values.from)
+    )
+      throw new UsageError("标准输入只能供一个口令或正文使用。");
+    if (values["access-passphrase-file"] !== undefined) {
+      const passphrase = readPassphrase(values["access-passphrase-file"])!;
+      const result = await runEnvelopeTask({
+        kind: "unlock",
+        file,
+        passphrase,
+      });
+      if (!("access" in result) || !result.access)
+        throw Error("无法取得访问会话。");
+      await initEnvelopeCrypto();
+      access = { ...result.access, file: path.resolve(file) };
     }
-    return 0;
+    if (command === "protect" || command.startsWith("mdke-")) {
+      const compression = values.compression ?? "auto";
+      if (!isMdkeCompression(compression))
+        throw new UsageError("--compression 必须为 auto、store、zstd-3 或 zstd-9。");
+      const current = readPassphrase(values["unpack-passphrase-file"]);
+      const next = readPassphrase(values["new-passphrase-file"]);
+      if (
+        (command === "protect" || command === "mdke-rekey") &&
+        Boolean(values.remove) === (next !== undefined)
+      )
+        throw new UsageError("请选择 --new-passphrase-file 或 --remove。");
+      if (
+        command !== "protect" &&
+        !(command === "mdke-extract" ? /\.mdk$/i : /\.mdke$/i).test(first)
+      )
+        throw new UsageError("封装输出的文件扩展名无效。");
+      const task: EnvelopeTask =
+        command === "protect"
+          ? {
+              kind: "set-access",
+              file,
+              passphrase: next ?? null,
+              access,
+              revision,
+            }
+          : command === "mdke-pack"
+            ? {
+                kind: "pack",
+                file,
+                passphrase: current,
+                access,
+                allowOverlap: values["allow-overlap"],
+                compression,
+              }
+            : command === "mdke-extract"
+              ? {
+                  kind: "extract",
+                  file,
+                  passphrase: current,
+                  recovery: values.recovery,
+                }
+              : {
+                  kind: "rekey",
+                  file,
+                  passphrase: current,
+                  nextPassphrase: next,
+                };
+      const result = await runEnvelopeTask(task);
+      if ("overlap" in result)
+        throw new UsageError(
+          "两层口令相同会减弱保护。若要继续，显式指定 --allow-overlap。",
+        );
+      if (!("bytes" in result)) throw Error("封装未生成输出。");
+      try {
+        if (
+          command === "mdke-extract" &&
+          (current !== undefined ||
+            result.report?.innerIdentity === "invalid") &&
+          result.report?.innerIdentity !== "MDKP" &&
+          !values["allow-plaintext"]
+        )
+          throw new UsageError(
+            "输出可能包含明文。请明确指定 --allow-plaintext。",
+          );
+        const updated = publishEnvelopeOutput(
+          file,
+          command === "protect" ? file : first,
+          result,
+          command === "protect",
+        );
+        output({
+          revision: updated,
+          protected: command === "protect" ? next !== undefined : undefined,
+          ...result.report,
+        });
+        return 0;
+      } finally {
+        result.bytes.fill(0);
+        result.access?.key.fill(0);
+      }
+    }
+    if (command === "edit" && access)
+      throw new UsageError(
+        "受保护工程请使用 write 或桌面应用编辑，外部编辑器需要明文暂存文件。",
+      );
+    if ((command === "unpack" || command === "extract") && access && !values["allow-plaintext"])
+      throw new UsageError(
+        "解包受保护工程会写出明文。请明确指定 --allow-plaintext。",
+      );
+
+    return await withAccess(access, async () => {
+      switch (command) {
+        case "deliver":
+          if (values.exclude?.length && !/^[a-f0-9]{64}$/.test(revision))
+            throw new UsageError("剔除持久资料时须提供当前 --if-revision。");
+          output(
+            mdk.exportMdk(file, first, revision, {
+              includeState: values["include-state"],
+              exclude: values.exclude,
+            }),
+          );
+          break;
+        case "new": {
+          const name = values.mode ?? "default";
+          if (name !== "default" && name !== "book" && name !== "comic")
+            throw new UsageError("--mode 只支持 default、book 或 comic。");
+          const mode = { default: "00", book: "01", comic: "02" }[name];
+          output(projectView(mdk.createMdkProject(file, mode, false)));
+          break;
+        }
+        case "list": {
+          const project = projectView(mdk.openMdkProject(file));
+          if (json) output(project);
+          else {
+            console.log("修订号 " + project.revision);
+            for (const entry of project.entries)
+              console.log(
+                [entry.position, entry.id, displayArchivePath(entry.path)].join(
+                  "\t",
+                ),
+              );
+          }
+          break;
+        }
+        case "pack":
+          output(mdk.packMdk(first, file));
+          break;
+        case "unpack":
+          output(mdk.unpackMdk(file, first));
+          break;
+        case "extract": {
+          const plan = mdk.prepareMdkResourceExtraction(file, [first], mdk.fileRevision(file), false);
+          if (!plan.filename) throw new UsageError("extract 只提取单个普通文件。请用 unpack 解包目录。");
+          output(plan.extract(second));
+          break;
+        }
+        case "group":
+          output(
+            projectView(mdk.addMdkGroup(file, first, values.parent, revision)),
+          );
+          break;
+        case "read": {
+          const entry = mdk.readMdkEntry(file, first);
+          if (json) output(entry);
+          else process.stdout.write(entry.markdown);
+          break;
+        }
+        case "read-file": {
+          const fileText = mdk.readMdkTextFile(file, first);
+          if (json) output(fileText);
+          else process.stdout.write(fileText.content);
+          break;
+        }
+        case "write": {
+          const content = await input(values.from, values.encoding ?? "auto");
+          const entry = mdk.readMdkEntry(file, first);
+          if (entry.revision !== revision) throw new mdk.MdkRevisionError();
+          output(save(file, { revision, text: { path: entry.path, content } }));
+          break;
+        }
+        case "write-file": {
+          const content = await input(values.from, values.encoding ?? "utf-8");
+          output(save(file, { revision, text: { path: first, content } }));
+          break;
+        }
+        case "edit": {
+          if (json) throw new UsageError("交互式 edit 请直接在终端运行。");
+          output(await edit(file, first, values.editor, values["editor-arg"]));
+          break;
+        }
+        case "apply": {
+          const project = apply(file, revision, await input(values.from));
+          output(
+            values.quiet
+              ? { revision: project.revision }
+              : projectView(project),
+          );
+          break;
+        }
+        case "add":
+          output(
+            projectView(
+              mdk.addMdkEntry(
+                file,
+                first,
+                values.after,
+                revision,
+                values.title,
+              ),
+            ),
+          );
+          break;
+        case "rename":
+          output(
+            projectView(mdk.renameMdkEntry(file, first, second, revision)),
+          );
+          break;
+        case "remove":
+          output(projectView(mdk.deleteMdkEntry(file, first, revision)));
+          break;
+        case "move": {
+          if (second !== "before" && second !== "after" && second !== "inside")
+            throw new UsageError("移动位置只能是 before、after 或 inside。");
+          const project = readProject(file, revision);
+          const entries = moveOutline(
+            project.contents.entries,
+            first,
+            projectEntry(project, third).position,
+            second,
+          );
+          output(
+            save(file, {
+              revision,
+              positions: entries.map(({ id, position }) => ({ id, position })),
+            }),
+          );
+          break;
+        }
+        case "import":
+          output(
+            mdk.importMdkResource(
+              file,
+              second,
+              first as ResourceKind,
+              revision,
+            ),
+          );
+          break;
+        case "validate": {
+          const report = mdk.validateMdk(file);
+          if (json)
+            output({
+              ...report,
+              mode: report.mode && modeName(report.mode),
+              summary: report.summary && {
+                ...report.summary,
+                mode: modeName(report.summary.mode),
+              },
+            });
+          else {
+            console.log(report.valid ? "MDK 校验通过。" : "MDK 校验未通过。");
+            for (const issue of report.issues)
+              console.log(
+                [
+                  issue.scope,
+                  issue.severity,
+                  issue.code,
+                  issue.path,
+                  issue.field,
+                  issue.message,
+                ]
+                  .filter(Boolean)
+                  .join("\t"),
+              );
+          }
+          return report.valid ? 0 : 1;
+        }
+        case "watch": {
+          let previous: string | null = mdk.fileRevision(file);
+          const event = (revision: string | null) => {
+            if (json) output({ path: path.resolve(file), revision });
+            else console.log(revision ?? "文件暂不可读取");
+          };
+          event(previous);
+          watchProjectFile(
+            file,
+            (revision) => {
+              if (revision === previous) return;
+              previous = revision;
+              event(revision);
+            },
+            true,
+          );
+          break;
+        }
+        case "unlock":
+          output({ unlocked: mdk.unlockMdk(file) });
+          break;
+      }
+      return 0;
+    });
   } catch (error) {
     const conflict =
       error instanceof mdk.MdkRevisionError ||
@@ -573,6 +794,8 @@ async function run(args: string[]) {
       json ? JSON.stringify({ code, message }) : code + " " + message,
     );
     return conflict ? 3 : error instanceof UsageError ? 2 : 1;
+  } finally {
+    access?.key.fill(0);
   }
 }
 
