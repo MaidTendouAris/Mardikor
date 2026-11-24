@@ -172,6 +172,7 @@ const api: DesktopApi = {
   dialog: (kind, defaultPath) =>
     ipcRenderer.invoke("app:dialog", kind, defaultPath),
   recent: () => ipcRenderer.invoke("app:recent"),
+  systemFonts: () => ipcRenderer.invoke("app:system-fonts"),
   locale: async () => {
     const locale: AppLocale = await ipcRenderer.invoke("app:locale");
     setAppLocale(locale);
@@ -200,6 +201,8 @@ const api: DesktopApi = {
   },
   window: (action) => ipcRenderer.invoke("app:window", action),
   setDirty: (dirty) => ipcRenderer.send("app:dirty", dirty),
+  documentPosition: (file) => ipcRenderer.invoke("app:document-position", file),
+  trackDocumentPosition: (file, position) => ipcRenderer.send("app:track-document-position", file, position),
   openExternal: (url) => ipcRenderer.invoke("app:open-url", url),
   renameArchive: (name, revision, mode) =>
     ipcRenderer.invoke("app:rename-archive", name, revision, mode),

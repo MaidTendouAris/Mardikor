@@ -1,4 +1,4 @@
-import { _electron as electron, expect } from "@playwright/test";
+import { _electron as electron, expect, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { AppState } from "../electron/state";
@@ -33,12 +33,14 @@ const env = {
 };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.VITE_DEV_SERVER_URL;
-const app = await electron.launch({
-  ...(executablePath
-    ? { executablePath, args: ["--disable-gpu", file] }
-    : { args: [".", file] }),
-  env,
-});
+const launch = (target: string, data = profile) =>
+  electron.launch({
+    ...(executablePath
+      ? { executablePath, args: ["--disable-gpu", target] }
+      : { args: [".", target] }),
+    env: { ...env, MARDIKOR_USER_DATA: data },
+  });
+const app = await launch(file);
 const page = await app.firstWindow();
 page.setDefaultTimeout(15000);
 const body = page.locator(".document-body[contenteditable]");
@@ -176,6 +178,29 @@ try {
   });
   await bold.click();
   await page.keyboard.press("Control+Shift+d");
+  const imageBinding = page.getByRole("button", {
+    name: "录制插入图片快捷键",
+    exact: true,
+  });
+  await imageBinding.click();
+  await page.keyboard.press("Control+Alt+i");
+  await expect(imageBinding).toHaveText("Ctrl+Alt+I");
+  const linkBinding = page.getByRole("button", {
+    name: "录制插入或编辑链接快捷键",
+    exact: true,
+  });
+  await linkBinding.click();
+  await page.keyboard.press("Control+Alt+k");
+  const paletteBinding = page.getByRole("button", {
+    name: "录制Markdown 操作快捷键",
+    exact: true,
+  });
+  await paletteBinding.click();
+  await page.keyboard.press("Control+Shift+/");
+  await expect(paletteBinding).toHaveText("Ctrl+Shift+/");
+  await page
+    .getByRole("button", { name: "取消绑定移除链接", exact: true })
+    .click();
   await page.getByRole("button", { name: "保存快捷键", exact: true }).click();
   await expect
     .poll(() => new AppState(profile).preferences().shortcuts)
@@ -184,6 +209,10 @@ try {
       heading2: "Ctrl+Shift+H",
       save: "Ctrl+Shift+G",
       bold: "Ctrl+Shift+D",
+      image: "Ctrl+Alt+I",
+      link: "Ctrl+Alt+K",
+      palette: "Ctrl+Shift+/",
+      unlink: null,
     });
   await page.getByRole("button", { name: "返回应用设置", exact: true }).click();
   await page.getByRole("button", { name: "编辑器", exact: true }).click();
@@ -252,3 +281,211 @@ try {
   await page.evaluate(() => window.mardikor!.setDirty(false)).catch(() => {});
   await app.close();
 }
+
+const standalone = path.join(run, "键盘独立文稿.md");
+await fs.writeFile(standalone, "# 键盘验证\n\n链接文字\n\n末尾正文");
+async function checkStandalone(
+  check: (page: Page) => Promise<void>,
+  data = profile,
+) {
+  const restarted = await launch(standalone, data);
+  const page = await restarted.firstWindow();
+  page.setDefaultTimeout(15000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await check(page);
+    expect(errors).toEqual([]);
+  } finally {
+    await page.evaluate(() => window.mardikor!.setDirty(false)).catch(() => {});
+    await restarted.close();
+  }
+}
+const standaloneBody = (page: Page) =>
+  page.locator('.document-body[contenteditable="true"]');
+const actionMenu = (page: Page) =>
+  page.getByRole("dialog", { name: "Markdown 操作", exact: true });
+const actionSearch = (page: Page) =>
+  actionMenu(page).getByRole("combobox", { name: "搜索 Markdown 操作" });
+
+await checkStandalone(async (page) => {
+  const body = standaloneBody(page);
+  const ribbon = page.getByRole("toolbar", { name: "正文格式", exact: true });
+  const link = page.getByRole("dialog", { name: "链接", exact: true });
+  const image = page.getByRole("dialog", { name: "图片", exact: true });
+  await expect(
+    ribbon.getByRole("button", { name: "插入图片", exact: true }),
+  ).toHaveAttribute("title", "插入图片 (Ctrl+Alt+I)");
+  await expect(
+    ribbon.getByRole("button", { name: "插入链接", exact: true }),
+  ).toHaveAttribute("title", "插入链接 (Ctrl+Alt+K)");
+  await expect(
+    ribbon.getByRole("button", { name: "移除链接", exact: true }),
+  ).toHaveAttribute("title", "移除链接");
+  await body.getByText("链接文字", { exact: true }).click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  const selection = () => page.evaluate(() => window.getSelection()?.toString());
+  await expect.poll(selection).toBe("链接文字");
+  await page.keyboard.press("Control+k");
+  await expect(link).toHaveCount(0);
+  await expect.poll(selection).toBe("链接文字");
+  await page.keyboard.press("Control+Alt+k");
+  await expect(link.getByLabel("链接文字", { exact: true })).toHaveValue(
+    "链接文字",
+  );
+  await expect(link.getByLabel("链接地址", { exact: true })).toBeFocused();
+  await page.keyboard.insertText("https://example.com/keyboard");
+  await page.keyboard.press("Enter");
+  const anchor = body.getByRole("link", { name: "链接文字", exact: true });
+  await expect(anchor).toHaveAttribute("href", "https://example.com/keyboard");
+  await expect(body).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Control+Shift+k");
+  await expect(anchor).toBeVisible();
+  await expect(link).toHaveCount(0);
+  await page.keyboard.press("Control+Alt+i");
+  await expect(image).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(body).toBeFocused();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("/");
+  await expect(body.getByText("末尾正文/", { exact: true })).toBeVisible();
+  await page.keyboard.press("Control+/");
+  await expect(actionMenu(page)).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await expect(body).not.toBeFocused();
+  await body.getByText("末尾正文/", { exact: true }).click();
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", {
+    text: "中",
+    selectionStart: 1,
+    selectionEnd: 1,
+  });
+  const protectedKeys = await body.evaluate((dom) =>
+    [
+      { key: "h", code: "KeyH", ctrlKey: true, shiftKey: true },
+      { key: "?", code: "Slash", ctrlKey: true, shiftKey: true },
+      { key: "7", code: "Digit7", ctrlKey: true, shiftKey: true },
+      { key: "Enter", code: "Enter" },
+    ].map((init) =>
+      dom.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        }),
+      ),
+    ),
+  );
+  expect(protectedKeys).toEqual([true, true, true, true]);
+  await expect(actionMenu(page)).toHaveCount(0);
+  await cdp.send("Input.imeSetComposition", {
+    text: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+  });
+  await cdp.detach();
+  await body.getByText("末尾正文/", { exact: true }).click();
+  await page.keyboard.press("Control+Shift+h");
+  await expect(body.locator("h2")).toHaveText("末尾正文/");
+  const altGraphPassed = await body.evaluate((dom) => {
+    const event = new KeyboardEvent("keydown", {
+      key: "i",
+      code: "KeyI",
+      ctrlKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+      modifierAltGraph: true,
+    });
+    return [event.getModifierState("AltGraph"), dom.dispatchEvent(event)];
+  });
+  expect(altGraphPassed).toEqual([true, true]);
+  await expect(image).toHaveCount(0);
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+Shift+d");
+  await page.keyboard.insertText("无选区加粗");
+  await expect(body.locator("strong")).toHaveText("无选区加粗");
+  await page.keyboard.press("Control+Shift+d");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+Shift+/");
+  const search = actionSearch(page);
+  await expect(search).toBeFocused();
+  await page.keyboard.insertText("image");
+  await expect(
+    actionMenu(page)
+      .getByRole("option", { name: /插入图片/ })
+      .locator("kbd"),
+  ).toHaveText("Ctrl+Alt+I");
+  await search.fill("T");
+  const acceptedDuringComposition = await search.evaluate((dom) => {
+    dom.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    const accepted = dom.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    dom.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+    return accepted;
+  });
+  expect(acceptedDuringComposition).toBe(true);
+  await expect(actionMenu(page)).toBeVisible();
+  await page.keyboard.press("Enter");
+  const table = page.getByRole("dialog", { name: "插入表格", exact: true });
+  await expect(table.getByLabel("行数")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.insertText("2");
+  await page.keyboard.press("Enter");
+  await expect(body).toBeFocused();
+  await page.keyboard.insertText("项目");
+  await page.keyboard.press("Tab");
+  await page.keyboard.insertText("状态");
+  await page.keyboard.press("Tab");
+  await page.keyboard.insertText("复习");
+  await page.keyboard.press("Tab");
+  await page.keyboard.insertText("完成");
+  await page.keyboard.press("Control+Shift+g");
+  await expect
+    .poll(() => fs.readFile(standalone, "utf8"))
+    .toMatch(/\| 项目\s+\| 状态\s+\|[\s\S]*\| 复习\s+\| 完成\s+\|/);
+  await expect(page.locator(".save-label")).toHaveText("已保存");
+});
+await checkStandalone(async (page) => {
+  await expect(standaloneBody(page).locator("th")).toHaveText(["项目", "状态"]);
+  await expect(standaloneBody(page).locator("tr").nth(1)).toContainText("复习");
+});
+
+const legacy = path.join(run, "legacy-profile");
+new AppState(legacy).preferences({
+  autosave: false,
+  autosaveInterval: 5,
+  directorySyncThreshold: 200,
+  externalOpenView: "write",
+});
+const legacyFile = path.join(legacy, "workspace.json");
+const legacyState = JSON.parse(await fs.readFile(legacyFile, "utf8"));
+legacyState.preferences.shortcuts = { heading2: "Ctrl+/", bold: null };
+await fs.writeFile(legacyFile, JSON.stringify(legacyState));
+await checkStandalone(async (page) => {
+  const body = standaloneBody(page);
+  await body.getByText("链接文字", { exact: true }).click();
+  await page.keyboard.press("Control+/");
+  await expect(body.locator("h2", { hasText: "链接文字" })).toBeVisible();
+  await expect(actionMenu(page)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Markdown 操作", exact: true }),
+  ).toHaveAttribute("title", "Markdown 操作");
+}, legacy);
+console.log(
+  "Restarted bindings, slash recording, input composition and AltGraph, standalone table reopen, and legacy conflicts passed.",
+);

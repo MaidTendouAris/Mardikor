@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import * as mdk from "./mdk";
-import { initEnvelopeCrypto, passwordBytes, probeEnvelope } from "./envelope";
+import { initEnvelopeCrypto, passwordBytes, probeEnvelope, readBoundedFile } from "./envelope";
 import { withAccess, type AccessSession } from "./access-session";
 import { mediaScheme, openMediaWindow, serveMedia } from "./media-window";
 import { addedFile, BUFFERED_ENTRY_LIMIT, FileSnapshot, type StoreEntry } from "./archive-io";
@@ -35,12 +35,18 @@ import type { InsertionSource } from "./insertion-assets";
 import { AppState } from "./state";
 import { t, appLocale, resolveAppLocale, setAppLocale } from "../shared/i18n";
 import { containsControl, validatePath } from "../shared/schema";
+import { isDocumentPosition, type DocumentPosition } from "../shared/document-position";
 import { insertionFormats } from "../shared/resources";
 import { isMarkdownFile, isSupportedDocument } from "../shared/workspace";
 import * as markdownFile from "./markdown-file";
 import { watchProjectFile } from "./project-watch";
 import * as publication from "./publication";
 import { publicationRuntime } from "./publication-runtime";
+import { openPdfPreviewWindow, pdfPreviewScheme } from "./pdf-preview-window";
+import { fallbackFontFile, fallbackFontUrl, systemFontName } from "../shared/fonts";
+import { listSystemFonts, readSystemFont } from "./system-fonts";
+import { fontMediaType, parsedFont } from "./document-font";
+import { resourceName } from "./resource-files";
 import { autoUpdater } from "electron-updater";
 import { UpdateService } from "./update-service";
 import type { UpdateAction } from "../shared/updates";
@@ -52,6 +58,7 @@ interface DocumentWindow {
   recoveryOwner: string;
   dirty: boolean;
   activeProject: string;
+  documentPosition?: DocumentPosition;
   queuedFile?: string;
   queuedFragment?: string;
   approvedFiles: Set<string>;
@@ -59,6 +66,8 @@ interface DocumentWindow {
   stopWatching?: () => void;
   droppedFiles: Map<string, { sources: InsertionSource[]; expires: number }>;
   publicationOutputs: Map<string, { revision: string | null; expires: number }>;
+  pdfPreview?: BrowserWindow;
+  pdfPreviewJob?: symbol;
   access?: AccessSession;
   pendingAccess?: AccessSession;
   mediaWindows: Map<string, BrowserWindow>;
@@ -195,7 +204,7 @@ async function prepareUpdate(discarded: DiscardedUpdate[]) {
 function largeArchive(file: string) {
   return (fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > BUFFERED_ENTRY_LIMIT;
 }
-const archiveTasks = new Set<string>(["open", "validate", "saveSnapshot", "copyDraft", "importResource", "export", "exportPlan", "pack", "unpack"] satisfies ArchiveTask[]);
+const archiveTasks = new Set<string>(["open", "validate", "saveSnapshot", "copyDraft", "importResource", "export", "exportPlan", "pack", "unpack", "saveMdkPublication"] satisfies ArchiveTask[]);
 
 async function runArchiveTask<T>(context: DocumentWindow, task: ArchiveTask, args: unknown[], expected?: string): Promise<T> {
   if (context.archiveJob) throw new Error(t("此窗口已有 MDK 文件操作正在运行。"));
@@ -291,20 +300,82 @@ function createHandlers(context: DocumentWindow): MdkCommands {
               );
           }
         : undefined,
+      (name) => readSystemFont(context.window.webContents, name),
     );
   const handlers: MdkCommands = {
+    packFont: async (file, revision) => {
+      const source = path.resolve(file);
+      if (context.activeProject !== source || !/^[0-9a-f]{64}$/.test(revision))
+        throw new mdk.MdkRevisionError();
+      const fontsFolder = process.platform === "win32" && process.env.SystemRoot
+        ? path.join(process.env.SystemRoot, "Fonts")
+        : undefined;
+      const selected = await dialog.showOpenDialog(context.window, {
+        title: t("打包允许分发的字体文件"),
+        defaultPath: fontsFolder,
+        filters: [{ name: t("字体文件"), extensions: ["otf", "ttf"] }],
+        properties: ["openFile"],
+      });
+      const filename = selected.filePaths[0];
+      if (selected.canceled || !filename || context.window.isDestroyed()) return null;
+      if (context.activeProject !== source) throw new mdk.MdkRevisionError();
+      const name = path.basename(filename).normalize("NFC");
+      resourceName(name);
+      const bytes = readBoundedFile(filename, BUFFERED_ENTRY_LIMIT);
+      fontMediaType(name, bytes);
+      parsedFont(bytes);
+      if (isMarkdownFile(file))
+        return markdownFile.packMarkdownFont(file, name, bytes, revision);
+      const license = publication.knownNotoLicense(bytes, path.join(app.getAppPath(), "assets/export"));
+      return windowAccess(context, file)
+        ? mdk.packMdkFont(file, name, bytes, revision, license)
+        : runArchiveTask<ReturnType<typeof mdk.packMdkFont>>(
+          context, "packFont", [file, name, bytes, revision, license]);
+    },
+    readFont: mdk.readMdkFont,
     publicationInfo: (file) =>
       publication.publicationInfo(file, exportRuntime()),
-    configurePublication: (file, configuration, revision, format) =>
-      publication.configurePublication(
+    configurePublication: async (file, configuration, revision, format) => {
+      const name = systemFontName(configuration?.appearance?.font_family);
+      const font = name ? { name, bytes: await readSystemFont(context.window.webContents, name) } : undefined;
+      return publication.configurePublication(
         file,
         configuration,
         revision,
         exportRuntime(),
         format,
-      ),
+        font,
+      );
+    },
     planPublication: (file, format, presetId) =>
       publication.planPublication(file, format, exportRuntime(file), presetId),
+    previewPdf: async (file, fingerprint, presetId) => {
+      if (context.activeProject !== path.resolve(file) || context.pdfPreviewJob)
+        throw new Error(t("当前无法打开 PDF 导出预览。"));
+      const job = Symbol();
+      context.pdfPreviewJob = job;
+      try {
+        const bytes = await publication.previewPdf(
+          file,
+          fingerprint,
+          exportRuntime(file),
+          presetId,
+        );
+        if (context.pdfPreviewJob !== job || context.window.isDestroyed()) {
+          bytes.fill(0);
+          return;
+        }
+        context.pdfPreview?.destroy();
+        await openPdfPreviewWindow(context.window, file, bytes, (preview) => {
+          context.pdfPreview = preview;
+          preview.once("closed", () => {
+            if (context.pdfPreview === preview) context.pdfPreview = undefined;
+          });
+        });
+      } finally {
+        if (context.pdfPreviewJob === job) context.pdfPreviewJob = undefined;
+      }
+    },
     exportPublication: (file, output, format, fingerprint, presetId) =>
       publication.exportPublication(
         file,
@@ -395,6 +466,10 @@ protocol.registerSchemesAsPrivileged([
     scheme: mediaScheme,
     privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true },
   },
+  {
+    scheme: pdfPreviewScheme,
+    privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true },
+  },
 ]);
 if (process.env.MARDIKOR_USER_DATA)
   app.setPath("userData", process.env.MARDIKOR_USER_DATA);
@@ -411,13 +486,14 @@ function verifySender(
   )
     throw new Error(t("不受信任的 IPC 来源。"));
   const url = frame?.url ?? "";
-  if (
-    devUrl
-      ? new URL(url).origin !== new URL(devUrl).origin
-      : url.split(/[?#]/)[0] !== pathToFileURL(rendererFile).href
-  )
+  if (!isRendererUrl(url))
     throw new Error(t("IPC 页面来源无效。"));
   return context;
+}
+function isRendererUrl(url: string) {
+  return !!url && (devUrl
+    ? new URL(url).origin === new URL(devUrl).origin
+    : url.split(/[?#]/)[0] === pathToFileURL(rendererFile).href);
 }
 function assertApproved(
   context: DocumentWindow,
@@ -431,7 +507,8 @@ function assertApproved(
 }
 function watchActiveProject(context: DocumentWindow, source: string) {
   if (context.activeProject !== source) {
-    closeMediaWindows(context);
+    persistDocumentPosition(context);
+    closeProjectViewers(context);
     context.stopWatching?.();
     context.activeProject = source;
     let reportedRevision: string | null | undefined;
@@ -446,7 +523,20 @@ function watchActiveProject(context: DocumentWindow, source: string) {
   }
   context.window.setTitle(`${path.basename(source)} - Mardikor`);
 }
-function closeMediaWindows(context: DocumentWindow) {
+function persistDocumentPosition(context: DocumentWindow) {
+  const { activeProject, documentPosition } = context;
+  context.documentPosition = undefined;
+  if (activeProject && documentPosition) {
+    try {
+      state.documentPosition(activeProject, documentPosition);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+}
+function closeProjectViewers(context: DocumentWindow) {
+  context.pdfPreviewJob = undefined;
+  context.pdfPreview?.destroy();
   for (const window of context.mediaWindows.values()) window.destroy();
   for (const grant of context.playback.values()) grant.abort.abort();
   context.playback.clear();
@@ -454,6 +544,10 @@ function closeMediaWindows(context: DocumentWindow) {
 }
 
 function servePreviewPlayback(context: DocumentWindow, request: Request) {
+  if (request.url === fallbackFontUrl) {
+    const data = fs.readFileSync(path.join(app.getAppPath(), "assets/export", fallbackFontFile));
+    return serveMedia(request, { header: { size: data.length }, data }, "font/otf");
+  }
   const grant = context.playback.get(request.url);
   const project = context.activeProject;
   if (!grant || !project) return new Response(null, { status: 404 });
@@ -484,10 +578,13 @@ function servePreviewPlayback(context: DocumentWindow, request: Request) {
   }
 }
 const counts: Record<keyof MdkCommands, [number, number]> = {
+  packFont: [2, 2],
+  readFont: [2, 2],
   publicationInfo: [1, 1],
   configurePublication: [3, 4],
   saveMdkPublication: [3, 3],
   planPublication: [2, 3],
+  previewPdf: [2, 3],
   exportPublication: [4, 5],
   create: [2, 2],
   open: [1, 1],
@@ -675,9 +772,10 @@ function registerIpc() {
       throw new Error(t("请先保存未完成的更改，再锁定工程。"));
     context.access.key.fill(0);
     context.access = undefined;
-    closeMediaWindows(context);
+    closeProjectViewers(context);
     context.stopWatching?.();
     context.stopWatching = undefined;
+    persistDocumentPosition(context);
     context.activeProject = "";
     context.revisions.delete(path.resolve(file));
     context.window.setTitle("Mardikor");
@@ -1013,6 +1111,7 @@ function registerIpc() {
       const source = path.resolve(args[0]);
       const mutating = [
         "configurePublication",
+        "packFont",
         "saveMdkPublication",
         "saveEntry",
         "indexFile",
@@ -1036,7 +1135,7 @@ function registerIpc() {
       ].includes(command);
       const threaded = archiveTasks.has(command) && !isMarkdownFile(source) &&
         !windowAccess(context, source) && context.pendingAccess?.file !== source &&
-        (command === "pack" || largeArchive(source) ||
+        (command === "pack" || command === "saveMdkPublication" || largeArchive(source) ||
           (command === "importResource" && largeArchive(args[1] as string)));
       if (
         mutating && !threaded && command !== "insertResources" && command !== "importResourcesTo" &&
@@ -1047,9 +1146,12 @@ function registerIpc() {
           t("磁盘工程已被其他进程修改；存在保存冲突，请重新打开或另存副本。"),
         );
       const standaloneHandlers: Partial<MdkCommands> = {
+        packFont: handlers.packFont,
+        readFont: markdownFile.readMarkdownFont,
         publicationInfo: handlers.publicationInfo,
         configurePublication: handlers.configurePublication,
         planPublication: handlers.planPublication,
+        previewPdf: handlers.previewPdf,
         exportPublication: handlers.exportPublication,
         create: markdownFile.createMarkdownFile,
         open: markdownFile.openMarkdownFile,
@@ -1200,6 +1302,23 @@ function registerIpc() {
       context.approvedFiles.add(path.resolve(file.path));
     return recent;
   });
+  ipcMain.handle("app:document-position", (event, file) => {
+    const context = verifySender(event);
+    if (typeof file === "string" && context.activeProject === path.resolve(file))
+      return state.documentPosition(context.activeProject);
+  });
+  ipcMain.on("app:track-document-position", (event, file, position) => {
+    try {
+      const context = verifySender(event);
+      if (typeof file !== "string" || context.activeProject !== path.resolve(file) ||
+          !isDocumentPosition(position)) return;
+      validatePath(position.path);
+      context.documentPosition = position;
+    } catch {
+      // Ignore malformed updates and windows already closing.
+    }
+  });
+  ipcMain.handle("app:system-fonts", (event) => listSystemFonts(verifySender(event).window.webContents));
   ipcMain.handle("app:locale", (event) => {
     verifySender(event);
     return appLocale();
@@ -1344,13 +1463,18 @@ function createWindow(file?: string, fragment?: string) {
   };
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
-  window.webContents.on("did-start-loading", () => closeMediaWindows(context));
+  window.webContents.on("did-start-loading", () => closeProjectViewers(context));
   window.webContents.session.protocol.handle(mediaScheme, (request) =>
     servePreviewPlayback(context, request),
   );
   window.webContents.session.setPermissionRequestHandler(
     (contents, permission, callback, details) =>
-      callback(contents.id === id && permission === "fullscreen" && details.isMainFrame),
+      callback(contents.id === id && details.isMainFrame && isRendererUrl(contents.getURL()) &&
+        (permission === "fullscreen" || permission === "local-fonts")),
+  );
+  window.webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    contents?.id === id && details.isMainFrame && isRendererUrl(contents.getURL()) &&
+      (permission === "fullscreen" || permission === "local-fonts"),
   );
   window.webContents.session.webRequest.onHeadersReceived(
     (details, callback) => {
@@ -1362,7 +1486,7 @@ function createWindow(file?: string, fragment?: string) {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            `default-src 'self'; script-src ${script}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob: ${mediaScheme}:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
+            `default-src 'self'; script-src ${script}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob: ${mediaScheme}:; font-src 'self' data: ${mediaScheme}:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
           ],
         },
       });
@@ -1393,8 +1517,9 @@ function createWindow(file?: string, fragment?: string) {
     }
   });
   window.on("closed", () => {
+    persistDocumentPosition(context);
     if (context.archiveJob) Atomics.compareExchange(context.archiveJob, 0, 0, 1);
-    closeMediaWindows(context);
+    closeProjectViewers(context);
     if (envelopeWork?.owner === context) envelopeWork.cancel();
     context.access?.key.fill(0);
     context.pendingAccess?.key.fill(0);

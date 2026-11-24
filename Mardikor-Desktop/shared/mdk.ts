@@ -131,6 +131,7 @@ export interface MdkProject {
   metadata?: Record<string, unknown>;
   mode: MdkMode;
   contents: MdkContents;
+  documentCharacters?: Record<string, number>;
   settings: MdkSettings;
   files: ProjectFile[];
   issues: ValidationIssue[];

@@ -14,6 +14,7 @@ export function PlayerSlider({
   step,
   disabled = false,
   onChange,
+  onHover,
 }: {
   label: string;
   value: number;
@@ -22,6 +23,7 @@ export function PlayerSlider({
   step: number;
   disabled?: boolean;
   onChange: (value: number) => void;
+  onHover?: (fraction: number | null) => void;
 }) {
   const track = useRef<HTMLSpanElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -31,10 +33,18 @@ export function PlayerSlider({
     else onChange(Math.max(0, Math.min(max, Math.round(value / step) * step)));
   }
 
-  function updateFromPointer(event: PointerEvent<HTMLSpanElement>) {
+  function pointerFraction(event: PointerEvent<HTMLSpanElement>) {
     const bounds = track.current?.getBoundingClientRect();
     if (bounds?.width)
-      update(((event.clientX - bounds.left) / bounds.width) * max);
+      return Math.max(
+        0,
+        Math.min(1, (event.clientX - bounds.left) / bounds.width),
+      );
+  }
+
+  function updateFromPointer(event: PointerEvent<HTMLSpanElement>) {
+    const fraction = pointerFraction(event);
+    if (fraction !== undefined) update(fraction * max);
   }
 
   function adjustWithKeyboard(event: KeyboardEvent<HTMLSpanElement>) {
@@ -91,9 +101,13 @@ export function PlayerSlider({
         updateFromPointer(event);
       }}
       onPointerMove={(event) => {
-        if (!disabled && event.currentTarget.hasPointerCapture(event.pointerId))
+        if (disabled) return;
+        if (event.currentTarget.hasPointerCapture(event.pointerId))
           updateFromPointer(event);
+        if (event.pointerType !== "touch")
+          onHover?.(pointerFraction(event) ?? null);
       }}
+      onPointerLeave={() => onHover?.(null)}
       onLostPointerCapture={() => setDragging(false)}
     >
       <span

@@ -158,11 +158,14 @@
   break-after: avoid;
 }
 
-.reader-paged-book :is(pre, table) {
+.reader-paged-book :is(pre, .mdk-table-container) {
   display: block;
   max-height: var(--reader-page-height);
   overflow: auto;
   break-inside: avoid;
+}
+[data-scroll-tables="false"] .reader-paged-book .mdk-table-container {
+  overflow-x: hidden;
 }
 
 .reader-paged-book img,

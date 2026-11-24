@@ -1,9 +1,10 @@
 import { t } from "../../shared/i18n";
-import { Save, FileCode2 } from "lucide-react";
+import { Save, FileCode2, FilePlus2 } from "lucide-react";
 import type { MdkSettings } from "../../shared/mdk";
 import type { Table } from "../../shared/schema";
 import { Select } from "./Select";
 import { FontCombobox } from "./FontCombobox";
+import { projectFontChoices } from "../../shared/fonts";
 
 type Field = {
   path: string;
@@ -213,6 +214,7 @@ export function ProjectSettings({
   onChange,
   onSave,
   onSource,
+  onPackFont,
   busy,
   formDisabled,
   fonts,
@@ -221,6 +223,7 @@ export function ProjectSettings({
   onChange: (value: MdkSettings) => void;
   onSave: () => void;
   onSource: (path: string) => void;
+  onPackFont: () => void;
   busy: boolean;
   formDisabled?: boolean;
   fonts: string[];
@@ -384,9 +387,11 @@ export function ProjectSettings({
           <div className="settings-card" key={group.title}>
             <h3>{group.title}</h3>
             <div className="settings-fields">
-              {group.fields.map((field) => (
-                <label
-                  className={field.type === "boolean" ? "checkbox-label" : ""}
+              {group.fields.map((field) => {
+                const projectFont = field.path === "appearance.font_family" && !!value.v2;
+                const Wrapper = projectFont ? "div" : "label";
+                return <Wrapper
+                  className={projectFont ? "settings-font-field" : field.type === "boolean" ? "checkbox-label" : ""}
                   key={field.path}
                 >
                   {field.type === "boolean" ? (
@@ -422,20 +427,25 @@ export function ProjectSettings({
                             </option>
                           ))}
                         </Select>
-                      ) : field.path === "appearance.font_family" && value.v2 ? (
+                      ) : projectFont ? (
                         <>
-                          <Select aria-label={field.label} disabled={busy || formDisabled}
-                            value={String(read(field.path))} onValueChange={(font) => update(field.path, font)}>
-                            {[...new Set(["serif", "sans-serif", "monospace", ...fonts, String(read(field.path))])]
-                              .map((font) => <option key={font} value={font}>{font}</option>)}
-                          </Select>
-                          <small className="field-hint">{t("选择通用字族或已导入的工程字体。字体集可在 settings.toml 中配置。")}</small>
+                          <FontCombobox aria-label={field.label} disabled={busy || formDisabled}
+                            value={String(read(field.path))} onValueChange={(font) => update(field.path, font)}
+                            options={[
+                              ["sans-serif", t("通用无衬线")],
+                              ["serif", t("通用衬线")],
+                              ["monospace", t("通用等宽")],
+                              ...projectFontChoices(fonts, String(read(field.path))),
+                            ]} />
+                          <button type="button" className="button small" onClick={onPackFont}>
+                            <FilePlus2 size={15} /> {t("打包字体文件")}
+                          </button>
                         </>
                       ) : field.path === "appearance.font_family" ? (
                         <FontCombobox
                           aria-label={field.label}
                           value={String(read(field.path))}
-                          options={["system", "Arial", "Times New Roman", ...fonts]}
+                          options={[["system", t("默认字体")], ...projectFontChoices(fonts, String(read(field.path)))]}
                           disabled={busy}
                           onValueChange={(value) => update(field.path, value)}
                         />
@@ -463,8 +473,8 @@ export function ProjectSettings({
                       )}
                     </>
                   )}
-                </label>
-              ))}
+                </Wrapper>;
+              })}
             </div>
             {"note" in group && group.note && (
               <p className="field-hint">{group.note}</p>

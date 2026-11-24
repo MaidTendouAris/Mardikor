@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test, after } from "node:test";
 import fs from "node:fs";
 import path from "node:path";
-import { markdownHeadings } from "../shared/markdown";
+import {
+  markdownHeadings,
+  moveMarkdownSection,
+  type SectionSide,
+} from "../shared/markdown";
 import { renderPreview } from "../src/services/preview";
 import { defaultSettings } from "../shared/defaults";
 import * as mdk from "../electron/mdk";
@@ -34,6 +38,88 @@ test("heading outline follows Markdown semantics and nesting without including c
   assert.match(
     renderPreview("# 隐藏\n\n## 可见", settings),
     /id="mdk-heading-2"/,
+  );
+});
+test("moves the original section text and keeps duplicate ordinals, containers, and front matter", () => {
+  const prefix =
+    "\ufeff---\ntitle: Guide\n# YAML comment\n---\n\nPreamble.\n\n# Manual\n\n";
+  const installation =
+    "## Review ###\n\nInstall.\n\n### Download\n\n```md\n# Example\n```\n\n> # Quote\n\n- ## List\n\n";
+  const preparation =
+    "Review\n------\n\nPrepare.\n\n### Environment\n\nA [link](<./path a>).\n\n";
+  const suffix =
+    "## FAQ\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n# Appendix\n\n## Different parent\n";
+  for (const v2 of [false, true]) {
+    const source = prefix + installation + preparation + suffix;
+    const headings = markdownHeadings(source, v2);
+    const [first, second] = headings.filter(({ title }) => title === "Review");
+    const faq = headings.find(({ title }) => title === "FAQ")!;
+    const environment = headings.find(({ title }) => title === "Environment")!;
+    const download = headings.find(({ title }) => title === "Download")!;
+    const other = headings.find(({ title }) => title === "Different parent")!;
+    const move = (
+      from: typeof first,
+      target: typeof first,
+      side: SectionSide,
+    ) => moveMarkdownSection(source, headings, from, target, side, v2);
+    assert(!headings.some(({ title }) => title === "Example"));
+    assert(
+      headings
+        .filter(({ title }) =>
+          ["YAML comment", "Quote", "List"].includes(title),
+        )
+        .every(({ section }) => section === undefined),
+    );
+    assert.equal(
+      move(second, first, "before")?.content,
+      prefix + preparation + installation + suffix,
+    );
+    assert.equal(move(second, first, "before")?.heading.line, first.line);
+    assert.equal(
+      move(first, second, "after")?.content,
+      prefix + preparation + installation + suffix,
+    );
+    assert.equal(
+      move(second, faq, "after")?.content,
+      prefix +
+        installation +
+        suffix.split("# Appendix")[0] +
+        preparation +
+        "# Appendix" +
+        suffix.split("# Appendix")[1],
+    );
+    assert.equal(move(first, first, "after"), undefined);
+    assert.equal(move(first, second, "before"), undefined);
+    assert.equal(move(first, download, "after"), undefined);
+    assert.equal(move(download, environment, "before"), undefined);
+    assert.equal(move(second, other, "before"), undefined);
+  }
+});
+
+test("rotates the final line separator without changing CRLF, BOM or the missing final newline", () => {
+  const first = "# Installation\r\n\r\nDownload this.\r\n\r\n";
+  const second = "Preparation\r\n===========\r\n\r\nCheck this.";
+  const source = "\ufeff" + first + second;
+  const headings = markdownHeadings(source);
+  const expected = "\ufeff" + second + "\r\n\r\n" + first.trimEnd();
+  assert.equal(
+    moveMarkdownSection(source, headings, headings[1], headings[0], "before")
+      ?.content,
+    expected,
+  );
+  assert.equal(
+    moveMarkdownSection(source, headings, headings[0], headings[1], "after")
+      ?.content,
+    expected,
+  );
+
+  const adjacent = "# First\nContent\n# Second\nMore\nThird\n=====";
+  // Put a Setext section where the preceding paragraph originally only needed one newline.
+  const withSetext = adjacent.replace("More\nThird", "More\n\nThird");
+  const rows = markdownHeadings(withSetext);
+  assert.equal(
+    moveMarkdownSection(withSetext, rows, rows[2], rows[1], "before")?.content,
+    "# First\nContent\n\nThird\n=====\n\n# Second\nMore",
   );
 });
 test("dropped resources and references commit together, use classified paths and avoid duplicate filenames", () => {

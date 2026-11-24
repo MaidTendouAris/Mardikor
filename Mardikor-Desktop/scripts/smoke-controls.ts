@@ -21,6 +21,7 @@ new AppState(profile).preferences({
   directorySyncThreshold: 200,
 });
 const project = mdk.createMdkProject(file, "00");
+mdk.saveMdkTextFile(file, "markdown/001.md", "# 001\n\n快捷键测试正文。\n");
 project.settings.appearance.font_family = "serif";
 mdk.updateMdkSettings(file, project.settings);
 mdk.createTextFile(file, "meta/annotations.json", '{"note":"source only"}');
@@ -211,18 +212,20 @@ try {
     "background-color",
     "rgb(20, 20, 20)",
   );
+  await page.locator(".document-body p", { hasText: "快捷键测试正文。" }).click();
   await page
     .getByRole("toolbar", { name: "正文格式", exact: true })
-    .getByRole("button", { name: "Markdown 语法", exact: true })
+    .getByRole("button", { name: "Markdown 操作", exact: true })
     .click();
-  const syntax = page.getByRole("dialog", { name: "Markdown 语法", exact: true });
-  const syntaxType = syntax.getByLabel("Markdown 语法类型", { exact: true });
-  const initialSyntax = await syntaxType.getAttribute("data-value");
-  await syntaxType.click();
-  const list = page.getByRole("listbox");
-  await expect(list).toHaveCSS("opacity", "1");
-  await expect(list.locator(".select-scroll-button")).toHaveCount(0);
-  const viewport = list.locator(".select-viewport");
+  const actions = page.getByRole("dialog", { name: "Markdown 操作", exact: true });
+  const search = actions.getByRole("combobox", { name: "搜索 Markdown 操作", exact: true });
+  await expect(search).toBeFocused();
+  await search.fill("标题");
+  await expect(actions.getByRole("option", { selected: true })).toContainText("设为标题 1");
+  await page.keyboard.press("ArrowDown");
+  await expect(actions.getByRole("option", { selected: true })).toContainText("设为标题 2");
+  await search.fill("");
+  const viewport = actions.getByRole("listbox", { name: "Markdown 操作", exact: true });
   await expect
     .poll(() => viewport.evaluate((node) => node.offsetWidth - node.clientWidth))
     .toBeGreaterThan(0);
@@ -250,11 +253,10 @@ try {
       ),
     )
     .toBeGreaterThan(0.8);
+  await search.fill("标题");
   await page.keyboard.press("Escape");
-  await expect(syntaxType).toHaveAttribute("data-value", initialSyntax!);
-  await expect(syntaxType).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(syntax).toBeHidden();
+  await expect(actions).toBeHidden();
+  await expect(page.locator(".document-body")).toBeFocused();
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
   const contentsMarkdown = page.getByRole("checkbox", {
     name: "生成 Markdown 目录（contents.md）",
@@ -265,11 +267,13 @@ try {
   const font = page.getByRole("combobox", { name: "字体", exact: true });
   await expect(font).toHaveAttribute("data-value", "serif");
   expect(await font.evaluate((element) => element.tagName)).toBe("BUTTON");
-  await font.focus();
-  await font.press("ArrowDown");
-  await expect(page.getByRole("listbox")).toBeVisible();
-  await expect(page.getByRole("option", { name: "serif", exact: true })).toBeFocused();
-  await page.keyboard.press("ArrowDown");
+  await font.press("Enter");
+  const fontOptions = page.getByRole("listbox", { name: "字体", exact: true });
+  const fontSearch = page.getByRole("searchbox", { name: "搜索字体", exact: true });
+  await expect(fontSearch).toBeFocused();
+  await expect(fontOptions.getByRole("option", { selected: true })).toHaveAttribute("data-value", "serif");
+  await fontSearch.fill("sans-serif");
+  await expect(fontOptions.locator('[data-value="sans-serif"]')).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(font).toHaveAttribute("data-value", "sans-serif");
   await expect(font).toBeFocused();

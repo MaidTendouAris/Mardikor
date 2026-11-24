@@ -19,6 +19,8 @@ import type {
 } from "../shared/mdk";
 import { checkMedia, detectMediaType, assertPassiveSvg } from "./media";
 import { loadInsertionAssets, type InsertionSource } from "./insertion-assets";
+import { fontDataUrl } from "./document-font";
+import { isFontFile } from "../shared/fonts";
 
 const limit = 64 * 1024 * 1024;
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -219,7 +221,7 @@ export function openMarkdownFile(file: string): MdkProject {
     files,
     issues: [],
     settings_readonly: true,
-    readonly: false,
+    readonly: (fs.statSync(file).mode & 0o222) === 0,
   };
 }
 export function createMarkdownFile(file: string) {
@@ -293,6 +295,35 @@ export function readMarkdownResource(file: string, relative: string) {
   if (mime === "image/svg+xml") assertPassiveSvg(bytes);
   return `data:${mime};base64,${bytes.toString("base64")}`;
 }
+
+export function readMarkdownFont(file: string, relative: string) {
+  if (!relative.startsWith("resources/")) throw new Error(t("字体路径无效。"));
+  return fontDataUrl(relative, readMarkdownResourceBytes(file, relative));
+}
+
+export function listMarkdownFonts(file: string): string[] {
+  const directory = "resources/font";
+  try {
+    return fs.readdirSync(resolveLocalMarkdownPath(file, directory), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && isFontFile(entry.name))
+      .map((entry) => `${directory}/${entry.name}`)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+export function packMarkdownFont(file: string, name: string, bytes: Buffer, revision: string) {
+  if (read(file).revision !== revision)
+    throw new Error(t("工程版本已变化，请重新导入字体。"));
+  const relative = `resources/font/${name}`;
+  const target = resolveLocalMarkdownPath(file, relative);
+  if (fs.statSync(target, { throwIfNoEntry: false })?.size === bytes.length &&
+    fs.readFileSync(target).equals(bytes)) return { path: relative, revision };
+  return publishMarkdownResources(file, [{ name, kind: "font", bytes }], ([resource]) => ({
+    path: resource.path, revision,
+  }));
+}
 export function insertMarkdownResources(
   file: string,
   sources: InsertionSource[],
@@ -315,9 +346,35 @@ export function insertMarkdownResources(
     insertion.texts?.length
   )
     throw new Error(t("单 Markdown 工程只能修改当前文件。"));
-  const assets = loadInsertionAssets(sources),
-    published: string[] = [],
-    directories: string[] = [];
+  const assets = loadInsertionAssets(sources);
+  return publishMarkdownResources(file, assets, (resources) => {
+    const markdown = resources
+      .map((resource, index) => {
+        const url = resource.path.split("/").map(encodeURIComponent).join("/");
+        return resource.kind === "image"
+          ? imageMarkdown(url, assets[index].name)
+          : "[" +
+              assets[index].name.replace(/[\\[\]]/g, (c) => "\\" + c) +
+              "](" +
+              markdownDestination(url) +
+              ")";
+      })
+      .join("\n\n");
+    const content = insertion.text.content.replace(insertion.marker, () => markdown);
+    const project = saveMarkdownSnapshot(file, {
+      revision: current.revision,
+      text: { path: path.basename(file), content },
+    });
+    return { project, content, resources };
+  });
+}
+
+function publishMarkdownResources<T>(
+  file: string,
+  assets: { name: string; kind: ResourceFile["kind"]; bytes: Buffer }[],
+  finish: (resources: ResourceFile[]) => T,
+) {
+  const published: string[] = [], directories: string[] = [];
   const resources: ResourceFile[] = [];
   try {
     for (const asset of assets) {
@@ -353,27 +410,7 @@ export function insertMarkdownResources(
         bytes: asset.bytes.length,
       });
     }
-    const markdown = resources
-      .map((resource, index) => {
-        const url = resource.path.split("/").map(encodeURIComponent).join("/");
-        return resource.kind === "image"
-          ? imageMarkdown(url, assets[index].name)
-          : "[" +
-              assets[index].name.replace(/[\\[\]]/g, (c) => "\\" + c) +
-              "](" +
-              markdownDestination(url) +
-              ")";
-      })
-      .join("\n\n");
-    const content = insertion.text.content.replace(
-      insertion.marker,
-      () => markdown,
-    );
-    const project = saveMarkdownSnapshot(file, {
-      revision: current.revision,
-      text: { path: path.basename(file), content },
-    });
-    return { project, content, resources };
+    return finish(resources);
   } catch (error) {
     for (const target of published.reverse()) fs.unlinkSync(target);
     for (const directory of directories.reverse()) fs.rmdirSync(directory);

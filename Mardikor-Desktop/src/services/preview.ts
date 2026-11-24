@@ -8,6 +8,7 @@ import {
   applyV2Typography,
   bodyTypography,
   imageStyleMarkup,
+  tableTypography,
 } from "../../shared/v2-typography";
 import { resolveReference } from "../../shared/references";
 import { chapterHeadingNumberer } from "../../shared/heading-numbering";
@@ -75,6 +76,10 @@ function createPreviewParser(
     token.attrSet("href", "#");
     return link(tokens, index, options, env, renderer);
   };
+  parser.renderer.rules.table_open = (tokens, index, options, _env, renderer) =>
+    '<div class="mdk-table-container">' + renderer.renderToken(tokens, index, options);
+  parser.renderer.rules.table_close = (tokens, index, options, _env, renderer) =>
+    renderer.renderToken(tokens, index, options) + "</div>\n";
   return parser;
 }
 const md = createPreviewParser(true),
@@ -275,6 +280,7 @@ export function renderPreview(
 }
 
 export function settingsToCss(settings: MdkSettings) {
+  const tableStyles = settings.v2 && tableTypography(settings);
   const note = {
     border: "#2563eb",
     background: "#eff6ff",
@@ -292,6 +298,18 @@ export function settingsToCss(settings: MdkSettings) {
   };
 
   return {
+    ...(tableStyles && Object.fromEntries(
+      (["table", "cell", "header"] as const).flatMap((part) =>
+        Object.entries(tableStyles[part]).map(([property, value]) => [
+          `--mdk-${part}-${property}`,
+          value,
+        ]),
+      ),
+    )),
+    "--mdk-table-stripe":
+      tableStyles && typeof tableStyles.stripe === "string" && tableStyles.stripe !== "none"
+        ? tableStyles.stripe
+        : "transparent",
     ...Object.fromEntries(
       Object.entries(bodyTypography(settings)).map(([property, value]) => [
         "--v2-" + property,

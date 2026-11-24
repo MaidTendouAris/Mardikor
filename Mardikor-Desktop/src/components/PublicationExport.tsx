@@ -8,7 +8,9 @@ import {
 } from "react";
 import {
   Download,
+  Eye,
   FileCheck2,
+  FilePlus2,
   RefreshCw,
   Save,
   TriangleAlert,
@@ -16,6 +18,8 @@ import {
 import { Select } from "./Select";
 import { MdkPublicationExport } from "./MdkPublicationExport";
 import { isMarkdownFile } from "../../shared/workspace";
+import { bundledFontChoices, projectFontChoices } from "../../shared/fonts";
+import { FontCombobox } from "./FontCombobox";
 import { desktop, desktopErrorMessage } from "../services/desktop";
 import type { Ask, Notify } from "../App";
 import type {
@@ -149,6 +153,24 @@ function LocalPublicationExport({
     }
   }
   const needsSave = !!info && !!draft && (changed || !info.saved);
+  async function packFont() {
+    if (!info || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await flush())) return;
+      const latest = await desktop().invoke("publicationInfo", file);
+      const result = await desktop().invoke("packFont", file, latest.revision);
+      if (!result) return;
+      setInfo(await desktop().invoke("publicationInfo", file));
+      change((value) => { value.appearance.font_family = result.path; });
+      notify(t("字体已打包至 {0}。", result.path));
+    } catch (error) {
+      setError(desktopErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function persistConfiguration() {
     if (!draft || !info) return;
     const current = await desktop().invoke("publicationInfo", file);
@@ -197,10 +219,11 @@ function LocalPublicationExport({
   useImperativeHandle(handleRef, () => ({
     save: async () => !busy && (!changed || (await save(false))),
   }));
-  async function perform(exporting: boolean) {
+  async function perform(action: "preflight" | "preview" | "export") {
     if (!info || !draft) return;
     setBusy(true);
     setError("");
+    setPlan(null);
     setProgress(t("正在保存文稿与导出配置…"));
     try {
       if (!(await flush())) return;
@@ -212,7 +235,11 @@ function LocalPublicationExport({
         targetFormat,
       );
       setPlan(result);
-      if (!result.report.valid || !exporting) return;
+      if (!result.report.valid || action === "preflight") return;
+      if (action === "preview") {
+        await desktop().invoke("previewPdf", file, result.fingerprint);
+        return;
+      }
       const name =
         (
           draft.publication.metadata.title ||
@@ -386,10 +413,18 @@ function LocalPublicationExport({
             <button
               className="button"
               disabled={busy}
-              onClick={() => void perform(false)}
+              onClick={() => void perform("preflight")}
             >
               <FileCheck2 size={15} />
               {needsSave ? t("保存并预检") : t("严格预检")}
+            </button>
+            <button
+              className="button"
+              disabled={busy}
+              aria-describedby={needsSave ? "publication-save-required" : undefined}
+              onClick={() => void perform("preview")}
+            >
+              <Eye size={15} /> {needsSave ? t("保存并预览 PDF") : t("预览 PDF")}
             </button>
             <button
               className="button primary"
@@ -397,7 +432,7 @@ function LocalPublicationExport({
               aria-describedby={
                 needsSave ? "publication-save-required" : undefined
               }
-              onClick={() => void perform(true)}
+              onClick={() => void perform("export")}
             >
               <Download size={15} />
               {needsSave ? t("保存并导出") : t("导出")} PDF
@@ -409,7 +444,7 @@ function LocalPublicationExport({
               className="publication-preflight"
               role="status"
             >
-              {t("执行预检或导出时会先保存当前配置。")}
+              {t("执行预览、预检或导出时会先保存当前配置。")}
             </p>
           )}
           {busy && (
@@ -490,29 +525,18 @@ function LocalPublicationExport({
             <details open>
               <summary>{t("排版与字体")}</summary>
               <div className="publication-fields">
-                {choose(
-                  t("导出字体"),
-                  draft.appearance.font_family,
-                  [
-                    ["system", t("Noto Sans CJK SC（应用内置）")],
-                    ...info.fonts.map(
-                      (path) => [path, path] as [string, string],
-                    ),
-                    ...(!info.fonts.includes(draft.appearance.font_family) &&
-                    draft.appearance.font_family !== "system"
-                      ? [
-                          [
-                            draft.appearance.font_family,
-                            draft.appearance.font_family,
-                          ] as [string, string],
-                        ]
-                      : []),
-                  ],
-                  (value) =>
-                    change((c) => {
-                      c.appearance.font_family = value;
-                    }),
-                )}
+                <label>
+                  {t("导出字体")}
+                  <FontCombobox aria-label={t("导出字体")} disabled={busy}
+                    value={draft.appearance.font_family === "system" ? "sans-serif" : draft.appearance.font_family}
+                    options={[...bundledFontChoices(), ...projectFontChoices(info.fonts, draft.appearance.font_family)]}
+                    onValueChange={(value) => change((c) => { c.appearance.font_family = value; })} />
+                </label>
+                <div className="publication-font-actions">
+                  <button type="button" className="button" disabled={busy} onClick={() => void packFont()}>
+                    <FilePlus2 size={15} /> {t("打包字体文件")}
+                  </button>
+                </div>
                 {number(
                   t("正文字号（px）"),
                   draft.appearance.font_size,
@@ -583,7 +607,7 @@ function LocalPublicationExport({
               </div>
               <p className="publication-note">
                 {t(
-                  "PDF 使用工程内字体并校验全部字形，不回退到系统字体。自定义字体须允许分发与嵌入。字号和行距等通用选项同时用于工程排版。",
+                  "PDF 会检查所选字体的字形覆盖及嵌入权限。",
                 )}
               </p>
             </details>

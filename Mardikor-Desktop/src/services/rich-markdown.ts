@@ -1,5 +1,5 @@
 import { t } from "../../shared/i18n";
-import type { Editor, JSONContent, MarkdownParseResult } from "@tiptap/core";
+import type { AnyExtension, Editor, JSONContent, MarkdownParseResult } from "@tiptap/core";
 import type { InsertionDraft } from "../../shared/resources";
 import StarterKit from "@tiptap/starter-kit";
 import { BulletList, OrderedList } from "@tiptap/extension-list";
@@ -9,8 +9,8 @@ import Link from "@tiptap/extension-link";
 import CodeBlock from "@tiptap/extension-code-block";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
-import { TableKit, TableCell, TableHeader } from "@tiptap/extension-table";
-import { Extension } from "@tiptap/core";
+import { Table, TableKit, TableCell, TableHeader } from "@tiptap/extension-table";
+import { Extension, mergeAttributes } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { TableMap, CellSelection, cellAround } from "@tiptap/pm/tables";
 import {
@@ -23,6 +23,23 @@ import { createMarkdownParser } from "../../shared/markdown-parser";
 import { MdkContainer } from "./rich-container";
 
 const listParser = createMarkdownParser(false, false);
+
+// The workspace owns configurable format chords. Keep each extension's
+// context keys, such as Backspace in quotes and Tab in code blocks.
+function editorContextKeys(keys: ReturnType<NonNullable<AnyExtension["config"]["addKeyboardShortcuts"]>> | undefined) {
+  return Object.fromEntries(Object.entries(keys ?? {}).filter(([key]) => !key.startsWith("Mod-")));
+}
+
+const workspaceFormatExtensions = new Set(["bold", "italic", "strike", "code", "heading", "blockquote"]);
+const WorkspaceStarterKit = StarterKit.extend({
+  addExtensions() {
+    return (this.parent?.() ?? []).map((extension) =>
+      workspaceFormatExtensions.has(extension.name)
+        ? extension.extend({ addKeyboardShortcuts() { return editorContextKeys(this.parent?.()); } })
+        : extension,
+    );
+  },
+});
 
 function listSpacing(result: MarkdownParseResult, loose: unknown) {
   if (!Array.isArray(result) && loose === true)
@@ -40,17 +57,20 @@ const listSpacingAttribute = {
 export const editorExtensions = (
   resolveResource?: (src: string) => Promise<string>,
   paged = false,
+  sectionHistory = false,
 ) => [
-  StarterKit.configure({
+  WorkspaceStarterKit.configure({
     link: false,
     codeBlock: false,
     underline: false,
     bulletList: false,
     orderedList: false,
+    ...(sectionHistory ? { undoRedo: false as const } : {}),
     ...(paged ? { trailingNode: false as const } : {}),
   }),
   MdkContainer,
   BulletList.extend({
+    addKeyboardShortcuts() { return editorContextKeys(this.parent?.()); },
     addAttributes() {
       return { ...this.parent?.(), loose: listSpacingAttribute };
     },
@@ -65,6 +85,7 @@ export const editorExtensions = (
     },
   }),
   OrderedList.extend({
+    addKeyboardShortcuts() { return editorContextKeys(this.parent?.()); },
     addAttributes() {
       return { ...this.parent?.(), loose: listSpacingAttribute };
     },
@@ -103,6 +124,7 @@ export const editorExtensions = (
       ")",
   }).configure({ openOnClick: false }),
   CodeBlock.extend({
+    addKeyboardShortcuts() { return editorContextKeys(this.parent?.()); },
     renderMarkdown: (node, h) =>
       codeFence(
         h.renderChildren(node.content ?? []),
@@ -140,13 +162,22 @@ export const editorExtensions = (
       };
     },
   }).configure({ allowBase64: true, inline: true }),
-  TaskList,
+  TaskList.extend({ addKeyboardShortcuts() { return editorContextKeys(this.parent?.()); } }),
   TaskItem.configure({ nested: true }),
   TableKit.configure({
-    table: { resizable: false, allowTableNodeSelection: true },
+    table: false,
     tableCell: false,
     tableHeader: false,
   }),
+  Table.extend({
+    renderHTML({ HTMLAttributes }) {
+      return [
+        "div",
+        { class: "mdk-table-container" },
+        ["table", mergeAttributes(this.options.HTMLAttributes, HTMLAttributes), ["tbody", 0]],
+      ];
+    },
+  }).configure({ View: null, resizable: false, allowTableNodeSelection: true }),
   TableCell.extend({ content: "paragraph" }),
   TableHeader.extend({ content: "paragraph" }),
   Extension.create({

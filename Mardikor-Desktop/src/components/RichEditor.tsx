@@ -1,11 +1,22 @@
 import { t } from "../../shared/i18n";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { keyboardComposing } from "../../shared/shortcuts";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { EditorState } from "@tiptap/pm/state";
+import { isHistoryTransaction } from "@tiptap/pm/history";
 import { editorExtensions } from "../services/rich-markdown";
 import { chapterHeadingNumberer } from "../../shared/heading-numbering";
+import type { DocumentPages, EditPageWindow } from "../services/document-pages";
+import { richSectionHistory } from "../services/rich-section-history";
 import {
   loadRichPages,
   richPageChanges,
@@ -17,6 +28,36 @@ import {
 export { editorExtensions } from "../services/rich-markdown";
 export { RichToolbar } from "./RichToolbar";
 export { richDropDraft } from "../services/rich-markdown";
+
+export type RichSectionView = {
+  content: string;
+  pagination?: DocumentPages;
+  window?: EditPageWindow;
+  page?: number;
+};
+
+export interface RichSectionHandle {
+  move: (before: string, next: RichSectionView) => boolean;
+}
+
+export function richWindowPages({
+  content,
+  pagination,
+  window,
+}: RichSectionView) {
+  if (!pagination || !window) return undefined;
+  return pagination.pages
+    .slice(window.first, window.last + 1)
+    .map((entry, offset) => {
+      const index = window.first + offset;
+      return {
+        index,
+        text: content.slice(entry.start, pagination.pages[index + 1]?.start),
+        final: index === pagination.pages.length - 1,
+      };
+    });
+}
+
 export function RichEditor({
   content,
   revision,
@@ -28,6 +69,10 @@ export function RichEditor({
   priorHeadingLevels,
   reservedSections,
   pageWindow,
+  documentView,
+  onSectionChange,
+  onShortcut,
+  sectionRef,
 }: {
   content: string;
   revision: number;
@@ -38,24 +83,57 @@ export function RichEditor({
   chapterPosition?: string;
   priorHeadingLevels?: number[];
   reservedSections?: ReadonlySet<string>;
+  documentView: RichSectionView;
+  onSectionChange: (view: RichSectionView) => void;
+  onShortcut: (event: KeyboardEvent) => boolean;
+  sectionRef: Ref<RichSectionHandle>;
   pageWindow?: {
     pages: RichPage[];
-    update: (changes: RichPageChange[]) => RichPageChange[];
+    update: (changes: RichPageChange[]) =>
+      | {
+          content: string;
+          pagination: DocumentPages;
+          applied: RichPageChange[];
+        }
+      | undefined;
     expand: (direction: -1 | 1) => void;
   };
 }) {
   const changeRef = useRef(onChange);
+  const shortcut = useRef(onShortcut);
+  shortcut.current = onShortcut;
   const editorText = useRef("");
   const pagesRef = useRef(pageWindow);
   pagesRef.current = pageWindow;
   const loadedPages = useRef(new Map<number, string>());
   const lastState = useRef<EditorState>(undefined);
   const previousState = useRef<EditorState>(undefined);
+  const currentView = useRef(documentView);
+  const accepted = useRef(documentView.content);
+  currentView.current = documentView;
+  const sectionChange = useRef(onSectionChange);
+  sectionChange.current = onSectionChange;
+  const [sectionHistory] = useState(() =>
+    richSectionHistory(
+      () => ({
+        view: currentView.current,
+        loaded: new Map(loadedPages.current),
+      }),
+      ({ view, loaded }) => {
+        accepted.current = view.content;
+        currentView.current = view;
+        editorText.current = view.content;
+        loadedPages.current = loaded;
+        sectionChange.current(view);
+      },
+    ),
+  );
   changeRef.current = onChange;
   const resolveRef = useRef(resolveResource);
   resolveRef.current = resolveResource;
   const [extensions] = useState(() => [
-    ...editorExtensions((src) => resolveRef.current(src), !!pageWindow),
+    ...editorExtensions((src) => resolveRef.current(src), !!pageWindow, true),
+    sectionHistory.extension,
     ...(pageWindow ? [RichPages] : []),
   ]);
   const editor = useEditor({
@@ -65,6 +143,10 @@ export function RichEditor({
     contentType: "markdown",
     editable,
     editorProps: {
+      handleDOMEvents: {
+        keydown: (view, event) => view.composing || keyboardComposing(event),
+      },
+      handleKeyDown: (_view, event) => shortcut.current(event),
       attributes: {
         class: "document-body",
         spellcheck: "false",
@@ -75,7 +157,8 @@ export function RichEditor({
       previousState.current = lastState.current;
       lastState.current = editor.state;
     },
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
+      if (!isHistoryTransaction(transaction)) sectionHistory.branch();
       if (pagesRef.current) {
         if (!previousState.current) return;
         const changes = richPageChanges(
@@ -84,15 +167,71 @@ export function RichEditor({
           editor.state.doc,
           richPageParts(editor.state),
         );
-        if (changes.length)
-          for (const change of pagesRef.current.update(changes))
+        const next = changes.length
+          ? pagesRef.current.update(changes)
+          : undefined;
+        if (next) {
+          accepted.current = next.content;
+          currentView.current = {
+            ...currentView.current,
+            content: next.content,
+            pagination: next.pagination,
+          };
+          for (const change of next.applied)
             loadedPages.current.set(change.index, change.text);
+        }
         return;
       }
-      const markdown = editor.getMarkdown();
+      const bom = editorText.current.startsWith("\ufeff") ? "\ufeff" : "";
+      const markdown = bom + editor.getMarkdown();
       editorText.current = changeRef.current(markdown) ?? markdown;
+      accepted.current = editorText.current;
+      currentView.current = { content: editorText.current };
     },
   });
+  useImperativeHandle(
+    sectionRef,
+    () => ({
+      move(before, next) {
+        if (
+          !editor?.isEditable ||
+          editor.view.composing ||
+          accepted.current !== before
+        )
+          return false;
+        const pages = richWindowPages(next);
+        if (!!pages !== !!pagesRef.current) return false;
+        sectionHistory.record(editor);
+        if (pages) {
+          loadRichPages(editor, pages, loadedPages.current);
+          loadedPages.current = new Map(
+            pages.map(({ index, text }) => [index, text]),
+          );
+        } else {
+          editor
+            .chain()
+            .setMeta("addToHistory", false)
+            .setContent(next.content.replace(/^\ufeff/, ""), {
+              contentType: "markdown",
+              emitUpdate: false,
+            })
+            .run();
+        }
+        accepted.current = editorText.current = next.content;
+        currentView.current = next;
+        sectionChange.current(next);
+        return true;
+      },
+    }),
+    [editor, sectionHistory],
+  );
+  useLayoutEffect(() => {
+    if (accepted.current !== documentView.content) {
+      // An edit from another pane invalidates full-source checkpoints here.
+      sectionHistory.clear();
+      accepted.current = documentView.content;
+    }
+  }, [documentView.content, sectionHistory]);
   useLayoutEffect(() => {
     const pages = pagesRef.current?.pages;
     if (!editor || !pages?.length) return;
@@ -170,7 +309,7 @@ export function RichEditor({
   }, [editor, editable]);
   useEffect(() => {
     if (editor && !pagesRef.current && editorText.current !== content) {
-      editor.commands.setContent(content, {
+      editor.commands.setContent(content.replace(/^\ufeff/, ""), {
         contentType: "markdown",
         emitUpdate: false,
       });

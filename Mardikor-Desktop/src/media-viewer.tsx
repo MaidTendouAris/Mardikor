@@ -31,13 +31,12 @@ import {
 } from "lucide-react";
 import { appLocale, setAppLocale, t } from "../shared/i18n";
 import {
-  defaultMediaVolume,
   type MediaViewerApi,
   type MediaViewerInfo,
   type MediaWindowAction,
 } from "../shared/media-viewer";
 import { EditorMenu } from "./components/EditorMenu";
-import { MediaPlaybackBar } from "./components/MediaPlaybackBar";
+import { MediaPlayback } from "./components/MediaPlayer";
 import { desktopErrorMessage } from "./services/desktop";
 import "./styles/base.css";
 import "./styles/media-viewer.css";
@@ -138,11 +137,6 @@ function MediaViewer({
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
-  const [player, setPlayer] = useState<HTMLMediaElement | null>(null);
-  const attachPlayer = useCallback((element: HTMLMediaElement | null) => {
-    if (element) element.volume = defaultMediaVolume;
-    setPlayer(element);
-  }, []);
   const drag = useRef<{
     id: number;
     x: number;
@@ -301,17 +295,6 @@ function MediaViewer({
       setMessage(desktopErrorMessage(error));
     }
   }
-  function togglePlayback() {
-    if (!player || !showTools) return;
-    if (player.paused) {
-      void player.play().catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError"))
-          setMessage(desktopErrorMessage(error));
-      });
-    } else {
-      player.pause();
-    }
-  }
   async function save() {
     if (saving) return;
     setSaving(true);
@@ -368,13 +351,13 @@ function MediaViewer({
       >
         <Download size={18} />
       </Tool>
-      <Tool
+      {(!isPlayer || failed) && <Tool
         label={fullscreen ? t("退出全屏") : t("全屏显示")}
         shortcut="F11"
         onClick={() => void toggleFullscreen()}
       >
         {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-      </Tool>
+      </Tool>}
     </>
   );
 
@@ -436,25 +419,6 @@ function MediaViewer({
           else if (key === "arrowdown") pan(layout.x, layout.y - 48);
           else return;
           event.preventDefault();
-        } else if (
-          player &&
-          !(event.target as Element).closest(
-            "button,input,select,[role=slider]",
-          )
-        ) {
-          if (key === " ") {
-            togglePlayback();
-          } else if (
-            (key === "arrowleft" || key === "arrowright") &&
-            Number.isFinite(player.duration)
-          ) {
-            player.currentTime = clamp(
-              player.currentTime + (key === "arrowleft" ? -5 : 5),
-              0,
-              player.duration,
-            );
-          } else return;
-          event.preventDefault();
         }
       }}
       ref={(element) => {
@@ -503,16 +467,8 @@ function MediaViewer({
           </button>
         </div>
       </header>
-      <footer className="media-viewer-toolbar">
-        {isPlayer && !failed ? (
-          <MediaPlaybackBar
-            player={player}
-            ready={showTools}
-            onTogglePlayback={togglePlayback}
-          >
-            {fileTools}
-          </MediaPlaybackBar>
-        ) : (
+      {(!isPlayer || failed) && (
+        <footer className="media-viewer-toolbar">
           <div
             className="media-viewer-tools"
             role="toolbar"
@@ -606,15 +562,14 @@ function MediaViewer({
               {fileTools}
             </div>
           </div>
-        )}
-      </footer>
+        </footer>
+      )}
       <div
         ref={stage}
         className="media-viewer-stage"
         tabIndex={isImage && showTools ? 0 : undefined}
         role={isImage && showTools ? "region" : undefined}
         aria-label={isImage && showTools ? t("图片查看器") : undefined}
-        data-audio={(info.kind === "audio" && !failed) || undefined}
         data-pan={isImage && showTools}
         data-dragging={dragging}
         onPointerDown={pointerDown}
@@ -694,31 +649,11 @@ function MediaViewer({
             }}
             onError={() => setFailed(true)}
           />
-        ) : isVideo ? (
-          <video
-            ref={attachPlayer}
-            src={info.src!}
-            playsInline
-            preload="metadata"
-            onClick={togglePlayback}
-            onLoadedMetadata={(event) => metadata(event.currentTarget)}
-            onError={() => setFailed(true)}
-          />
         ) : (
-          <div className="media-viewer-audio">
-            <span className="media-viewer-audio-art" aria-hidden="true">
-              <AudioLines size={44} strokeWidth={1.5} />
-            </span>
-            <strong title={info.name}>{info.name}</strong>
-            <audio
-              ref={attachPlayer}
-              src={info.src!}
-              preload="metadata"
-              hidden
-              onLoadedMetadata={(event) => metadata(event.currentTarget)}
-              onError={() => setFailed(true)}
-            />
-          </div>
+          <MediaPlayback kind={isVideo ? "video" : "audio"} label={info.name} src={info.src!}
+            onMetadata={metadata} onFailure={() => setFailed(true)}>
+            {fileTools}
+          </MediaPlayback>
         )}
         {!ready && !failed && !isAttachment && (
           <span className="media-viewer-loading" role="status">

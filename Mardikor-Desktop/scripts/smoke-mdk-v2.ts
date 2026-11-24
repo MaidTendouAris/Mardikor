@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { _electron as electron, expect } from "@playwright/test";
-import { PDFDocument } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFStream } from "pdf-lib";
 import AdmZip from "adm-zip";
 import {
   MDK_MIMETYPE,
@@ -26,11 +26,62 @@ const defaultProject = path.join(run, "default.mdk");
 const missing = path.join(run, "missing.mdk");
 const readonly = path.join(run, "readonly.mdk");
 const compressed = path.join(run, "old-compressed.mdk");
+const tableProject = path.join(run, "tables.mdk");
+const fontProject = path.join(run, "fonts.mdk");
+const sampleFont = path.resolve("assets/export/NotoSerifCJKsc-Regular.otf");
+const packedFont = "resources/font/NotoSerifCJKsc-Regular.otf";
 const profile = path.join(run, "profile");
 packMdk("docs/examples/v2/book", file);
 packMdk("docs/examples/v2/comic", comic);
 packMdk("docs/examples/v2/minimal", minimal);
 createMdkProject(defaultProject, "00");
+createMdkProject(fontProject, "00");
+createTextFile(fontProject, "settings.toml", '[body]\nfont = "resources/font/Missing.otf"\n');
+saveMdkTextFile(fontProject, "mdk.toml", readMdkTextFile(fontProject, "mdk.toml").content +
+  '\n[metadata]\ntitle = "Font sample"\nlanguage = "en"\nidentifier = "urn:mardikor:font-smoke"\n');
+createMdkProject(tableProject, "00");
+const columns = Array.from({ length: 44 }, (_, index) => String(index + 1));
+const wideTable = [
+  columns,
+  columns.map(() => "---"),
+  columns.map(() => "X"),
+].map((row) => `| ${row.join(" | ")} |`);
+saveMdkTextFile(
+  tableProject,
+  "markdown/001.md",
+  [
+    "# PDF table layout",
+    "",
+    "| Field | Value |",
+    "| --- | --- |",
+    `| Wrap | ${"unbroken".repeat(16)} |`,
+    "",
+    "## Wide table",
+    "",
+    ...wideTable,
+    "",
+    ...wideTable.map((line) => `> ${line}`),
+  ].join("\n"),
+);
+createTextFile(
+  tableProject,
+  "publication.toml",
+  `default_preset = "pdf-a4"
+[[presets]]
+id = "pdf-a4"
+format = "pdf"
+[presets.pdf]
+layout = "flow"
+[[presets]]
+id = "pdf-wide"
+format = "pdf"
+[presets.pdf]
+layout = "flow"
+page_width = 420
+margin_left = 5
+margin_right = 5
+`,
+);
 createTextFile(defaultProject, "meta/check.json", "{}");
 saveMdkTextFile(defaultProject, "markdown/001.md", "# 前言\n\n" + "正文。\n\n".repeat(75) + "## 第二节\n\n继续阅读。\n");
 await fs.copyFile(defaultProject, missing);
@@ -134,6 +185,18 @@ async function exportFile(
   );
   return fs.readFile(output);
 }
+function pdfPageContents(document: PDFDocument) {
+  return document.getPages().map((page) => {
+    const contents = page.node.Contents();
+    const streams = contents instanceof PDFArray
+      ? contents.asArray().map((entry) => document.context.lookup(entry, PDFStream))
+      : contents ? [contents] : [];
+    return {
+      size: page.getSize(),
+      contents: streams.map((stream) => stream.getContentsString()),
+    };
+  });
+}
 try {
   await expect(page.locator(".document-title")).toContainText("markdown/");
   await expect(
@@ -224,14 +287,40 @@ try {
     info.presets?.map(({ id }) => id),
     ["pdf-a5", "epub-reflow"],
   );
+  await app.evaluate(({ dialog }) => {
+    dialog.showSaveDialog = async () => {
+      throw new Error("PDF preview opened a save dialog");
+    };
+  });
+  const previewButton = page.getByRole("button", { name: "预览 PDF", exact: true });
+  await previewButton.click();
+  await expect(previewButton).toBeEnabled({ timeout: 30000 });
+  const pdfWindowUrl = "mardikor-pdf-preview:";
+  await expect.poll(() => app.evaluate(({ BrowserWindow }, url) =>
+    BrowserWindow.getAllWindows().some(({ webContents }) =>
+      webContents.getURL().startsWith(url) &&
+      webContents.mainFrame.framesInSubtree.some(({ url }) => url.startsWith("chrome-extension:")),
+    ), pdfWindowUrl),
+  ).toBe(true);
+  const previewData = await app.evaluate(async ({ BrowserWindow }, url) => {
+    const { webContents } = BrowserWindow.getAllWindows().find(
+      (window) => window.webContents.getURL().startsWith(url),
+    )!;
+    const result = await webContents.session.fetch(webContents.getURL());
+    return Buffer.from(await result.arrayBuffer()).toString("base64");
+  }, pdfWindowUrl);
+  assert.equal((await fs.readdir(run)).some((name) => name.endsWith(".pdf")), false);
+  const previewPdf = await PDFDocument.load(Buffer.from(previewData, "base64"));
   for (const [format, id] of [
     ["pdf", "pdf-a5"],
     ["epub", "epub-reflow"],
   ] as const) {
     const bytes = await exportFile(file, format, id, "book." + format);
-    if (format === "pdf")
-      assert.ok((await PDFDocument.load(bytes)).getPageCount() >= 4);
-    else {
+    if (format === "pdf") {
+      const exported = await PDFDocument.load(bytes);
+      assert.ok(exported.getPageCount() >= 4);
+      assert.deepEqual(pdfPageContents(previewPdf), pdfPageContents(exported));
+    } else {
       validateGeneratedEpub(bytes);
       const zip = new AdmZip(bytes);
       assert.match(zip.readAsText("EPUB/package.opf"), /cover-image/);
@@ -239,6 +328,9 @@ try {
     }
   }
   await openProject(comic);
+  assert.equal(await app.evaluate(({ BrowserWindow }, url) =>
+    BrowserWindow.getAllWindows().some(({ webContents }) => webContents.getURL().startsWith(url)),
+  pdfWindowUrl), false);
   await expect(page.locator(".document-title")).toContainText(
     "markdown/one.md",
   );
@@ -268,6 +360,105 @@ try {
   assert.match(opf, /chapter-0" properties="page-spread-right"/);
   assert.match(opf, /chapter-1" properties="page-spread-left"/);
   assert.match(opf, /chapter-2" properties="page-spread-right"/);
+
+  await openProject(tableProject);
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  const tableOptions = page.getByRole("region", { name: "PDF 与 EPUB 导出" });
+  await tableOptions
+    .getByRole("button", { name: "严格预检", exact: true })
+    .click();
+  const tableReport = tableOptions.getByRole("region", {
+    name: "出版转换校验结果",
+  });
+  await expect(tableReport).toContainText("严格预检未通过");
+  await expect(tableReport).toContainText("第 9 行的表格");
+  await expect(tableReport).toContainText("第 13 行的表格");
+  await expect(
+    tableReport.getByRole("button", { name: "markdown/001.md", exact: true }),
+  ).toHaveCount(2);
+  await tableOptions.getByRole("button", { name: "预览 PDF", exact: true }).click();
+  await expect(tableReport).toContainText("严格预检未通过");
+  assert.equal(await app.evaluate(({ BrowserWindow }, url) =>
+    BrowserWindow.getAllWindows().some(({ webContents }) => webContents.getURL().startsWith(url)),
+  pdfWindowUrl), false);
+  const tablePlan = await page.evaluate(
+    (file) => window.mardikor!.invoke("planPublication", file, "pdf", "pdf-a4"),
+    tableProject,
+  );
+  assert.deepEqual(
+    tablePlan.report.issues.map(({ code }) => code),
+    ["E_PDF_TABLE_WIDTH", "E_PDF_TABLE_WIDTH"],
+  );
+  const blockedPdf = path.join(run, "tables-narrow.pdf");
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath });
+  }, blockedPdf);
+  await assert.rejects(
+    page.evaluate(async ({ file, fingerprint }) => {
+      const target = await window.mardikor!.dialog("save-pdf");
+      await window.mardikor!.invoke(
+        "exportPublication", file, target!, "pdf", fingerprint, "pdf-a4",
+      );
+    }, { file: tableProject, fingerprint: tablePlan.fingerprint }),
+    /第 9 行的表格/,
+  );
+  await assert.rejects(fs.access(blockedPdf), { code: "ENOENT" });
+  const tablesPdf = await exportFile(
+    tableProject, "pdf", "pdf-wide", "tables-wide.pdf",
+  );
+  assert.ok((await PDFDocument.load(tablesPdf)).getPageCount() >= 1);
+
+  await openProject(fontProject);
+  await expect(preview).toHaveCSS("font-family", /MardikorFallback/);
+  await expect.poll(() => page.evaluate(async () =>
+    (await document.fonts.load("16px MardikorFallback", "汉字")).some((face) => face.status === "loaded"),
+  )).toBe(true);
+  await page.getByRole("button", { name: "校验与导出", exact: true }).click();
+  const fontOptions = page.getByRole("region", { name: "PDF 与 EPUB 导出" });
+  const fontSelector = fontOptions.getByRole("combobox", { name: "导出字体", exact: true });
+  const fontReport = fontOptions.getByRole("region", { name: "出版转换校验结果" });
+  await fontOptions.getByRole("button", { name: "严格预检", exact: true }).click();
+  await expect(fontReport).toContainText("字体文件缺失");
+  await fontSelector.click();
+  await page.getByRole("option", { name: "Noto Sans CJK SC（内置回退字体）", exact: true }).click();
+  await fontOptions.getByRole("button", { name: "保存并预检", exact: true }).click();
+  await expect(fontReport).toContainText("严格预检通过", { timeout: 30000 });
+  assert.match(readMdkTextFile(fontProject, "settings.toml").content, /Missing\.otf/);
+
+  await app.evaluate(({ dialog }, filename) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filename] });
+  }, sampleFont);
+  await fontOptions.getByRole("button", { name: "打包字体文件", exact: true }).click();
+  await expect(fontSelector).toHaveAttribute("data-value", packedFont);
+  await fontOptions.getByRole("button", { name: "保存并预检", exact: true }).click();
+  await expect(fontReport).toContainText("严格预检通过", { timeout: 30000 });
+  const withFont = new AdmZip(await fs.readFile(fontProject));
+  assert.ok(withFont.getEntry(packedFont));
+  assert.ok(withFont.getEntry("resources/other/Mardikor-Noto-OFL.txt"));
+  assert.match(withFont.readAsText("publication.toml"), /font = "resources\/font\/NotoSerifCJKsc-Regular\.otf"/);
+  const fontPdf = await PDFDocument.load(await exportFile(fontProject, "pdf", "pdf", "packed-font.pdf"));
+  assert.ok(fontPdf.context.enumerateIndirectObjects().some(([, object]) =>
+    object instanceof PDFDict && /NotoSerifCJKsc/.test(
+      object.lookupMaybe(PDFName.of("FontName"), PDFName)?.decodeText() ?? "",
+    ),
+  ));
+  await fontOptions.getByRole("combobox", { name: "出版导出格式", exact: true }).click();
+  await page.getByRole("option", { name: "EPUB 3 电子书", exact: true }).click();
+  await fontSelector.click();
+  await page.getByRole("option", { name: packedFont, exact: true }).click();
+  await expect(fontOptions.getByRole("checkbox", { name: "嵌入字体", exact: true })).toBeChecked();
+  await fontOptions.getByRole("button", { name: "保存并预检", exact: true }).click();
+  await expect(fontReport).toContainText("严格预检通过", { timeout: 30000 });
+  const fontEpub = new AdmZip(await exportFile(fontProject, "epub", "epub", "packed-font.epub"));
+  assert.ok(fontEpub.getEntry("EPUB/assets/body-font.otf"));
+  await page.getByRole("button", { name: "返回文稿", exact: true }).click();
+  await page.getByRole("tab", { name: "工程设置", exact: true }).click();
+  await page.getByRole("combobox", { name: "字体", exact: true }).click();
+  await page.getByRole("option", { name: packedFont, exact: true }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await expect.poll(() => readMdkTextFile(fontProject, "settings.toml").content).toContain(packedFont);
+  await page.getByRole("tab", { name: "预览", exact: true }).click();
+  await expect(preview).toHaveCSS("font-family", /MardikorProjectFont/);
 
   await openProject(minimal);
   await page.getByRole("tab", { name: "工程设置", exact: true }).click();
@@ -307,6 +498,7 @@ try {
   await options.getByRole("spinbutton", { name: "纸张高度（mm）", exact: true }).fill("210");
   await options.getByRole("checkbox", { name: "生成目录页", exact: true }).check();
   await choose("出版导出格式", "EPUB 3 电子书");
+  await expect(options.getByRole("button", { name: "预览 PDF", exact: true })).toHaveCount(0);
   await expect(options.getByRole("button", { name: "导出 EPUB", exact: true })).toBeVisible();
   await choose("出版版式", "固定版式");
   await expect(options.getByRole("checkbox", { name: "嵌入字体", exact: true })).toBeChecked();

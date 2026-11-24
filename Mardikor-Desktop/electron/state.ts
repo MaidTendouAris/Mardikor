@@ -5,6 +5,7 @@ import { serialize, deserialize } from "node:v8";
 import { openRecovery, sealRecovery, type EnvelopeKey } from "./envelope";
 import type { SaveSnapshot } from "../shared/mdk";
 import type { Preferences, RecentProject } from "../shared/desktop";
+import { isDocumentPosition, type DocumentPosition } from "../shared/document-position";
 import {
   appThemes,
   defaultPageLength,
@@ -12,7 +13,7 @@ import {
   maxPageLength,
 } from "../shared/desktop";
 import type { PublicationConfiguration } from "../shared/publication";
-import { migrateShortcuts, shortcutError } from "../shared/shortcuts";
+import { migrateShortcuts, shortcutError, type ShortcutPlatform } from "../shared/shortcuts";
 import { t, languagePreferences } from "../shared/i18n";
 import {
   defaultReadingPreferences,
@@ -22,6 +23,7 @@ import {
   type ReadingPreferences,
 } from "../shared/reading";
 
+const shortcutPlatform: ShortcutPlatform = process.platform === "darwin" ? "mac" : "other";
 const defaults: Preferences = {
   autosave: true,
   autosaveInterval: 30,
@@ -32,6 +34,7 @@ const defaults: Preferences = {
   appTheme: "light",
   pageLength: defaultPageLength,
   showPageMarkers: true,
+  allowTableHorizontalScroll: true,
   language: "system",
 };
 // A single 64 MiB Markdown entry can take twice its UTF-8 size in a
@@ -56,6 +59,7 @@ export class AppState {
     windowSize?: WindowSize;
   };
   private recoveryTargets = new Map<string, string>();
+  private positions = new Map<string, DocumentPosition>();
   private recoveryClaims = new Map<string, string>();
   constructor(directory: string) {
     this.file = path.join(directory, "workspace.json");
@@ -66,6 +70,12 @@ export class AppState {
     };
     if (fs.existsSync(this.file)) {
       const saved = JSON.parse(fs.readFileSync(this.file, "utf8"));
+      if (Array.isArray(saved.positions)) {
+        for (const pair of saved.positions) {
+          if (Array.isArray(pair) && typeof pair[0] === "string" && isDocumentPosition(pair[1]))
+            this.positions.set(pair[0], pair[1]);
+        }
+      }
       this.value.reading = normalizeReadingPreferences(saved.reading);
       if (!Array.isArray(saved.recent))
         throw new Error(t("应用状态损坏，无法读取最近工程。"));
@@ -103,6 +113,8 @@ export class AppState {
         this.value.preferences.pageLength = defaultPageLength;
       if (typeof this.value.preferences.showPageMarkers !== "boolean")
         this.value.preferences.showPageMarkers = true;
+      if (typeof this.value.preferences.allowTableHorizontalScroll !== "boolean")
+        this.value.preferences.allowTableHorizontalScroll = true;
       if (
         !languagePreferences.includes(
           this.value.preferences.language ?? "system",
@@ -111,6 +123,7 @@ export class AppState {
         this.value.preferences.language = "system";
       this.value.preferences.shortcuts = migrateShortcuts(
         this.value.preferences.shortcuts,
+        shortcutPlatform,
       );
       if (
         Number.isFinite(saved.updateLastChecked) &&
@@ -127,6 +140,16 @@ export class AppState {
   }
   recent() {
     return this.value.recent;
+  }
+  documentPosition(file: string, position?: DocumentPosition) {
+    const absolute = path.resolve(file);
+    const key = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    if (position) {
+      this.positions.delete(key);
+      this.positions.set(key, position);
+      this.save();
+    }
+    return this.positions.get(key);
   }
   windowSize(size?: WindowSize) {
     if (size) {
@@ -278,7 +301,7 @@ export class AppState {
   preferences(value?: Preferences) {
     if (value) {
       if (value.shortcuts !== undefined) {
-        const error = shortcutError(value.shortcuts);
+        const error = shortcutError(value.shortcuts, shortcutPlatform);
         if (error) throw new Error(error);
       }
       if (
@@ -298,6 +321,8 @@ export class AppState {
           !validPageLength(value.pageLength)) ||
         (value.showPageMarkers !== undefined &&
           typeof value.showPageMarkers !== "boolean") ||
+        (value.allowTableHorizontalScroll !== undefined &&
+          typeof value.allowTableHorizontalScroll !== "boolean") ||
         (value.appTheme !== undefined && !appThemes.includes(value.appTheme)) ||
         (value.language !== undefined &&
           !languagePreferences.includes(value.language))
@@ -368,7 +393,7 @@ export class AppState {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const temp = `${this.file}.${randomUUID()}.tmp`;
     try {
-      fs.writeFileSync(temp, JSON.stringify(this.value, null, 2), {
+      fs.writeFileSync(temp, JSON.stringify({ ...this.value, positions: [...this.positions] }, null, 2), {
         flag: "wx",
       });
       fs.renameSync(temp, this.file);

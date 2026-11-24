@@ -16,6 +16,8 @@ export function EditorMenu({
   onClose,
   focusFirst = false,
   ariaLabel,
+  container,
+  className,
 }: {
   x: number;
   y: number;
@@ -23,6 +25,8 @@ export function EditorMenu({
   onClose: () => void;
   focusFirst?: boolean;
   ariaLabel?: string;
+  container?: Element;
+  className?: string;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -86,7 +90,7 @@ export function EditorMenu({
   }, [x, y, onClose, focusFirst]);
   return createPortal(
     <div
-      className="editor-context-menu"
+      className={className ? `editor-context-menu ${className}` : "editor-context-menu"}
       ref={menu}
       role="menu"
       aria-label={ariaLabel ?? t("正文右键菜单")}
@@ -111,23 +115,26 @@ export function EditorMenu({
         </div>
       ))}
     </div>,
-    document.body,
+    container ?? document.body,
   );
 }
 
 export function EditorDialog({
   title,
   onClose,
+  initialFocus,
   children,
 }: {
   title: string;
   onClose: () => void;
+  initialFocus?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current!;
     dialog.showModal();
+    if (initialFocus) dialog.querySelector<HTMLElement>(initialFocus)?.focus();
     return () => {
       if (dialog.open) dialog.close();
     };

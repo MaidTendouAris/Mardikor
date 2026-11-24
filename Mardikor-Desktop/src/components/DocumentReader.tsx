@@ -12,6 +12,7 @@ import {
 } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { t } from "../../shared/i18n";
+import type { DocumentPosition } from "../../shared/document-position";
 import {
   entryDisplayName,
   type MdkSettings,
@@ -208,6 +209,8 @@ interface ReaderProps extends ReaderSettingsProps {
   findDocuments: ReadonlyMap<string, FindMatches>;
   onHeading: (path: string, index: number) => void;
   onScroll: (ratio: number) => void;
+  resume?: DocumentPosition;
+  onPosition: (position: DocumentPosition) => void;
   openFile: (path: string) => void;
 }
 
@@ -229,6 +232,8 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
       findDocuments,
       onHeading,
       onScroll,
+      resume,
+      onPosition,
       openFile,
       ...settings
     },
@@ -256,6 +261,8 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
     const spread = useRef<HTMLDivElement>(null);
     const requestedPath = useRef("");
     const progress = useRef(0);
+    const restored = useRef<typeof resume>(undefined);
+    const reported = useRef("");
     const expectedScroll = useRef<number | undefined>(undefined);
     const fragment = useRef<{ path: string; id: string } | undefined>(
       undefined,
@@ -315,7 +322,7 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
       if (selected) {
         setUnitId(selected.id);
       }
-    }, [activePath, activeEntryId, units]);
+    }, [activePath, activeEntryId, units, resume]);
 
     function bookLayout(node: HTMLElement) {
       const flow = spread.current!;
@@ -388,6 +395,12 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
         progress.current = distance > 0 ? node.scrollTop / distance : 0;
       }
       follow(node, firstPageWidth);
+      const selected = units?.[index];
+      const key = selected && `${selected.id}\0${progress.current}`;
+      if (selected && key && reported.current !== key) {
+        reported.current = key;
+        onPosition({ path: selected.path, entryId: selected.id, view: "reader", scroll: progress.current });
+      }
       return true;
     }
     function locate(node: HTMLElement, rect: DOMRect, step?: number) {
@@ -407,6 +420,12 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
       if (node.style.getPropertyValue("--reader-page-height") !== height)
         node.style.setProperty("--reader-page-height", height);
       const layout = pagedBook && spread.current ? bookLayout(node) : undefined;
+      if (resume && restored.current !== resume && units?.[index]?.path === resume.path &&
+          node.querySelector(".reader-manuscript[data-ready]") &&
+          !node.querySelector(".reader-manuscript:not([data-ready])")) {
+        progress.current = resume.scroll;
+        restored.current = resume;
+      }
       const pending = fragment.current;
       const article =
         pending &&
@@ -443,7 +462,7 @@ export const DocumentReader = forwardRef<DocumentReaderHandle, ReaderProps>(
       resize.observe(node);
       return () => resize.disconnect();
     }, []);
-    useLayoutEffect(restore, [first, units, style]);
+    useLayoutEffect(restore, [first, units, style, resume]);
 
     function openUnit(next: number, id?: string, end = false) {
       const unit = units?.[next];

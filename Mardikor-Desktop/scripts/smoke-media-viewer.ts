@@ -29,6 +29,8 @@ function wav() {
   bytes.writeUInt16LE(16, 34);
   bytes.write("data", 36);
   bytes.writeUInt32LE(bytes.length - 44, 40);
+  for (let offset = 44, i = 0; offset < bytes.length; offset += 2, i++)
+    bytes.writeInt16LE(Math.round(Math.sin(i * Math.PI / 40) * 1024), offset);
   return bytes;
 }
 
@@ -108,13 +110,13 @@ delete env.ELECTRON_RUN_AS_NODE;
 delete env.VITE_DEV_SERVER_URL;
 const app = await electron.launch({
   ...(executablePath
-    ? { executablePath, args: [project] }
-    : { args: [".", project] }),
+    ? { executablePath, args: ["--mute-audio", project] }
+    : { args: [".", "--mute-audio", project] }),
   env,
 });
 const editor = await app.firstWindow();
 editor.setDefaultTimeout(15000);
-const menu = editor.getByRole("menu", { name: /^(正文|预览)右键菜单$/ });
+const menu = editor.getByRole("menu", { name: /^(正文右键菜单|预览右键菜单|媒体播放菜单)$/ });
 const menuItem = (name: string) =>
   menu.getByRole("menuitem", { name, exact: true });
 const pageErrors: string[] = [];
@@ -248,8 +250,11 @@ try {
   await expect(
     viewer.getByRole("button", { name: "全屏显示", exact: true }),
   ).toBeVisible();
-  await viewer.getByRole("button", { name: "关闭窗口", exact: true }).click();
-  await expect.poll(() => viewer.isClosed()).toBe(true);
+  const viewerClosed = viewer.waitForEvent("close");
+  await viewer.getByRole("button", { name: "关闭窗口", exact: true }).click().catch((error) => {
+    if (!viewer.isClosed()) throw error;
+  });
+  await viewerClosed;
   await imageTarget.click({ button: "right" });
   await expect(menuItem("编辑图片")).toBeVisible();
   await expect(menuItem("移除图片")).toBeVisible();
@@ -271,7 +276,11 @@ try {
   const audioProgress = audioBar.getByRole("slider", { name: "播放进度" });
   const audioVolume = audioBar.getByRole("slider", { name: "音量" });
   const audioLoop = audioBar.getByRole("button", { name: "循环播放" });
+  await expect(audioVolume).toBeVisible();
   await expect(audioVolume).toHaveAttribute("aria-valuetext", "30%");
+  if (process.env.MARDIKOR_CAPTURE_MEDIA_UI) {
+    await audioViewer.screenshot({ path: path.join(directory, "audio-window.png") });
+  }
   await audioVolume.press("ArrowRight");
   await expect(audioVolume).toHaveAttribute("aria-valuetext", "31%");
   await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.volume)).toBe(0.31);
@@ -279,7 +288,8 @@ try {
   await expect(audioVolume).toHaveAttribute("aria-valuetext", "0%");
   await audioBar.getByRole("button", { name: "取消静音", exact: true }).click();
   await expect(audioVolume).toHaveAttribute("aria-valuetext", "31%");
-  await audioBar.getByLabel("播放速度").selectOption("1.5");
+  await audioBar.getByRole("combobox", { name: "播放速度" }).click();
+  await audioViewer.getByRole("option", { name: "1.5×", exact: true }).click();
   await expect
     .poll(() => player.evaluate((el: HTMLAudioElement) => el.playbackRate))
     .toBe(1.5);
@@ -299,6 +309,80 @@ try {
   await audioPause.click();
   await expect(audioPlay).toBeVisible();
 
+  const audioScene = audioViewer.locator(".media-player");
+  await audioProgress.press("Home");
+  await audioScene.press("ArrowRight");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.currentTime)).toBe(5);
+  await audioScene.press("ArrowLeft");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.currentTime)).toBe(0);
+  await audioScene.press("ArrowUp");
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "36%");
+  await audioScene.press("ArrowDown");
+  await expect(audioVolume).toHaveAttribute("aria-valuetext", "31%");
+  await audioScene.focus();
+  await audioViewer.keyboard.down("ArrowLeft");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => el.playbackRate)).toBe(2);
+  await expect(audioScene.getByText("2 倍速播放", { exact: true })).toBeVisible();
+  await audioViewer.keyboard.up("ArrowLeft");
+  await expect.poll(() => player.evaluate((el: HTMLAudioElement) => [el.playbackRate, el.paused])).toEqual([1.5, true]);
+  await audioScene.press("Space");
+  await expect(audioPause).toBeVisible();
+  await audioViewer.locator(".media-viewer-titlebar").hover();
+  await expect(audioScene).toHaveAttribute("data-controls-visible", "false");
+  await expect(audioScene.locator(".media-playback-overlay")).toHaveCSS("opacity", "1");
+  await expect(audioVolume).toBeVisible();
+  await audioScene.press("Space");
+  await expect(audioPlay).toBeVisible();
+  await audioViewer.evaluate(() => {
+    let bass: BiquadFilterNode | undefined;
+    let analyser: AnalyserNode | undefined;
+    const filter = AudioContext.prototype.createBiquadFilter;
+    const pan = AudioContext.prototype.createStereoPanner;
+    AudioContext.prototype.createBiquadFilter = function () {
+      const node = filter.call(this);
+      bass ??= node;
+      return node;
+    };
+    AudioContext.prototype.createStereoPanner = function () {
+      const node = pan.call(this);
+      const sample = this.createAnalyser();
+      const connect = node.connect.bind(node);
+      analyser = sample;
+      Object.defineProperty(node, "connect", { value(destination: AudioNode) {
+        connect(sample);
+        return sample.connect(destination);
+      } });
+      return node;
+    };
+    Object.assign(window, {
+      mediaEffectSample() {
+        if (!analyser || !bass) return { bass: 0, peak: 0 };
+        const signal = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(signal);
+        return { bass: bass.gain.value, peak: Math.max(...signal.map(Math.abs)) };
+      },
+    });
+  });
+  const effectSample = () => audioViewer.evaluate(() =>
+    (window as typeof window & { mediaEffectSample: () => { bass: number; peak: number } }).mediaEffectSample());
+  await audioScene.locator(".media-player-surface").click({ button: "right" });
+  await audioViewer.getByRole("menuitem", { name: "音频音效调节", exact: true }).click();
+  const audioEffects = audioViewer.getByRole("dialog", { name: "音频音效调节", exact: true });
+  await audioEffects.getByRole("slider", { name: "低音", exact: true }).fill("6");
+  await expect(audioEffects).toContainText("6 dB");
+  await audioEffects.getByRole("button", { name: "关闭对话框", exact: true }).click();
+  await audioScene.press("Space");
+  await expect.poll(async () => (await effectSample()).bass).toBeGreaterThan(5.8);
+  await expect.poll(async () => (await effectSample()).peak).toBeGreaterThan(0.001);
+  await audioScene.press("Space");
+  await audioScene.press("f");
+  await expect(audioBar.getByRole("button", { name: "退出全屏", exact: true })).toBeVisible();
+  await audioScene.press("Escape");
+  await expect(audioBar.getByRole("button", { name: "全屏", exact: true })).toBeVisible();
+  await audioScene.locator(".media-player-surface").click({ button: "right" });
+  await audioViewer.getByRole("menuitem", { name: "音频统计信息", exact: true }).click();
+  await expect(audioViewer.getByRole("dialog", { name: "音频统计信息", exact: true })).toContainText("31%");
+
   const videoViewer = await openViewer(
     editor.locator(".document-body a").filter({ hasText: "视频样本" }),
     "查看视频",
@@ -314,13 +398,58 @@ try {
   assert.equal(await videoPlayer.evaluate((el: HTMLVideoElement) => el.volume), 0.3);
   await expect(videoPlayer).not.toHaveAttribute("controls", "");
   const videoBar = videoViewer.getByRole("group", { name: "媒体播放控件" });
-  await expect(videoBar.getByRole("slider", { name: "音量" })).toHaveAttribute("aria-valuetext", "30%");
-  await videoBar.getByRole("button", { name: "播放", exact: true }).click();
+  const videoScene = videoViewer.locator(".media-player");
+  const videoVolume = videoBar.getByRole("slider", { name: "音量" });
+  const videoSpeed = videoBar.getByRole("combobox", { name: "播放速度" });
+  const videoOverlay = videoScene.locator(".media-playback-overlay");
+  const videoSurface = videoScene.locator(".media-player-surface");
+  const grayMask = "rgba(40, 41, 44, 0.78)";
+  await expect(videoVolume).toBeVisible();
+  await expect(videoVolume).toHaveAttribute("aria-valuetext", "30%");
+  await videoBar.getByRole("slider", { name: "播放进度", exact: true }).hover();
+  const frame = videoScene.locator(".media-timeline-preview canvas");
+  await expect(frame).toBeVisible();
+  assert.equal(await videoPlayer.evaluate((el: HTMLVideoElement) => el.currentTime), 0);
+  assert.ok(await frame.evaluate((canvas: HTMLCanvasElement) => canvas.getContext("2d")!.getImageData(90, 40, 1, 1).data[3]));
+  await videoBar.getByRole("button", { name: "循环播放" }).click();
+  await videoPlayer.click();
   await expect.poll(() => videoPlayer.evaluate((el: HTMLVideoElement) => el.currentTime)).toBeGreaterThan(0);
   await expect(videoBar.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
-  await videoBar.getByRole("button", { name: "全屏显示", exact: true }).click();
+  await expect(videoPlayer).toHaveCSS("cursor", "pointer");
+  await expect.poll(() => videoSurface.evaluate((el) => getComputedStyle(el, "::after").borderColor)).toBe("rgba(255, 255, 255, 0.36)");
+  await expect(videoOverlay).toHaveCSS("opacity", "0");
+  await expect(videoPlayer).toHaveCSS("cursor", "none");
+  await videoPlayer.hover({ position: { x: 30, y: 30 } });
+  await expect(videoOverlay).toHaveCSS("opacity", "1");
+  await expect(videoPlayer).toHaveCSS("cursor", "pointer");
+  await videoPlayer.dblclick();
   await expect(videoBar.getByRole("button", { name: "退出全屏", exact: true })).toBeVisible();
-  await videoBar.getByRole("button", { name: "退出全屏", exact: true }).click();
+  await videoScene.press("Escape");
+  await expect(videoBar.getByRole("button", { name: "全屏", exact: true })).toBeVisible();
+  await videoScene.press("f");
+  await expect(videoBar.getByRole("button", { name: "退出全屏", exact: true })).toBeVisible();
+  await videoSpeed.click();
+  const speedOptions = videoViewer.getByRole("listbox");
+  await expect(speedOptions).toHaveCSS("background-color", grayMask);
+  assert.equal(await speedOptions.evaluate((el) => !!el.closest(":fullscreen")), true);
+  await speedOptions.getByRole("option", { name: "1.25×", exact: true }).click();
+  await expect.poll(() => videoPlayer.evaluate((el: HTMLVideoElement) => el.playbackRate)).toBe(1.25);
+  await videoPlayer.click({ button: "right" });
+  const videoMenu = videoViewer.getByRole("menu", { name: "媒体播放菜单", exact: true });
+  await expect(videoMenu).toHaveCSS("background-color", grayMask);
+  if (process.env.MARDIKOR_CAPTURE_MEDIA_UI) {
+    await videoViewer.screenshot({ path: path.join(directory, "video-menu.png") });
+  }
+  await videoMenu.getByRole("menuitem", { name: "视频色彩调整", exact: true }).click();
+  const colors = videoViewer.getByRole("dialog", { name: "视频色彩调整", exact: true });
+  await expect(colors).toHaveCSS("background-color", grayMask);
+  await colors.getByRole("slider", { name: "亮度", exact: true }).fill("120");
+  await expect(videoPlayer).toHaveCSS("filter", /brightness\(1.2\)/);
+  await videoScene.press("Escape");
+  await expect(colors).toBeHidden();
+  await videoPlayer.click({ button: "right" });
+  await videoViewer.getByRole("menuitem", { name: "视频统计信息", exact: true }).click();
+  await expect(videoViewer.getByRole("dialog", { name: "视频统计信息", exact: true })).toContainText("32 × 24");
   const unsupportedViewer = await openViewer(
     editor.locator(".document-body a").filter({ hasText: "不支持的视频" }),
     "查看视频",
@@ -341,8 +470,15 @@ try {
   const audioGroup = inline("音频样本");
   const volumeSlider = audioGroup.getByRole("slider", { name: "音量" });
   const volumeValue = audioGroup.locator(".preview-player-volume-value");
+  await expect(audioGroup.locator(".media-player-surface")).toBeHidden();
+  await expect(volumeSlider).toBeVisible();
   await expect(volumeSlider).toHaveAttribute("aria-valuenow", "30");
   await expect(volumeValue).toHaveText("30%");
+  assert.ok(await audioGroup.evaluate((el) => el.getBoundingClientRect().height < 96));
+  if (process.env.MARDIKOR_CAPTURE_MEDIA_UI) {
+    await audioGroup.screenshot({ path: path.join(directory, "audio-inline.png") });
+    console.log(`Captured media UI in ${directory}`);
+  }
   const wideWidth = await audioGroup.evaluate((el) => ({
     player: el.getBoundingClientRect().width,
     slot: el.parentElement!.getBoundingClientRect().width,
@@ -357,7 +493,7 @@ try {
   assert.equal(await audioGroup.evaluate((el) => el.getBoundingClientRect().width), 400);
   const volumeTrack = volumeSlider.locator(".player-slider-track");
   const trackBounds = await volumeTrack.boundingBox();
-  assert.ok(trackBounds && trackBounds.width > 150);
+  assert.ok(trackBounds && trackBounds.width > 88);
   await editor.mouse.move(trackBounds.x + trackBounds.width * 0.3, trackBounds.y + 2);
   await editor.mouse.down();
   await editor.mouse.move(
@@ -392,7 +528,13 @@ try {
   await expect.poll(() => inlineAudio.evaluate((el: HTMLAudioElement) => el.currentTime)).toBe(12);
   const inlineVideo = inline("视频样本").locator("video");
   assert.equal(await inlineVideo.evaluate((el: HTMLVideoElement) => el.volume), 0.3);
-  await editor.locator(".preview-body").getByRole("link", { name: "视频样本" }).click();
+  const inlineVideoLink = editor.locator(".preview-body").getByRole("link", { name: "视频样本" });
+  await inlineVideoLink.focus();
+  await inlineVideo.hover();
+  await expect(inline("视频样本")).toBeFocused();
+  await inlineVideoLink.hover();
+  await expect(inlineVideoLink).toBeFocused();
+  await inlineVideoLink.click();
   await expect.poll(() => inlineVideo.evaluate((el: HTMLVideoElement) => el.videoWidth)).toBe(32);
   assert.equal(await inlineVideo.evaluate((el: HTMLVideoElement) => el.duration), 2);
   const videoRatio = await inlineVideo.evaluate((el) => {

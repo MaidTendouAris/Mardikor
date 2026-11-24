@@ -190,7 +190,7 @@ try {
     "href",
     `../resources/other/${encodeURIComponent(path.basename(bad))}`,
   );
-  await page.getByRole("button", { name: "关闭提示", exact: true }).click();
+  await expect(page.getByRole("button", { name: "关闭提示", exact: true })).toHaveCount(0);
   if (!packaged)
     await page.screenshot({
       path: path.join(root, "visual-toolbar-and-outline.png"),

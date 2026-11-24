@@ -36,3 +36,7 @@ export function t(key: keyof typeof english, ...values: unknown[]) {
       )
     : message;
 }
+
+export function translations(key: keyof typeof english) {
+  return [key, english[key]] as const;
+}

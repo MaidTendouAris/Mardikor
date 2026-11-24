@@ -91,7 +91,7 @@ export function AppSettings({
       />
     );
   return (
-    <section className="settings-page page-scroll">
+    <section className="settings-page app-settings-page page-scroll">
       <header className="app-settings-header">
         <h1>{t("应用设置")}</h1>
         <div className="button-row">
@@ -175,6 +175,21 @@ export function AppSettings({
             checked={draft.showPageMarkers !== false}
             onChange={(event) =>
               setDraft({ ...draft, showPageMarkers: event.target.checked })
+            }
+          />
+        </label>
+        <label className="setting-row">
+          <span>
+            <strong>{t("允许表格横向滚动")}</strong>
+            <small>{t("宽表格可在表格内左右滚动。关闭后，表格适应正文宽度。")}</small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label={t("允许表格横向滚动")}
+            checked={draft.allowTableHorizontalScroll !== false}
+            onChange={(event) =>
+              setDraft({ ...draft, allowTableHorizontalScroll: event.target.checked })
             }
           />
         </label>

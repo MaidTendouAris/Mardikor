@@ -60,6 +60,8 @@ export function Select({
   disabled,
   className = "",
   onCloseFocus,
+  popupClassName,
+  popupContainer,
   ...props
 }: {
   value: string;
@@ -67,8 +69,11 @@ export function Select({
   onValueChange: (value: string) => void;
   disabled?: boolean;
   className?: string;
+  title?: string;
   "aria-label": string;
   onCloseFocus?: () => void;
+  popupClassName?: string;
+  popupContainer?: Element;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -100,10 +105,10 @@ export function Select({
         </Primitive.Icon>
       </Primitive.Trigger>
       <Primitive.Portal
-        container={trigger.current?.closest("dialog") ?? undefined}
+        container={popupContainer ?? trigger.current?.closest("dialog") ?? undefined}
       >
         <Primitive.Content
-          className="select-content"
+          className={popupClassName ? `select-content ${popupClassName}` : "select-content"}
           position="popper"
           align="start"
           sideOffset={4}

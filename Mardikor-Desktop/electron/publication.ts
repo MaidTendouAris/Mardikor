@@ -7,7 +7,7 @@ import { applyV2Typography, imageStyleMarkup } from "../shared/v2-typography";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import fontkit from "@pdf-lib/fontkit";
+import { fallbackFontFile, isFontFile, systemFontName } from "../shared/fonts";
 import katex from "katex";
 import math from "@vscode/markdown-it-katex";
 import Token from "markdown-it/lib/token.mjs";
@@ -39,10 +39,13 @@ import {
 } from "../shared/publication";
 import type { MdkProject, ReadingUnit, ValidationIssue } from "../shared/mdk";
 import { assertPassiveSvg, checkMedia, detectMediaType } from "./media";
+import { fontMediaType, parsedFont, systemFontFace } from "./document-font";
 import {
+  listMarkdownFonts,
   openMarkdownFile,
   readMarkdownFile,
   readMarkdownResource,
+  readMarkdownResourceBytes,
 } from "./markdown-file";
 import { readMdkPublication } from "./mdk";
 import { pdfCjkAliases } from "./pdf-text";
@@ -84,6 +87,15 @@ export interface PublicationRuntime {
     prepared: PreparedPublication,
   ) => Promise<{ bytes: Buffer; pages: number }>;
   epub: (prepared: PreparedPublication) => Promise<Buffer>;
+}
+export class PublicationLayoutError extends Error {
+  constructor(readonly issues: ValidationIssue[]) {
+    super(
+      issues
+        .map(({ path, message }) => (path ? `${path} · ${message}` : message))
+        .join("\n"),
+    );
+  }
 }
 type Snapshot = {
   project: MdkProject;
@@ -156,7 +168,7 @@ function snapshot(
   };
 }
 const bundledFonts = {
-  "sans-serif": ["NotoSansCJKsc-Regular.otf", bundledFontHash],
+  "sans-serif": [fallbackFontFile, bundledFontHash],
   serif: [
     "NotoSerifCJKsc-Regular.otf",
     "2a2eae2628df83556c54018c41e20fa532c1b862c5256ae8b3f23feb918d12ca",
@@ -167,11 +179,26 @@ const bundledFonts = {
   ],
 } as const;
 
+export interface SystemFontData {
+  name: string;
+  bytes?: Buffer;
+  error?: string;
+}
+
 function fontBytes(
+  file: string,
   source: Snapshot,
   runtime: Pick<PublicationRuntime, "assetDirectory">,
+  systemFont?: SystemFontData,
 ) {
   const name = source.project.settings.appearance.font_family;
+  const installed = systemFontName(name);
+  if (installed) {
+    if (systemFont?.error) throw new Error(systemFont.error);
+    if (!systemFont?.bytes || systemFont.name !== installed)
+      throw new Error(t("系统字体 {0} 不可用，请重新选择字体或使用内置回退字体。", installed));
+    return systemFontFace(systemFont.bytes, installed);
+  }
   const family = name === "system" ? "sans-serif" : name;
   if (Object.hasOwn(bundledFonts, family)) {
     const [filename, hash] = bundledFonts[family as keyof typeof bundledFonts];
@@ -180,48 +207,25 @@ function fontBytes(
       throw new Error(t("内置导出字体的完整性检查未通过。"));
     return bytes;
   }
-  if (!name.startsWith("resources/") || !source.files.has(name))
-    throw new Error(
-      t(
-        "PDF 需要工程内的字体资源。请选择内置 Noto 字体，或导入字体后选择其 resources/font 路径；不使用本机字体替代。",
-      ),
-    );
-  const bytes = source.files.get(name)!;
-  checkMedia(name, bytes);
-  if (
-    !["font/otf", "font/ttf"].includes(detectMediaType(bytes) ?? "") ||
-    bytes.subarray(0, 4).toString() === "ttcf"
-  )
-    throw new Error(
-      t("出版导出支持独立 OTF / TTF 字体，不支持字体集合或压缩字体。"),
-    );
+  if (!name.startsWith("resources/") || !isFontFile(name))
+    throw new Error(t("请选择内置字体，或打包独立 OTF / TTF 字体文件。"));
+  let bytes: Buffer | undefined;
+  try {
+    bytes = isMarkdownFile(file)
+      ? readMarkdownResourceBytes(file, name)
+      : source.files.has(name) ? source.files.get(name) : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!bytes)
+    throw new Error(t("字体文件缺失：{0}。请重新打包，或选用内置回退字体。", name));
+  fontMediaType(name, bytes);
   return bytes;
 }
-function parsedFont(data: Buffer) {
-  const font = fontkit.create(data);
-  if (!("hasGlyphForCodePoint" in font))
-    throw new Error(t("字体集合不能用于固定导出。"));
-  // OS/2 embedding restrictions: restricted license / no subsetting / bitmap-only.
-  const restriction = (
-    font as unknown as {
-      "OS/2"?: {
-        fsType?: {
-          noEmbedding?: boolean;
-          noSubsetting?: boolean;
-          bitmapOnly?: boolean;
-        };
-      };
-    }
-  )["OS/2"]?.fsType;
-  if (
-    restriction?.noEmbedding ||
-    restriction?.noSubsetting ||
-    restriction?.bitmapOnly
-  )
-    throw new Error(
-      t("字体的嵌入许可或子集限制不允许此导出，请换用可嵌入的字体。"),
-    );
-  return font;
+export function knownNotoLicense(font: Buffer, assetDirectory: string) {
+  const hash = sha256(font);
+  if (Object.values(bundledFonts).some(([, bundledHash]) => bundledHash === hash))
+    return fs.readFileSync(path.join(assetDirectory, "OFL.txt"));
 }
 export function publicationInfo(
   file: string,
@@ -262,12 +266,9 @@ export function publicationInfo(
     },
     engine: runtime.engine,
     configuration: configurationFrom(project.settings, publication),
-    fonts: project.files
-      .filter(
-        (f) =>
-          f.path.startsWith("resources/font/") && /\.(otf|ttf)$/i.test(f.path),
-      )
-      .map((f) => f.path),
+    fonts: isMarkdownFile(file) ? listMarkdownFonts(file) : project.files
+      .filter((item) => item.kind === "resource" && item.path.startsWith("resources/") && isFontFile(item.path))
+      .map((item) => item.path),
     images: project.files
       .filter(
         (f) => /\.(png|jpe?g|svg)$/i.test(f.path) && f.kind === "resource",
@@ -285,6 +286,7 @@ export function configurePublication(
   revision: string,
   runtime: PublicationRuntime,
   format: PublicationFormat = "pdf",
+  systemFont?: SystemFontData,
 ) {
   if (format !== "pdf" && format !== "epub")
     throw new Error(t("出版格式无效。"));
@@ -298,7 +300,7 @@ export function configurePublication(
   const publication = inspectPublication(value?.publication);
   const configuration = { ...value, publication };
   applyConfiguration(source.project, configuration);
-  const font = fontBytes(source, runtime);
+  const font = fontBytes(file, source, runtime, systemFont);
   parsedFont(font);
   publication.metadata.identifier ||= "urn:uuid:" + randomUUID();
   publication.pdf.engine = runtime.engine;
@@ -326,23 +328,16 @@ function validXmlText(text: string) {
     );
   });
 }
-export function preparePublication(
+export function publicationSource(
   file: string,
   format: PublicationFormat,
-  runtime: Pick<
-    PublicationRuntime,
-    "engine" | "assetDirectory" | "localConfiguration" | "verifyImages"
-  >,
+  runtime: Pick<PublicationRuntime, "localConfiguration">,
   presetId?: string,
-): PreparedPublication {
+) {
   if (!["pdf", "epub"].includes(format))
     throw new Error(t("不支持的出版格式。"));
   const source = snapshot(file, runtime),
     { project } = source;
-  const v2 = !!source.presets;
-  const issues = v2
-    ? project.issues.filter(({ scope }) => scope === "core")
-    : [...project.issues];
   const preset =
     source.presets?.presets.find(
       (item) =>
@@ -353,6 +348,26 @@ export function preparePublication(
       ? source.presets.presets.find((item) => item.format === format) ??
         defaultV2Preset(format, project.mode, source.rawSettings ?? {})
       : undefined);
+  const resolved = preset && preset.issues.every(({ severity }) => severity !== "error")
+    ? resolveV2Publication(preset, source.rawSettings ?? {}, project.metadata ?? {}, project.mode)
+    : undefined;
+  return { source, preset, resolved };
+}
+
+export function preparePublication(
+  file: string,
+  format: PublicationFormat,
+  runtime: Pick<PublicationRuntime, "engine" | "assetDirectory" | "localConfiguration" | "verifyImages">,
+  presetId?: string,
+  input = publicationSource(file, format, runtime, presetId),
+  systemFont?: SystemFontData,
+): PreparedPublication {
+  const { source, preset, resolved } = input;
+  const { project } = source;
+  const v2 = !!source.presets;
+  const issues = v2
+    ? project.issues.filter(({ scope }) => scope === "core")
+    : [...project.issues];
   const issue = (
     code: string,
     message: string,
@@ -399,13 +414,7 @@ export function preparePublication(
       );
     else {
       issues.push(...preset.issues);
-      if (preset.issues.every(({ severity }) => severity !== "error")) {
-        const resolved = resolveV2Publication(
-          preset,
-          source.rawSettings ?? {},
-          project.metadata ?? {},
-          project.mode,
-        );
+      if (resolved) {
         publication = resolved.publication;
         project.settings = resolved.settings;
       }
@@ -501,11 +510,11 @@ export function preparePublication(
       v2 &&
       format === "epub" &&
       !epub.embed_font &&
-      appearance.font_family.startsWith("resources/")
+      (appearance.font_family.startsWith("resources/") || systemFontName(appearance.font_family))
     )
       issue(
         "mdk.publication.invalid",
-        t("当前样式使用包内字体，必须启用 EPUB 字体嵌入。"),
+        t("当前样式指定了字体文件或系统字体，必须启用 EPUB 字体嵌入。"),
         "publication.toml",
       );
     if (
@@ -523,35 +532,12 @@ export function preparePublication(
         "publication.toml",
       );
     if (embed || !v2) {
-      font = fontBytes(source, runtime);
+      font = fontBytes(file, source, runtime, systemFont);
       fontType = detectMediaType(font)!;
       parsedFont(font);
     }
-    if (
-      format === "epub" &&
-      (epub.embed_font || epub.layout === "pre-paginated") &&
-      Object.values(bundledFonts).some(
-        ([, bundledHash]) => bundledHash === sha256(font),
-      )
-    ) {
-      const bundledLicense = fs.readFileSync(
-        path.join(runtime.assetDirectory, "OFL.txt"),
-      );
-      if (
-        project.settings.appearance.font_family === "system" ||
-        Object.hasOwn(bundledFonts, project.settings.appearance.font_family)
-      )
-        fontLicense = bundledLicense;
-      else {
-        fontLicense = source.files.get("resources/other/Mardikor-Noto-OFL.txt");
-        if (!fontLicense?.equals(bundledLicense))
-          issue(
-            "E_FONT_LICENSE",
-            t("内置字体的分发许可证缺失或被修改，请检查后重新保存导出配置。"),
-            "resources/other/Mardikor-Noto-OFL.txt",
-          );
-      }
-    }
+    if (format === "epub" && embed && font.length)
+      fontLicense = knownNotoLicense(font, runtime.assetDirectory);
     if (!v2 && pdf.font_sha256 !== sha256(font))
       issue(
         "E_FONT_CHANGED",
@@ -712,6 +698,8 @@ export function preparePublication(
     let hasMath = false;
     let formulaError = false;
     walk(tokens, (token) => {
+      if (format === "pdf" && token.type === "table_open" && token.map)
+        token.attrSet("data-source-line", String(token.map[0] + 1));
       if (formulaTokens.includes(token.type)) {
         hasMath = true;
         try {
@@ -1145,11 +1133,14 @@ export async function planPublication(
       runtime.progress?.("validate-layout");
       await runtime.verifyLayout(prepared);
     } catch (error) {
-      prepared.issues.push({
-        severity: "error",
-        code: "E_PUBLICATION_LAYOUT",
-        message: String(error),
-      });
+      if (error instanceof PublicationLayoutError)
+        prepared.issues.push(...error.issues);
+      else
+        prepared.issues.push({
+          severity: "error",
+          code: "E_PUBLICATION_LAYOUT",
+          message: String(error),
+        });
     }
   }
   return {
@@ -1171,22 +1162,13 @@ export async function planPublication(
     font: prepared.snapshot.project.settings.appearance.font_family,
   };
 }
-export async function exportPublication(
+async function generatePublication(
   file: string,
-  output: string,
   format: PublicationFormat,
   fingerprint: string,
   runtime: PublicationRuntime,
   presetId?: string,
-): Promise<PublicationResult> {
-  if (
-    path.extname(output).toLowerCase() !== "." + format ||
-    path.resolve(output).toLowerCase() === path.resolve(file).toLowerCase()
-  )
-    throw new Error(t("请选择对应格式的新输出路径，不能覆盖源工程。"));
-  const previous = runtime.outputRevision(output);
-  if ((await publicationRevision(output, true)) !== previous)
-    throw new Error(t("输出路径在确认后发生变化，请重新选择文件，未覆盖。"));
+) {
   runtime.progress?.("prepare");
   const prepared = await (runtime.prepare?.(file, format, presetId) ??
     preparePublication(file, format, runtime, presetId));
@@ -1207,7 +1189,43 @@ export async function exportPublication(
       ? await runtime.pdf(prepared)
       : { bytes: await runtime.epub(prepared), pages: undefined };
   if (result.bytes.length > 256 * 1024 * 1024)
-    throw new Error(t("导出结果超过 256 MiB，未写入文件。"));
+    throw new Error(t("出版结果超过 256 MiB。"));
+  return { ...result, revision: prepared.snapshot.project.revision };
+}
+
+export async function previewPdf(
+  file: string,
+  fingerprint: string,
+  runtime: PublicationRuntime,
+  presetId?: string,
+) {
+  const result = await generatePublication(
+    file, "pdf", fingerprint, runtime, presetId,
+  );
+  if ((await publicationRevision(file)) !== result.revision)
+    throw new Error(t("生成期间源工程已改变，请重新预览。"));
+  return result.bytes;
+}
+
+export async function exportPublication(
+  file: string,
+  output: string,
+  format: PublicationFormat,
+  fingerprint: string,
+  runtime: PublicationRuntime,
+  presetId?: string,
+): Promise<PublicationResult> {
+  if (
+    path.extname(output).toLowerCase() !== "." + format ||
+    path.resolve(output).toLowerCase() === path.resolve(file).toLowerCase()
+  )
+    throw new Error(t("请选择对应格式的新输出路径，不能覆盖源工程。"));
+  const previous = runtime.outputRevision(output);
+  if ((await publicationRevision(output, true)) !== previous)
+    throw new Error(t("输出路径在确认后发生变化，请重新选择文件，未覆盖。"));
+  const result = await generatePublication(
+    file, format, fingerprint, runtime, presetId,
+  );
   runtime.progress?.("write");
   const temporary = output + "." + randomUUID() + ".tmp";
   if (previous) {
@@ -1223,9 +1241,7 @@ export async function exportPublication(
     } finally {
       await fd.close();
     }
-    if (
-      (await publicationRevision(file)) !== prepared.snapshot.project.revision
-    )
+    if ((await publicationRevision(file)) !== result.revision)
       throw new Error(t("生成期间源工程已改变，未发布过期导出文件。"));
     if (previous) {
       if ((await publicationRevision(output)) !== previous)

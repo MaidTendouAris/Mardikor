@@ -218,11 +218,30 @@ export function bodyTypography(settings: MdkSettings) {
   return style;
 }
 
+export function tableTypography(settings: MdkSettings) {
+  return {
+    table: {
+      ...properties(settings, "tables", tables),
+      width: v2StyleValue(settings, "tables.width") === "full" ? "100%" : "auto",
+    },
+    cell: {
+      ...properties(settings, "tables", cells),
+      "text-align": String(v2StyleValue(settings, "tables.default_align")),
+    },
+    header: {
+      color: settings.colors.text,
+      ...properties(settings, "tables", tableHeaders),
+    },
+    stripe: v2StyleValue(settings, "tables.stripe_background_color"),
+  };
+}
+
 export function applyV2Typography(
   tokens: Token[],
   settings: MdkSettings,
   publishing = false,
 ) {
+  const tableStyles = tableTypography(settings);
   if (!settings.v2) return;
   let firstParagraph = true,
     previousHeading = false;
@@ -321,10 +340,8 @@ export function applyV2Typography(
         previousHeading = false;
         break;
       case "table_open":
-        style = properties(settings, "tables", tables);
-        style.width =
-          v2StyleValue(settings, "tables.width") === "full" ? "100%" : "auto";
-        style["table-layout"] = "auto";
+        style = { ...tableStyles.table };
+        if (publishing) style["table-layout"] = "auto";
         token.attrJoin(
           "class",
           publishing || v2StyleValue(settings, "tables.overflow") === "wrap"
@@ -338,25 +355,17 @@ export function applyV2Typography(
         break;
       case "tr_open":
         if (token.level >= 2 && ++bodyRow % 2 === 0) {
-          const paint = v2StyleValue(
-            settings,
-            "tables.stripe_background_color",
-          );
+          const paint = tableStyles.stripe;
           if (paint && paint !== "none")
             style["background-color"] = String(paint);
         }
         break;
       case "th_open":
       case "td_open":
-        style = properties(settings, "tables", cells);
-        style["border-style"] = "solid";
-        if (!token.attrGet("style"))
-          style["text-align"] = String(
-            v2StyleValue(settings, "tables.default_align"),
-          );
+        style = { ...tableStyles.cell, "border-style": "solid" };
+        if (token.attrGet("style")) delete style["text-align"];
         if (token.type === "th_open") {
-          Object.assign(style, properties(settings, "tables", tableHeaders));
-          style.color ??= settings.colors.text;
+          Object.assign(style, tableStyles.header);
         }
         break;
       case "html_block":
@@ -446,7 +455,10 @@ export function applyV2Typography(
     )
       token.attrSet("dir", "auto");
     if (Object.keys(style).length)
-      token.attrJoin("style", styleDeclarations(style));
+      token.attrSet(
+        "style",
+        [token.attrGet("style"), styleDeclarations(style)].filter(Boolean).join(";"),
+      );
   }
 }
 

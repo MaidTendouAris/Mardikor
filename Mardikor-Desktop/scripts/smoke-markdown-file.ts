@@ -126,6 +126,33 @@ try {
   const pdf = page!.getByRole("region", { name: "PDF 导出", exact: true });
   await expect(pdf.getByRole("heading", { name: "PDF 导出", exact: true })).toBeVisible();
   await expect(pdf.getByRole("combobox", { name: "出版导出格式", exact: true })).toHaveCount(0);
+  const beforePreview = await fs.readFile(file);
+  await pdf.getByRole("button", { name: "保存并预览 PDF", exact: true }).click();
+  await expect(pdf.getByRole("button", { name: "预览 PDF", exact: true })).toBeEnabled();
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().some(({ webContents }) =>
+      webContents.getURL().startsWith("mardikor-pdf-preview:") &&
+      webContents.mainFrame.framesInSubtree.some(({ url }) => url.startsWith("chrome-extension:")),
+    ))).toBe(true);
+  expect(await fs.readFile(file)).toEqual(beforePreview);
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find(
+      ({ webContents }) => webContents.getURL().startsWith("mardikor-pdf-preview:"),
+    )!.close();
+  });
+  const fontName = "NotoSerifCJKsc-Regular.otf";
+  const bundledFont = path.resolve("assets/export", fontName);
+  await app.evaluate(({ dialog }, filename) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filename] });
+  }, bundledFont);
+  await pdf.getByRole("button", { name: "打包字体文件", exact: true }).click();
+  await expect(pdf.getByRole("combobox", { name: "导出字体", exact: true }))
+    .toHaveAttribute("data-value", `resources/font/${fontName}`);
+  expect((await fs.stat(path.join(run, "resources", "font", fontName))).size)
+    .toBe((await fs.stat(bundledFont)).size);
+  await pdf.getByRole("button", { name: "保存并预检", exact: true }).click();
+  await expect(pdf.getByRole("region", { name: "出版转换校验结果", exact: true })).toContainText("严格预检通过");
+  expect(await fs.readFile(file)).toEqual(beforePreview);
   await page!.getByRole("button", { name: "返回文稿", exact: true }).click();
   await append("手动保存内容");
   await save();

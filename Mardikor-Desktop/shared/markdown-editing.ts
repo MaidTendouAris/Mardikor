@@ -1,133 +1,99 @@
-import { t } from "./i18n";
+import { t, translations } from "./i18n";
+type Message = Parameters<typeof t>[0];
 export interface MarkdownSyntax {
   id: string;
   label: string;
   group: string;
   example: string;
+  search: readonly string[];
   sourceOnly?: boolean;
 }
+function syntax(
+  id: string,
+  label: Message,
+  group: Message,
+  example: () => string,
+  sourceOnly = false,
+): MarkdownSyntax {
+  return {
+    id,
+    get label() {
+      return t(label);
+    },
+    get group() {
+      return t(group);
+    },
+    get example() {
+      return example();
+    },
+    search: translations(label),
+    sourceOnly,
+  };
+}
+
 export const markdownSyntax: MarkdownSyntax[] = [
   ...Array.from({ length: 6 }, (_, i) => ({
     id: "heading" + (i + 1),
-    label: i + 1 + t(" 级标题"),
-    group: t("标题"),
-    example: "#".repeat(i + 1) + t(" 标题"),
+    get label() {
+      return i + 1 + t(" 级标题");
+    },
+    get group() {
+      return t("标题");
+    },
+    get example() {
+      return "#".repeat(i + 1) + t(" 标题");
+    },
+    search: translations("标题"),
   })),
-  { id: "bold", label: t("加粗"), group: t("文本"), example: t("**文字**") },
-  { id: "italic", label: t("斜体"), group: t("文本"), example: t("*文字*") },
-  {
-    id: "strike",
-    label: t("删除线"),
-    group: t("文本"),
-    example: t("~~文字~~"),
-  },
-  { id: "code", label: t("行内代码"), group: t("文本"), example: t("`代码`") },
-  { id: "quote", label: t("引用"), group: t("段落"), example: t("> 引用内容") },
-  {
-    id: "bullet",
-    label: t("无序列表"),
-    group: t("列表"),
-    example: t("- 项目一\n- 项目二"),
-  },
-  {
-    id: "ordered",
-    label: t("有序列表"),
-    group: t("列表"),
-    example: t("1. 项目一\n2. 项目二"),
-  },
-  {
-    id: "task",
-    label: t("任务列表"),
-    group: t("列表"),
-    example: t("- [ ] 待办\n- [x] 已完成"),
-  },
-  {
-    id: "link",
-    label: t("链接"),
-    group: t("插入"),
-    example: t("[链接文字](https://example.com)"),
-  },
-  {
-    id: "image",
-    label: t("图片引用"),
-    group: t("插入"),
-    example: t("![图片说明](../resources/image/image.png)"),
-  },
-  {
-    id: "table",
-    label: t("表格"),
-    group: t("插入"),
-    example: t("| 标题一 | 标题二 |\n| --- | --- |\n| 内容 | 内容 |"),
-  },
-  {
-    id: "fence",
-    label: t("代码块"),
-    group: t("插入"),
-    example: t("```text\n代码\n```"),
-  },
-  { id: "rule", label: t("分隔线"), group: t("插入"), example: "---" },
-  {
-    id: "break",
-    label: t("硬换行"),
-    group: t("插入"),
-    example: t("上一行  \n下一行"),
-  },
-  {
-    id: "autolink",
-    label: t("自动链接"),
-    group: t("源码写法"),
-    example: "<https://example.com>",
-  },
-  {
-    id: "reference",
-    label: t("引用式链接"),
-    group: t("源码写法"),
-    example: t(
-      '[链接文字][link-id]\n\n[link-id]: https://example.com "链接标题"',
-    ),
-    sourceOnly: true,
-  },
-  {
-    id: "reference-image",
-    label: t("引用式图片"),
-    group: t("源码写法"),
-    example: t(
-      '![图片说明][image-id]\n\n[image-id]: ../resources/image/image.png "图片标题"',
-    ),
-    sourceOnly: true,
-  },
-  {
-    id: "setext",
-    label: t("Setext 标题"),
-    group: t("源码写法"),
-    example: t("标题\n===="),
-  },
-  {
-    id: "indented-code",
-    label: t("缩进式代码块"),
-    group: t("源码写法"),
-    example: t("    代码行一\n    代码行二"),
-  },
-  {
-    id: "escape",
-    label: t("转义标点"),
-    group: t("源码写法"),
-    example: t("\\*文字\\*"),
-  },
-  {
-    id: "math-inline",
-    label: t("行内公式"),
-    group: t("源码写法"),
-    example: "$E=mc^2$",
-    sourceOnly: true,
-  },
-  {
-    id: "math-block",
-    label: t("块级公式"),
-    group: t("源码写法"),
-    example: "$$\n\\frac{a}{b}\n$$",
-    sourceOnly: true,
-  },
+  syntax("bold", "加粗", "文本", () => t("**文字**")),
+  syntax("italic", "斜体", "文本", () => t("*文字*")),
+  syntax("strike", "删除线", "文本", () => t("~~文字~~")),
+  syntax("code", "行内代码", "文本", () => t("`代码`")),
+  syntax("quote", "引用", "段落", () => t("> 引用内容")),
+  syntax("bullet", "无序列表", "列表", () => t("- 项目一\n- 项目二")),
+  syntax("ordered", "有序列表", "列表", () => t("1. 项目一\n2. 项目二")),
+  syntax("task", "任务列表", "列表", () => t("- [ ] 待办\n- [x] 已完成")),
+  syntax("link", "链接", "插入", () => t("[链接文字](https://example.com)")),
+  syntax("image", "图片引用", "插入", () =>
+    t("![图片说明](../resources/image/image.png)"),
+  ),
+  syntax("table", "表格", "插入", () =>
+    t("| 标题一 | 标题二 |\n| --- | --- |\n| 内容 | 内容 |"),
+  ),
+  syntax("fence", "代码块", "插入", () => t("```text\n代码\n```")),
+  syntax("rule", "分隔线", "插入", () => "---"),
+  syntax("break", "硬换行", "插入", () => t("上一行  \n下一行")),
+  syntax("autolink", "自动链接", "源码写法", () => "<https://example.com>"),
+  syntax(
+    "reference",
+    "引用式链接",
+    "源码写法",
+    () => t('[链接文字][link-id]\n\n[link-id]: https://example.com "链接标题"'),
+    true,
+  ),
+  syntax(
+    "reference-image",
+    "引用式图片",
+    "源码写法",
+    () =>
+      t(
+        '![图片说明][image-id]\n\n[image-id]: ../resources/image/image.png "图片标题"',
+      ),
+    true,
+  ),
+  syntax("setext", "Setext 标题", "源码写法", () => t("标题\n====")),
+  syntax("indented-code", "缩进式代码块", "源码写法", () =>
+    t("    代码行一\n    代码行二"),
+  ),
+  syntax("escape", "转义标点", "源码写法", () => t("\\*文字\\*")),
+  syntax("math-inline", "行内公式", "源码写法", () => "$E=mc^2$", true),
+  syntax(
+    "math-block",
+    "块级公式",
+    "源码写法",
+    () => "$$\n\\frac{a}{b}\n$$",
+    true,
+  ),
 ];
 export function markdownDestination(value: string) {
   return (

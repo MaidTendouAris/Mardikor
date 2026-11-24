@@ -5,8 +5,10 @@ import {
   useLayoutEffect,
   useState,
 } from "react";
-import { Download, FileCheck2, RefreshCw, Save } from "lucide-react";
+import { Download, Eye, FileCheck2, FilePlus2, RefreshCw, Save } from "lucide-react";
 import { t } from "../../shared/i18n";
+import { bundledFontChoices, projectFontChoices, systemFontName } from "../../shared/fonts";
+import { FontCombobox } from "./FontCombobox";
 import type {
   MdkPublicationMetadata,
   PublicationFormat,
@@ -150,12 +152,15 @@ export function MdkPublicationExport({
   const initial =
     preset ?? info?.mdk.defaults.find((entry) => entry.format === format);
   const key = `${format}:${preset?.id ?? ""}`;
+  const initialFont = initial?.inheritsFont ? "inherit" : (initial?.font ?? "inherit");
+  const selectedFont = String(edits[key]?.font ?? initialFont);
   const options = { ...initial?.options, ...edits[key] } as Options;
   const fixed = options.layout === "fixed";
   const automaticFontEmbedding =
     initial?.format === "epub" && initial.automaticFontEmbedding;
+  const defaultEmbed = fixed || !!systemFontName(selectedFont === "inherit" ? info?.configuration.appearance.font_family : selectedFont);
   if (automaticFontEmbedding && edits[key]?.embed_font === undefined)
-    options.embed_font = fixed;
+    options.embed_font = defaultEmbed;
   const drafts = Object.entries(edits).flatMap(([draftKey, values]) => {
     const [kind, id] = draftKey.split(":", 2) as [PublicationFormat, string];
     const base = id
@@ -163,9 +168,12 @@ export function MdkPublicationExport({
       : info?.mdk.defaults.find((entry) => entry.format === kind);
     if (!base) return [];
     const original = { ...base.options } as Options;
-    const options = optionsForSave(kind, original, values);
-    return Object.keys(options).length
-      ? [{ draftKey, format: kind, id: id || undefined, original, options }]
+    const { font, ...optionEdits } = values;
+    const options = optionsForSave(kind, original, optionEdits);
+    return Object.keys(options).length || font !== undefined
+      ? [{ draftKey, format: kind, id: id || undefined, original, options,
+        originalFont: base.font, inherited: base.inheritsFont,
+        font: typeof font === "string" ? (font === "inherit" ? "" : font) : undefined }]
       : [];
   });
   const fieldErrors =
@@ -191,8 +199,8 @@ export function MdkPublicationExport({
   function changeOption(name: string, value: Options[string]) {
     if (!initial) return;
     const original =
-      name === "embed_font" && automaticFontEmbedding
-        ? fixed
+      name === "font" ? initialFont : name === "embed_font" && automaticFontEmbedding
+        ? defaultEmbed
         : (initial.options as unknown as Options)[name];
     setEdits((previous) => {
       const next = { ...previous[key] };
@@ -201,6 +209,32 @@ export function MdkPublicationExport({
       return { ...previous, [key]: next };
     });
     setPlan(undefined);
+  }
+
+  function changeFont(value: string) {
+    changeOption("font", value);
+    if (format === "epub" && value !== "inherit" && !options.embed_font)
+      changeOption("embed_font", true);
+  }
+
+  async function packFont() {
+    if (!info || unavailable) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await flush())) return;
+      const latest = await readInfo();
+      const result = await desktop().invoke("packFont", file, latest.revision);
+      if (!result) return;
+      setInfo(await readInfo());
+      await onConfigured(file);
+      changeFont(result.path);
+      notify(t("字体已打包至 {0}。", result.path));
+    } catch (error) {
+      setError(desktopErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function changeMetadata<K extends keyof MdkPublicationMetadata>(
@@ -241,7 +275,7 @@ export function MdkPublicationExport({
   }
 
   async function perform(
-    action: "save" | "preflight" | "export",
+    action: "save" | "preflight" | "preview" | "export",
     flushDocument = true,
   ): Promise<boolean> {
     if (!info || !initial || busy) return false;
@@ -282,6 +316,8 @@ export function MdkPublicationExport({
               );
             return (
               current?.id !== draft.id ||
+              draft.originalFont !== expected?.font ||
+              draft.inherited !== expected?.inheritsFont ||
               JSON.stringify(draft.original) !==
                 JSON.stringify(expected?.options)
             );
@@ -299,6 +335,7 @@ export function MdkPublicationExport({
           (draft, index) => ({
             format: draft.format,
             presetId: draft.id,
+            font: draft.font,
             options: draft.options,
             metadata: index === 0 ? metadataEdits : {},
           }),
@@ -347,6 +384,10 @@ export function MdkPublicationExport({
       setPlan(result);
       if (!result.report.valid || action === "preflight")
         return result.report.valid;
+      if (action === "preview") {
+        await desktop().invoke("previewPdf", file, result.fingerprint, ...presetArgs);
+        return true;
+      }
       const name =
         (
           fields.title ||
@@ -518,6 +559,15 @@ export function MdkPublicationExport({
               <FileCheck2 size={15} />{" "}
               {changed ? t("保存并预检") : t("严格预检")}
             </button>
+            {format === "pdf" && (
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => void perform("preview")}
+              >
+                <Eye size={15} /> {changed ? t("保存并预览 PDF") : t("预览 PDF")}
+              </button>
+            )}
             <button
               className="button primary"
               disabled={busy}
@@ -609,6 +659,25 @@ export function MdkPublicationExport({
                   </>
                 )}
                 {check(t("生成封面页"), "include_cover")}
+              </div>
+            </details>
+            <details open>
+              <summary>{t("排版与字体")}</summary>
+              <div className="publication-fields">
+                <label>
+                  {t("导出字体")}
+                  <FontCombobox aria-label={t("导出字体")} disabled={unavailable} value={selectedFont}
+                    options={[
+                      ["inherit", t("沿用工程字体（{0}）", systemFontName(info.configuration.appearance.font_family) ?? info.configuration.appearance.font_family)],
+                      ...bundledFontChoices(),
+                      ...projectFontChoices(info.fonts, selectedFont),
+                    ]} onValueChange={changeFont} />
+                </label>
+                <div className="publication-font-actions">
+                  <button type="button" className="button" disabled={unavailable} onClick={() => void packFont()}>
+                    <FilePlus2 size={15} /> {t("打包字体文件")}
+                  </button>
+                </div>
               </div>
             </details>
             <details>

@@ -11,6 +11,9 @@ const methods = {
   saveSnapshot: mdk.saveMdkSnapshot,
   copyDraft: mdk.copyMdkDraft,
   importResource: mdk.importMdkResource,
+  packFont: (file: string, name: string, bytes: Uint8Array, revision: string, license?: Uint8Array) =>
+    mdk.packMdkFont(file, name, Buffer.from(bytes), revision, license && Buffer.from(license)),
+  saveMdkPublication: mdk.saveMdkPublication,
   importResourcesTo: mdk.importMdkResourceBatch,
   insertResources: (
     file: string,

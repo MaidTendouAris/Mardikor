@@ -36,7 +36,7 @@ const src = `${mediaScheme}://viewer/resource`;
 
 export function serveMedia(
   request: Request,
-  entry: StoreEntry,
+  entry: { header: Pick<StoreEntry["header"], "size">; data: StoreEntry["data"] },
   mime: string,
   lease?: AbortSignal,
 ) {
@@ -180,7 +180,7 @@ export function openMediaWindow({
           : t("附件详情");
   const { workArea } = screen.getDisplayMatching(owner.getBounds());
   const width = Math.min(workArea.width, kind === "audio" ? 720 : 1040);
-  const height = Math.min(workArea.height, kind === "audio" ? 400 : 740);
+  const height = Math.min(workArea.height, kind === "audio" ? 176 : 740);
   const window = new BrowserWindow({
     title: `${info.name} — ${title}`,
     icon: path.join(app.getAppPath(), "assets/icon.png"),
@@ -189,7 +189,7 @@ export function openMediaWindow({
     width,
     height,
     minWidth: Math.min(width, 480),
-    minHeight: Math.min(height, 300),
+    minHeight: Math.min(height, kind === "audio" ? 144 : 300),
     frame: false,
     show: false,
     backgroundColor:

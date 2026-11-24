@@ -10,15 +10,18 @@ import type { AppState } from "./state";
 import { publicationFontFamily, publicationHtml } from "./publication-render";
 import {
   emojiFontFile,
+  PublicationLayoutError,
   type PreparedPublication,
   type PublicationRuntime,
 } from "./publication";
 import { publicationRasterSize } from "./media";
 import type { PublicationWork } from "./publication-worker";
 import type { PublicationStage } from "../shared/publication";
+import type { ValidationIssue } from "../shared/mdk";
 
 const publicationTimeout = 300_000;
-function runWorker<T>(work: PublicationWork): Promise<T> {
+type ReadFont = (name: string) => Promise<Buffer | undefined>;
+function runWorker<T>(work: PublicationWork, readFont?: ReadFont): Promise<T> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, "publication-worker.cjs"), {
       workerData: serialize({ work, locale: appLocale() }),
@@ -27,10 +30,17 @@ function runWorker<T>(work: PublicationWork): Promise<T> {
       reject(new Error(t("后台出版任务超过 5 分钟，已终止。")));
       void worker.terminate();
     }, publicationTimeout);
-    worker.once("message", (bytes: Uint8Array) => {
+    worker.on("message", (message: Uint8Array | { systemFont: string }) => {
+      if ("systemFont" in message) {
+        void Promise.resolve().then(() => readFont?.(message.systemFont)).then(
+          (bytes) => worker.postMessage({ bytes }),
+          (error) => worker.postMessage({ error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
       clearTimeout(timer);
       try {
-        resolve(deserialize(bytes) as T);
+        resolve(deserialize(message) as T);
       } catch (error) {
         reject(error);
       }
@@ -138,14 +148,17 @@ async function withRenderer<T>(
             .replace(/\{author\}/g, metadata.author)
             .replace(/\{(?:page|pages)\}/g, "100000"),
         );
-        const errors = await window.webContents.executeJavaScript(`(async()=>{
+        const layout: {
+          errors: string[];
+          wideTables: { chapter: number; line: number }[];
+        } = await window.webContents.executeJavaScript(`(async()=>{
           ${prepared.emojiFont ? `await document.fonts.load('16px PublicationEmoji', ${JSON.stringify(prepared.emojiFont.text)});` : ""}
           const bodyFonts = ${prepared.font.length ? "await document.fonts.load('16px PublicationFont')" : "[]"};
           await document.fonts.ready;
           if ((${prepared.font.length > 0} && !bodyFonts.length) || [...document.fonts].some(font=>font.status === 'error')) throw new Error(${JSON.stringify(t("出版字体无法解码或加载"))});
           if (document.querySelector('.katex-html') && ![...document.fonts].some(font=>font.family.startsWith('KaTeX_') && font.status === 'loaded')) throw new Error(${JSON.stringify(t("公式字体未加载"))});
           await Promise.all([...document.images].map(async image=>{await image.decode();if(!image.naturalWidth || image.naturalWidth*image.naturalHeight>40000000)throw new Error(${JSON.stringify(t("图片无法解码或超过四千万像素"))});}));
-          const errors=[];
+          const errors=[], wideTables=[];
           if(${prepared.format === "pdf"}){
             const context=document.createElement('canvas').getContext('2d');context.font='${pdf.furniture_size}px ${publicationFontFamily(prepared)}';
             for(const text of ${JSON.stringify(samples)})if(context.measureText(text).width>${prepared.width - prepared.configuration.layout.margin_left - prepared.configuration.layout.margin_right})errors.push(${JSON.stringify(t("页眉或页脚过长，请缩短文字或调整字号"))});
@@ -156,11 +169,51 @@ async function withRenderer<T>(
               errors.push(${JSON.stringify(t("文稿 {0} 超出固定页面，请调整页高、字号或拆分文稿"))}.replace("{0}", () => labels[unit.dataset.unit] ?? unit.dataset.unit));
             }
           }
-          for(const element of document.querySelectorAll('pre,table,.katex-block')) if(element.scrollWidth>element.clientWidth+2) errors.push(${JSON.stringify(t("代码、表格或公式超出正文宽度"))});
-          return errors;
+          for(const element of document.querySelectorAll(${JSON.stringify(prepared.format === "pdf" ? "pre,.katex-block" : "pre,table,.katex-block")})) if(element.scrollWidth>element.clientWidth+2) errors.push(${JSON.stringify(t("代码、表格或公式超出正文宽度"))});
+          if (${prepared.format === "pdf"}) {
+            // The body already uses the paper width minus margins, divided by print scale.
+            const page = document.body.getBoundingClientRect();
+            for (const table of document.querySelectorAll('table[data-source-line]')) {
+              const unit = table.closest('.unit');
+              if (!unit) continue;
+              const area = unit.getBoundingClientRect();
+              const bounds = table.getBoundingClientRect();
+              if (
+                bounds.left < Math.max(page.left, area.left) - 1 ||
+                bounds.right > Math.min(page.right, area.right) + 1 ||
+                table.scrollWidth > table.clientWidth + 2 ||
+                [...table.querySelectorAll('th,td')].some(cell => cell.scrollWidth > cell.clientWidth + 2)
+              ) {
+                wideTables.push({
+                  chapter: Number(unit.dataset.unit),
+                  line: Number(table.dataset.sourceLine),
+                });
+              }
+            }
+          }
+          return { errors, wideTables };
         })()`);
-        if ((errors as string[]).length)
-          throw new Error((errors as string[]).join(t("；")));
+        const issues: ValidationIssue[] = [];
+        const reported = new Set<string>();
+        for (const { chapter, line } of layout.wideTables) {
+          const source = prepared.chapters[chapter - 1].unit.path;
+          const key = JSON.stringify([source, line]);
+          if (reported.has(key)) continue;
+          reported.add(key);
+          issues.push({
+            code: "E_PDF_TABLE_WIDTH",
+            severity: "error",
+            path: source,
+            message: t("第 {0} 行的表格无法完整排入 PDF 正文宽度。请加宽纸张、缩小左右边距或拆分表格。", line),
+          });
+        }
+        if (layout.errors.length)
+          issues.push({
+            code: "E_PUBLICATION_LAYOUT",
+            severity: "error",
+            message: layout.errors.join(t("；")),
+          });
+        if (issues.length) throw new PublicationLayoutError(issues);
         return action(window);
       })(),
       new Promise<never>((_resolve, reject) => {
@@ -252,6 +305,7 @@ export function publicationRuntime(
   state: AppState,
   outputRevision: (file: string) => string | null,
   progress?: (stage: PublicationStage) => void,
+  readFont?: ReadFont,
 ): PublicationRuntime {
   const assets = path.join(app.getAppPath(), "assets/export");
   const manifest = JSON.parse(
@@ -274,7 +328,7 @@ export function publicationRuntime(
         assetDirectory: assets,
         configuration: state.publication(file),
         access: accessFor(file),
-      }),
+      }, readFont),
     assetDirectory: assets,
     localConfiguration: (file, value) => state.publication(file, value),
     verifyImages: (images) => {

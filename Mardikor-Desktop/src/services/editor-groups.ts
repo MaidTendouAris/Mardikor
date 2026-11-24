@@ -1,4 +1,5 @@
 import type { MdkProject, SaveSnapshot } from "../../shared/mdk";
+import type { DocumentPosition } from "../../shared/document-position";
 import { isManuscript } from "../../shared/workspace";
 import { canEditVisually } from "./document-size";
 import type { DocumentPages } from "./document-pages";
@@ -55,6 +56,9 @@ export interface EditorGroupState {
   revision: number;
   zoom: number;
   cursor: { line: number; column: number };
+  visualCursor?: NonNullable<DocumentPosition["visual"]> & { page: number; characters: number };
+  readingPosition?: DocumentPosition;
+  resume?: DocumentPosition;
   activeHeading: number;
   outlinePath?: string;
   reveal?: { path: string; line: number; key: number };

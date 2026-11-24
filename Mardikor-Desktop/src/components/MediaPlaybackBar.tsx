@@ -1,11 +1,21 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Pause, Play, Repeat, Volume2, VolumeX } from "lucide-react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Maximize,
+  Minimize,
+  Pause,
+  Play,
+  Repeat,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { t } from "../../shared/i18n";
 import {
   defaultMediaVolume,
   formatPlaybackTime,
 } from "../../shared/media-viewer";
 import { PlayerSlider } from "./PlayerSlider";
+import { Select } from "./Select";
+import { VideoFramePreview } from "./VideoFramePreview";
 
 const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const playbackEvents = [
@@ -16,6 +26,7 @@ const playbackEvents = [
   "ended",
   "volumechange",
   "ratechange",
+  "loadedmetadata",
 ];
 
 function playbackState(player: HTMLMediaElement | null) {
@@ -35,15 +46,24 @@ function playbackState(player: HTMLMediaElement | null) {
 export function MediaPlaybackBar({
   player,
   ready,
+  canPlay,
+  fullscreen,
+  filter,
   onTogglePlayback,
+  onToggleFullscreen,
   children,
 }: {
   player: HTMLMediaElement | null;
   ready: boolean;
+  canPlay: boolean;
+  fullscreen: boolean;
+  filter: string;
   onTogglePlayback: () => void;
-  children: ReactNode;
+  onToggleFullscreen: () => void;
+  children?: ReactNode;
 }) {
   const [playback, setPlayback] = useState(() => playbackState(player));
+  const [hover, setHover] = useState<number | null>(null);
   useEffect(() => {
     const sync = () => setPlayback(playbackState(player));
     sync();
@@ -61,6 +81,8 @@ export function MediaPlaybackBar({
   const muteLabel = muted ? t("取消静音") : t("静音");
   const rateLabel = t("播放速度");
   const repeatLabel = t("循环播放");
+  const fullLabel = fullscreen ? t("退出全屏") : t("全屏");
+  const video = player instanceof HTMLVideoElement;
 
   return (
     <div
@@ -70,7 +92,21 @@ export function MediaPlaybackBar({
       data-playing={playing}
     >
       <div className="media-playback-timeline">
-        <span>{elapsedTime}</span>
+        {hover !== null && ready && duration > 0 && (
+          <div
+            className="media-timeline-preview"
+            style={{ "--hover-position": `${hover * 100}%` } as CSSProperties}
+          >
+            {video && player.currentSrc && (
+              <VideoFramePreview
+                src={player.currentSrc}
+                seconds={hover * duration}
+                filter={filter}
+              />
+            )}
+            <span>{formatPlaybackTime(hover * duration)}</span>
+          </div>
+        )}
         <PlayerSlider
           label={t("播放进度")}
           value={elapsed}
@@ -78,24 +114,28 @@ export function MediaPlaybackBar({
           max={duration || 1}
           step={0.01}
           disabled={!ready || !duration}
+          onHover={setHover}
           onChange={(value) => {
             if (!player) return;
             player.currentTime = value;
             setPlayback(playbackState(player));
           }}
         />
-        <span>{durationTime}</span>
       </div>
       <button
         className="icon-button media-playback-toggle"
         type="button"
         aria-label={playLabel}
         title={`${playLabel} (Space)`}
-        disabled={!ready}
+        disabled={!canPlay}
+        data-media-toggle
         onClick={onTogglePlayback}
       >
         {playing ? <Pause size={18} /> : <Play size={18} />}
       </button>
+      <span className="media-playback-time">
+        {elapsedTime} / {durationTime}
+      </span>
       <div className="media-playback-volume">
         <button
           className="icon-button"
@@ -109,6 +149,9 @@ export function MediaPlaybackBar({
         >
           {volumePercent ? <Volume2 size={18} /> : <VolumeX size={18} />}
         </button>
+        <span className="preview-player-volume-value" aria-hidden="true">
+          {volumePercent}%
+        </span>
         <PlayerSlider
           label={t("音量")}
           value={volumePercent}
@@ -123,16 +166,20 @@ export function MediaPlaybackBar({
             setPlayback(playbackState(player));
           }}
         />
-        <span aria-hidden="true">{volumePercent}%</span>
       </div>
       <div className="media-playback-actions">
-        <select
+        <Select
           aria-label={rateLabel}
           title={rateLabel}
-          value={speed}
-          disabled={!ready}
-          onChange={(event) => {
-            if (player) player.playbackRate = Number(event.target.value);
+          value={String(speed)}
+          disabled={!canPlay}
+          popupClassName={video ? "video-playback-popover" : undefined}
+          popupContainer={fullscreen ? document.fullscreenElement ?? undefined : undefined}
+          onValueChange={(value) => {
+            if (player) {
+              player.defaultPlaybackRate = Number(value);
+              player.playbackRate = player.defaultPlaybackRate;
+            }
           }}
         >
           {speeds.map((rate) => (
@@ -140,7 +187,7 @@ export function MediaPlaybackBar({
               {rate}×
             </option>
           ))}
-        </select>
+        </Select>
         <button
           className="icon-button"
           type="button"
@@ -157,6 +204,15 @@ export function MediaPlaybackBar({
           <Repeat size={18} />
         </button>
         {children}
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={fullLabel}
+          title={`${fullLabel} (F)`}
+          onClick={onToggleFullscreen}
+        >
+          {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+        </button>
       </div>
     </div>
   );

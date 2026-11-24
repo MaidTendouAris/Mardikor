@@ -56,22 +56,29 @@ const empty: MarkdownHeading[] = [];
 export function useMarkdownHeadings(path: string, text: string, v2 = false) {
   const [value, setValue] = useState<{
     path: string;
+    text: string;
+    v2: boolean;
     headings: MarkdownHeading[];
   }>();
   useEffect(() => {
     if (text.length <= 4_000) {
-      setValue({ path, headings: text ? markdownHeadings(text, v2) : empty });
+      setValue({
+        path,
+        text,
+        v2,
+        headings: text ? markdownHeadings(text, v2) : empty,
+      });
       return;
     }
     if (text.length > previewTextLimit) {
-      setValue({ path, headings: empty });
+      setValue({ path, text, v2, headings: empty });
       return;
     }
     let cancel: (() => void) | undefined;
     const timeout = setTimeout(() => {
       cancel = markdownTask<MarkdownHeading[]>(
         { kind: "headings", text, v2 },
-        (headings) => setValue({ path, headings }),
+        (headings) => setValue({ path, text, v2, headings }),
       );
     }, 180);
     return () => {
@@ -79,5 +86,12 @@ export function useMarkdownHeadings(path: string, text: string, v2 = false) {
       cancel?.();
     };
   }, [path, text, v2]);
-  return value?.path === path ? value.headings : empty;
+  return {
+    headings: value?.path === path && value.v2 === v2 ? value.headings : empty,
+    fresh:
+      value?.path === path &&
+      value.v2 === v2 &&
+      value.text === text &&
+      text.length <= previewTextLimit,
+  };
 }

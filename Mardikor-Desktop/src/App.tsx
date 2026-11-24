@@ -710,6 +710,7 @@ export default function App() {
               initialProject={documentProject?.project}
               initialView={initialView}
               initialFragment={initialFragment}
+              visible={page === "editor"}
               preferences={preferences}
               reading={reading}
               changeReading={changeReading}

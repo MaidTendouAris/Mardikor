@@ -115,7 +115,7 @@ export function loadRichPages(
     const fragment =
       old && loaded.get(page.index) === page.text
         ? old.fragment
-        : parsePage(editor, page.text);
+        : parsePage(editor, page.index === 0 ? page.text.replace(/^\ufeff/, "") : page.text);
     return { ...page, fragment };
   });
   const join = (start: number, end: number) =>

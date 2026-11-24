@@ -29,7 +29,9 @@ import "monaco-editor/languages/features/json/register.js";
 import { language as iniLanguage } from "monaco-editor/languages/definitions/ini/ini.js";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker&inline";
 import JsonWorker from "monaco-editor/languages/features/json/json.worker?worker&inline";
-import { validateSourceText } from "../../shared/schema";
+import { parseToml, validateSourceText } from "../../shared/schema";
+import { inspectOutline } from "../../shared/mdk-v2";
+import { inspectV2Settings } from "../../shared/settings-v2";
 import type { ProjectFile } from "../../shared/mdk";
 import type { ResolvedAppTheme } from "../../shared/desktop";
 
@@ -161,6 +163,7 @@ export interface SourceEditorHandle {
   scrollTo: (ratio: number) => void;
   dropDraft: (x: number, y: number, marker: string) => InsertionDraft;
   applyValue: (content: string) => void;
+  moveSection: (before: string, content: string) => boolean;
   firstVisibleLine: () => number;
 }
 export function ConflictDiff({
@@ -207,14 +210,17 @@ const modelText = new WeakMap<
   monaco.editor.ITextModel,
   { version: number; value: string }
 >();
+const exactSectionVersions = new WeakMap<
+  monaco.editor.ITextModel,
+  Map<number, string>
+>();
+const movingSection = new WeakSet<monaco.editor.ITextModel>();
 function readModel(model: monaco.editor.ITextModel) {
   const version = model.getVersionId();
   const cached = modelText.get(model);
   if (cached?.version === version) return cached.value;
-  const value = model.getValue(
-    monaco.editor.EndOfLinePreference.TextDefined,
-    true,
-  );
+  const value = exactSectionVersions.get(model)?.get(model.getAlternativeVersionId()) ??
+    model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true);
   modelText.set(model, { version, value });
   return value;
 }
@@ -228,6 +234,8 @@ export const SourceEditor = forwardRef<
     theme: ResolvedAppTheme;
     zoom: number;
     largeDocument?: boolean;
+    mdkV2Mode?: string;
+    resumeCursor?: { line: number; column: number };
     onChange: (value: string) => void;
     onPosition: (line: number, column: number) => void;
     onScroll?: (ratio: number, firstLine: number) => void;
@@ -246,6 +254,8 @@ export const SourceEditor = forwardRef<
     theme,
     zoom,
     largeDocument,
+    mdkV2Mode,
+    resumeCursor,
     onChange,
     onPosition,
     onScroll,
@@ -359,7 +369,25 @@ export const SourceEditor = forwardRef<
     onViewportReady,
     files,
     path,
+    mdkV2Mode,
   });
+  function editModel(
+    editor: monaco.editor.IStandaloneCodeEditor,
+    model: monaco.editor.ITextModel,
+    content: string,
+  ) {
+    model.pushStackElement();
+    model.pushEditOperations(
+      editor.getSelections(),
+      [{
+        range: model.getFullModelRange(),
+        text: content.startsWith("\ufeff") && readModel(model).startsWith("\ufeff")
+          ? content.slice(1) : content,
+      }],
+      () => null,
+    );
+    model.pushStackElement();
+  }
   useImperativeHandle(
     ref,
     () => ({
@@ -411,24 +439,37 @@ export const SourceEditor = forwardRef<
         // Authorized programmatic changes also run while the view is locked
         // during an atomic import or view switch. Edit the shared model so the
         // operation is retained on its undo stack even when the view is readonly.
-        model.pushStackElement();
-        model.pushEditOperations(
-          editor.getSelections(),
-          [
-            {
-              range: model.getFullModelRange(),
-              text:
-                content.startsWith("\ufeff") &&
-                model
-                  .getValue(monaco.editor.EndOfLinePreference.TextDefined, true)
-                  .startsWith("\ufeff")
-                  ? content.slice(1)
-                  : content,
-            },
-          ],
-          () => null,
-        );
-        model.pushStackElement();
+        editModel(editor, model, content);
+      },
+      moveSection(before, content) {
+        const editor = instance.current;
+        const model = editor?.getModel();
+        if (
+          !editor || !model || editor.getOption(monaco.editor.EditorOption.readOnly) ||
+          readModel(model) !== before
+        ) return false;
+        const remember = (value: string) => {
+          // Monaco normalizes line endings internally. Keep the exact source at
+          // the move's undo/redo boundaries for mixed and classic Mac files.
+          if (value === model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true)) return;
+          let versions = exactSectionVersions.get(model);
+          if (!versions) {
+            versions = new Map();
+            exactSectionVersions.set(model, versions);
+          }
+          versions.set(model.getAlternativeVersionId(), value);
+        };
+        remember(before);
+        movingSection.add(model);
+        try {
+          editModel(editor, model, content);
+          remember(content);
+          modelText.set(model, { version: model.getVersionId(), value: content });
+        } finally {
+          movingSection.delete(model);
+        }
+        callbacks.current.onChange(content);
+        return true;
       },
     }),
     [],
@@ -440,17 +481,21 @@ export const SourceEditor = forwardRef<
     onViewportReady,
     files,
     path,
+    mdkV2Mode,
   };
   const diagnostics = (model: monaco.editor.ITextModel) => {
     const source = callbacks.current;
     try {
-      validateSourceText(
-        source.path,
-        model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true),
-        new Set(
-          source.files.filter((f) => f.kind !== "directory").map((f) => f.path),
-        ),
-      );
+      const text = readModel(model);
+      if (source.mdkV2Mode && ["contents.toml", "settings.toml"].includes(source.path)) {
+        if (text.startsWith("\uFEFF")) throw new Error(t("MDK v2 控制文件必须使用无 BOM 的 UTF-8。"));
+        const raw = parseToml(text);
+        if (source.path === "contents.toml") inspectOutline(raw);
+        else {
+          const problems = inspectV2Settings(raw, source.mdkV2Mode).problems;
+          if (problems[0]) throw new Error(problems[0].message);
+        }
+      } else validateSourceText(source.path, text);
       monaco.editor.setModelMarkers(model, "mdk", []);
     } catch (error) {
       const issue = error as {
@@ -530,7 +575,7 @@ export const SourceEditor = forwardRef<
     const change = editor.onDidChangeModelContent(() => {
       if (updating.current) return;
       const model = editor.getModel();
-      if (!model) return;
+      if (!model || movingSection.has(model)) return;
       callbacks.current.onChange(readModel(model));
       diagnostics(model);
     });
@@ -610,6 +655,7 @@ export const SourceEditor = forwardRef<
       // retains the original bytes until an actual user edit.
       updating.current = true;
       try {
+        exactSectionVersions.delete(model);
         model.setValue(value);
         modelText.set(model, { version: model.getVersionId(), value });
       } finally {
@@ -617,7 +663,13 @@ export const SourceEditor = forwardRef<
       }
     }
     if (model) diagnostics(model);
-  }, [path, value, files]);
+  }, [path, value, mdkV2Mode]);
+  useEffect(() => {
+    const editor = instance.current;
+    if (!editor || !resumeCursor) return;
+    editor.setPosition({ lineNumber: resumeCursor.line, column: resumeCursor.column });
+    editor.focus();
+  }, [path, resumeCursor]);
   useEffect(() => {
     instance.current?.updateOptions({ readOnly });
     // The source view stays mounted while hidden. Lay it out immediately when

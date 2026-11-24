@@ -25,7 +25,13 @@ import {
   X,
 } from "lucide-react";
 import type { Editor } from "@tiptap/react";
-import { RichEditor, RichToolbar, richDropDraft } from "./RichEditor";
+import {
+  RichEditor,
+  RichToolbar,
+  richDropDraft,
+  richWindowPages,
+  type RichSectionHandle,
+} from "./RichEditor";
 import { Select } from "./Select";
 import { ProjectSettings } from "./ProjectSettings";
 import { ReadingPreview } from "./ReadingPreview";
@@ -78,6 +84,7 @@ import {
   editWindowAt,
   headingOffsetAtLine,
   pageAtLine,
+  paginateMarkdown,
   replacePage,
   replacePages,
   shiftEditWindow,
@@ -86,6 +93,7 @@ import {
 } from "../services/document-pages";
 import {
   richPageDraft,
+  richPageParts,
   richPageTextPosition,
   type RichPageChange,
 } from "../services/rich-pages";
@@ -93,12 +101,15 @@ import { richDropTransaction, richFileDropPosition } from "../services/rich-mark
 import { usePreviewPlayback } from "./usePreviewPlayback";
 import { markdownTask } from "../services/markdown-tasks";
 import { reservedSectionNumbers } from "../../shared/heading-numbering";
+import { countDocumentCharacters } from "../../shared/document-position";
+import { Selection } from "@tiptap/pm/state";
+import { v2StyleValue } from "../../shared/v2-typography";
 import {
   CONTENTS_MARKDOWN_PATH,
   type MdkProject,
   type MdkSettings,
 } from "../../shared/mdk";
-import type { InsertionDraft } from "../../shared/resources";
+import { insertionFormat, type InsertionDraft } from "../../shared/resources";
 import {
   editorFileKind,
   editorView,
@@ -110,7 +121,11 @@ import {
 import type { Ask, Notify } from "../App";
 import type { ReadingChange, ReadingPreferences } from "../../shared/reading";
 import type { ResolvedAppTheme } from "../../shared/desktop";
-import type { ShortcutOverrides, VisualShortcut } from "../../shared/shortcuts";
+import {
+  browserFormatKeys, shortcutFromEvent, shortcutKey, visualShortcuts,
+  type ShortcutOverrides,
+} from "../../shared/shortcuts";
+import type { RichToolbarHandle } from "./RichToolbar";
 
 const SourceEditor = lazy(async () => {
   // Monaco translates action labels when its modules are first evaluated.
@@ -125,8 +140,8 @@ export interface EditorGroupHandle {
   jumpHeading: (heading: MarkdownHeading) => void;
   dropDraft: (x: number, y: number, marker: string) => InsertionDraft;
   applyValue: (content: string) => void;
+  moveSection: (before: string, content: string, heading: MarkdownHeading) => boolean;
   focus: () => void;
-  format: (action: VisualShortcut) => void;
 }
 interface Props {
   group: EditorGroupState;
@@ -137,12 +152,14 @@ interface Props {
   initialFragment?: string;
   settings: MdkSettings;
   projectFont: string;
+  packProjectFont: () => Promise<void>;
   modelPool: SourceModelPool;
   active: boolean;
   followOutline: boolean;
   theme: ResolvedAppTheme;
   pageLength: number;
   showPageMarkers: boolean;
+  allowTableHorizontalScroll: boolean;
   reading: ReadingPreferences;
   changeReading: (change: ReadingChange) => Promise<ReadingPreferences>;
   ask: Ask;
@@ -152,6 +169,7 @@ interface Props {
   busy: boolean;
   editingBlocked: boolean;
   shortcutOverrides?: ShortcutOverrides;
+  shortcutsEnabled: boolean;
   directoryDirty: boolean;
   notify: Notify;
   execute: (work: () => Promise<unknown>) => Promise<void>;
@@ -160,10 +178,11 @@ interface Props {
   openFile: (path: string, fragment?: string) => Promise<void>;
   revealSearch: (hit: SearchHit, view: EditorTab) => boolean;
   onFindState: (results?: SearchResults, hit?: SearchHit) => void;
-  changeTab: (tab: EditorTab) => Promise<void>;
+  changeTab: (tab: EditorTab) => Promise<boolean>;
   updateContent: (content: string) => void;
   setPagination: (content: string, layout: DocumentPages) => void;
-  updatePages: (changes: RichPageChange[]) => RichPageChange[];
+  updatePages: (changes: RichPageChange[]) => ReturnType<typeof replacePages> | undefined;
+  updateSectionContent: (content: string, pagination?: DocumentPages) => void;
   importResources: () => Promise<void>;
   pasteImage: (image: File) => Promise<void>;
   revert: () => Promise<void>;
@@ -187,12 +206,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       initialFragment,
       settings,
       projectFont,
+      packProjectFont,
       modelPool,
       active,
       followOutline,
       theme,
       pageLength,
       showPageMarkers,
+      allowTableHorizontalScroll,
       reading,
       changeReading,
       ask,
@@ -202,6 +223,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       busy,
       editingBlocked,
       shortcutOverrides,
+      shortcutsEnabled,
       directoryDirty,
       notify,
       execute,
@@ -214,6 +236,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       updateContent,
       setPagination,
       updatePages,
+      updateSectionContent,
       importResources,
       pasteImage,
       revert,
@@ -237,6 +260,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
     } = group;
     const isMarkdown = !!buffer && isManuscript(project, buffer.path);
     const fileKind = editorFileKind(project, activePath);
+    const readOnly = !!project?.readonly || !!project?.files.find((item) => item.path === activePath)?.readonly;
     const markdown = isMarkdown ? buffer.content : "";
     const visualAvailable = isMarkdown && canEditVisually(markdown);
     const standalone = project?.format === "markdown";
@@ -283,6 +307,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       [],
     );
     const sourceEditor = useRef<SourceEditorHandle>(null);
+    const richToolbar = useRef<RichToolbarHandle>(null);
+    const richSection = useRef<RichSectionHandle>(null);
     const sourceHeadings = useMemo(
       () => headings?.slice().sort((a, b) => a.line - b.line),
       [headings],
@@ -643,19 +669,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           ? windowSelection
           : editWindowAt(layout, editingPage)
         : undefined;
-    const windowPages = useMemo(() => {
-      if (!editWindow || !layout) return undefined;
-      return layout.pages
-        .slice(editWindow.first, editWindow.last + 1)
-        .map((entry, offset) => {
-          const index = editWindow.first + offset;
-          return {
-            index,
-            text: layoutText.slice(entry.start, layout.pages[index + 1]?.start),
-            final: index === layout.pages.length - 1,
-          };
-        });
-    }, [layout, layoutText, editWindow?.first, editWindow?.last]);
+    const windowPages = useMemo(() => richWindowPages({
+      content: layoutText, pagination: layout, window: editWindow,
+    }), [layout, layoutText, editWindow?.first, editWindow?.last]);
     const windowText =
       editWindow && layout
         ? layoutText.slice(
@@ -1020,6 +1036,27 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       }
     }, [active, followOutline, tab, sourceHeadings]);
     useEffect(() => {
+      if (!richEditor || tab !== "write") return;
+      const update = () => {
+        const { doc, selection } = richEditor.state;
+        const part = paged
+          ? richPageParts(richEditor.state).filter(({ pos }) => pos <= selection.head).at(-1)
+          : undefined;
+        const start = part?.pos ?? 0;
+        patch({
+          visualCursor: {
+            start: part ? (layout?.pages[part.index]?.start ?? 0) : 0,
+            offset: selection.head - start,
+            page: (part?.index ?? 0) + 1,
+            characters: countDocumentCharacters(doc.textBetween(start, selection.head, "\n")),
+          },
+        });
+      };
+      update();
+      richEditor.on("selectionUpdate", update);
+      return () => { richEditor.off("selectionUpdate", update); };
+    }, [richEditor, tab, layout, paged]);
+    useEffect(() => {
       if (!richEditor || !active || !followOutline || tab !== "write") return;
       const update = () => {
         const rows = richEditor.view.dom.querySelectorAll("h1,h2,h3,h4,h5,h6");
@@ -1107,6 +1144,37 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         });
       }
     }, [richEditor, editWindow?.first, editWindow?.last]);
+    const restoredVisual = useRef<EditorGroupState["resume"]>(undefined);
+    useLayoutEffect(() => {
+      const resume = group.resume;
+      const visual = resume?.visual;
+      if (!visual || resume.view !== "write" || resume === restoredVisual.current ||
+          tab !== "write" || (paged && !layout)) return;
+      const after = layout?.pages.findIndex(({ start }) => start > visual.start) ?? 1;
+      const page = after < 0 ? layout!.pages.length - 1 : Math.max(0, after - 1);
+      if (layout?.pages[page]?.readOnly) {
+        restoredVisual.current = resume;
+        return;
+      }
+      if (layout && (!editWindow || page < editWindow.first || page > editWindow.last)) {
+        selectEditingPage(page);
+        return;
+      }
+      if (!richEditor || richEditor.isDestroyed || !richEditor.view.dom.isConnected) return;
+      const part = layout && richPageParts(richEditor.state).find(({ index }) => index === page);
+      if (layout && !part) return;
+      const { doc, tr } = richEditor.state;
+      const offset = Math.min((part?.pos ?? 0) + visual.offset, part?.end ?? doc.content.size);
+      richEditor.view.dispatch(tr.setSelection(Selection.near(doc.resolve(offset))));
+      restoredVisual.current = resume;
+      richEditor.view.focus();
+    }, [group.resume, tab, paged, layout, richEditor, editWindow?.first, editWindow?.last]);
+    useLayoutEffect(() => {
+      const position = group.resume;
+      if (!position || tab === "reader") return;
+      const frame = requestAnimationFrame(() => scrollTo(position.scroll));
+      return () => cancelAnimationFrame(frame);
+    }, [group.resume, tab, activePath]);
     useImperativeHandle(
       ref,
       () => ({
@@ -1168,22 +1236,26 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
             });
           else sourceEditor.current?.applyValue(content);
         },
+        moveSection(before, content, heading) {
+          if (busy || readOnly || before !== markdown) return false;
+          if (tab === "source")
+            return sourceEditor.current?.moveSection(before, content) ?? false;
+          if (tab !== "write" || !richSection.current) return false;
+          if (!paged) return richSection.current.move(before, { content });
+          const pagination = paginateMarkdown(content, pageLength, !!project?.projectId);
+          const target = pageAtLine(pagination.pages, heading.line);
+          const page = pagination.pages[target].readOnly
+            ? pagination.pages.findIndex((part) => !part.readOnly)
+            : target;
+          const window = editWindowAt(pagination, page);
+          return !!window && richSection.current.move(before, {
+            content, pagination, page, window,
+          });
+        },
         focus() {
           if (tab === "write") richEditor?.commands.focus();
           else if (tab === "source") sourceEditor.current?.focus();
           else host.current?.focus();
-        },
-        format(action) {
-          if (!richEditor?.isEditable || !richEditor.view.hasFocus()) return;
-          if (
-            ("level" in action || "block" in action) &&
-            richEditor.isActive("table")
-          )
-            return;
-          if ("command" in action) richEditor.commands[action.command]();
-          else if (action.level)
-            richEditor.commands.setHeading({ level: action.level });
-          else richEditor.commands.setParagraph();
         },
       }),
       [
@@ -1198,6 +1270,9 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         project,
         activePath,
         group.entryId,
+        busy,
+        readOnly,
+        pageLength,
       ],
     );
     const setCursor = (cursor: { line: number; column: number }) =>
@@ -1208,6 +1283,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
       zoom: group.zoom / 100,
     } as CSSProperties;
     const projectTheme = settings.appearance.theme;
+    const scrollTables = allowTableHorizontalScroll &&
+      (!settings.v2 || v2StyleValue(settings, "tables.overflow") !== "wrap");
     const documentTheme = ["light", "dark", "warm", "system"].includes(
       projectTheme,
     )
@@ -1250,8 +1327,27 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           priorHeadingLevels={paginated ? priorHeadingLevels : undefined}
           reservedSections={reserved.get(activeEntry?.position ?? "")}
           revision={revision}
-          editable={!editingBlocked && !project?.readonly}
+          editable={!editingBlocked && !readOnly}
           onChange={updateContent}
+          sectionRef={richSection}
+          documentView={paginated
+            ? { content: markdown, pagination: layout, page: editingPage, window: editWindow }
+            : { content: markdown }}
+          onSectionChange={({ content, pagination, page, window }) => {
+            updateSectionContent(content, pagination);
+            if (page !== undefined) {
+              setEditingPage(page);
+              setWindowSelection(window);
+            }
+          }}
+          onShortcut={(event) => {
+            const key = shortcutFromEvent(event);
+            if (!key) return false;
+            const action = shortcutsEnabled && visualShortcuts.find((item) => shortcutKey(item, shortcutOverrides) === key);
+            if (!action) return browserFormatKeys.has(key);
+            if (!event.repeat) richToolbar.current?.shortcut(action);
+            return true;
+          }}
           pageWindow={
             paginated && windowPages && layout && editWindow
               ? {
@@ -1277,6 +1373,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
         className={"editor-group " + (active ? "active-editor-group" : "")}
         data-editor-group={group.id}
         data-document-theme={documentTheme}
+        data-scroll-tables={scrollTables}
         role="region"
         aria-label={label + t("编辑组")}
         tabIndex={-1}
@@ -1533,11 +1630,15 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
           )}
         {tab === "write" && richEditor && !unsupported && (
           <RichToolbar
+            key={activePath}
+            commandRef={richToolbar}
             editor={richEditor}
+            active={active}
+            tableToolsHost={host.current}
             packaged={!standalone}
             shortcutOverrides={shortcutOverrides}
-            disabled={busy || !!project?.readonly}
-            sourceEditable={!busy && !project?.readonly}
+            disabled={busy || readOnly}
+            sourceEditable={!busy && !readOnly}
             sourceText={paged ? windowText : markdown}
             notify={notify}
             sourcePath={activePath}
@@ -1556,7 +1657,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                     ).content
                   : text;
               await execute(async () => {
-                await changeTab("source");
+                if (!(await changeTab("source"))) return;
                 if (sourceEditor.current)
                   sourceEditor.current.applyValue(content);
                 else updateContent(content);
@@ -1681,13 +1782,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
                       files={project?.files ?? []}
                       zoom={group.zoom}
                       largeDocument={large}
+                      mdkV2Mode={project?.projectId ? project.mode : undefined}
+                      resumeCursor={tab === "source" && group.resume?.view === "source" ? group.resume.cursor : undefined}
                       readOnly={
-                        project?.readonly ||
-                        (codeBuffer.path === CONTENTS_MARKDOWN_PATH &&
-                          project?.files.some(
-                            (item) =>
-                              item.path === codeBuffer.path && item.readonly,
-                          )) ||
+                        readOnly ||
                         editingBlocked ||
                         tab !== "source" ||
                         !buffer ||
@@ -1722,6 +1820,8 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               heading={previewHeading}
               findHit={find.hit}
               findDocuments={findDocuments}
+              resume={group.resume?.view === "reader" ? group.resume : undefined}
+              onPosition={(readingPosition) => patch({ readingPosition })}
               onHeading={(path, index) => {
                 if (
                   active &&
@@ -1738,10 +1838,11 @@ export const EditorGroup = forwardRef<EditorGroupHandle, Props>(
               value={settings}
               fonts={
                 project?.files
-                  .filter((item) => item.path.startsWith("resources/font/"))
+                  .filter((item) => item.kind === "resource" && insertionFormat(item.path)?.kind === "font")
                   .map((item) => item.path) ?? []
               }
               busy={busy}
+              onPackFont={() => void execute(packProjectFont)}
               formDisabled={!!project?.readonly || !!project?.settings_readonly}
               onChange={(value) => {
                 setSettings(value);

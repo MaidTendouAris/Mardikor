@@ -5,6 +5,10 @@ import {
   shortcutError,
   shortcutFromEvent,
   shortcutKey,
+  shortcutLabel,
+  shortcutPlatform,
+  isVisualShortcut,
+  keyboardComposing,
   shortcuts,
   type ShortcutOverrides,
 } from "../../shared/shortcuts";
@@ -22,12 +26,19 @@ export function ShortcutSettings({
   const [recording, setRecording] = useState<keyof ShortcutOverrides>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const platform = shortcutPlatform();
 
   function record(
     event: KeyboardEvent<HTMLButtonElement>,
     id: keyof ShortcutOverrides,
   ) {
-    if (recording !== id || event.key === "Tab") return;
+    if (
+      recording !== id ||
+      event.key === "Tab" ||
+      keyboardComposing(event.nativeEvent) ||
+      event.getModifierState("AltGraph")
+    )
+      return;
     event.preventDefault();
     event.stopPropagation();
     if (event.key === "Escape") {
@@ -37,9 +48,14 @@ export function ShortcutSettings({
     }
     if (["Control", "Meta", "Shift", "Alt"].includes(event.key) || event.repeat)
       return;
-    const key = shortcutFromEvent(event.nativeEvent);
+    const key = shortcutFromEvent(event.nativeEvent, platform);
     if (!key) {
-      setError(t("请按住 Ctrl，再按字母、数字、功能键或反斜杠。"));
+      setError(
+        t(
+          "请按住 {0}，再按字母、数字、功能键、斜杠或反斜杠。",
+          platform === "mac" ? "⌘" : "Ctrl",
+        ),
+      );
       return;
     }
     const next = { ...draft, [id]: key };
@@ -76,6 +92,11 @@ export function ShortcutSettings({
         <p className="shortcut-help" id="shortcut-help">
           {t("点击当前组合键开始录制。可加入 Shift 或 Alt，按 Esc 取消录制。")}
         </p>
+        <p className="shortcut-help">
+          {t(
+            "可视化正文中，Enter 新起段落，Shift+Enter 硬换行。列表中 Enter 继续列表，空项退出当前层，Tab 和 Shift+Tab 调整嵌套。表格中 Tab 和 Shift+Tab 移动单元格，末格 Tab 新增一行。",
+          )}
+        </p>
         {shortcuts.map((action) => {
           const key = shortcutKey(action, draft);
           const active = recording === action.id;
@@ -84,7 +105,7 @@ export function ShortcutSettings({
               <span>
                 <strong>{action.label}</strong>
                 <small>
-                  {"level" in action || "command" in action
+                  {isVisualShortcut(action)
                     ? t("仅在可视化正文内生效")
                     : t("编辑工作区")}
                 </small>
@@ -107,7 +128,7 @@ export function ShortcutSettings({
                   {active ? (
                     t("请按组合键…")
                   ) : key ? (
-                    <kbd>{key}</kbd>
+                    <kbd>{shortcutLabel(key, platform)}</kbd>
                   ) : (
                     t("未绑定")
                   )}

@@ -1,4 +1,6 @@
 import { t } from "../shared/i18n";
+import { countDocumentCharacters } from "../shared/document-position";
+import { isFontFile, systemFontName } from "../shared/fonts";
 import {
   validatePath,
   displayArchivePath,
@@ -58,6 +60,7 @@ import {
 } from "../shared/tree";
 import { splitMarkdownByHeading } from "../shared/markdown";
 import { assertPassiveSvg, detectMediaType } from "./media";
+import { fontDataUrl } from "./document-font";
 import {
   createResourceFolder,
   extractResourceEntries,
@@ -82,7 +85,7 @@ import {
   MdkValidationError,
   type ValidationScope,
 } from "../shared/mdk-v2";
-import { inspectV2Settings, updateV2Settings } from "../shared/settings-v2";
+import { inspectV2Settings, setSystemFontSetting, updateV2Settings } from "../shared/settings-v2";
 import { inspectV2Publication, newV2Preset, publicationPresetInfo } from "../shared/publication-v2";
 import type {
   MdkContents,
@@ -547,6 +550,9 @@ function summary(doc: Document): MdkSummary {
 
 function project(doc: Document): MdkProject {
   const info = manifest(doc);
+  const control = contents(doc);
+  const registered = new Set(control.documents?.map(({ path }) => path));
+  const documentCharacters: Record<string, number> = {};
   const {
     title,
     creators,
@@ -571,11 +577,15 @@ function project(doc: Document): MdkProject {
       cover,
     },
     revision: doc.revision ?? "",
-    issues: diagnostics(doc),
+    issues: diagnostics(doc, (path, source) => {
+      if (registered.has(path) && !source.includes("\0"))
+        documentCharacters[path] = countDocumentCharacters(source);
+    }),
     settings_readonly: settingsInfo(doc).readonly,
     readonly: info.required.length > 0,
     mode: doc.mode,
-    contents: contents(doc),
+    contents: control,
+    documentCharacters,
     settings: settings(doc),
     files: projectFiles(doc),
   };
@@ -1308,6 +1318,24 @@ export function importMdkResource(
   return { path: name, kind, bytes: entry.header.size, revision: doc.revision! };
 }
 
+export function packMdkFont(file: string, filename: string, bytes: Buffer, revision: string, license?: Buffer) {
+  const doc = load(file, revision);
+  assertEditable(doc);
+  const folder = "resources/font";
+  const original = `${folder}/${filename.normalize("NFC")}`;
+  const existing = doc.zip.getEntry(original);
+  const sameFont = existing && !existing.isDirectory && existing.header.size === bytes.length &&
+    existing.getData().equals(bytes);
+  const name = sameFont ? original : uniqueName(doc, folder, filename);
+  if (!sameFont) put(doc, name, bytes);
+  const licenseName = "Mardikor-Noto-OFL.txt";
+  const existingLicense = doc.zip.getEntry(`resources/other/${licenseName}`);
+  const addLicense = license && !existingLicense;
+  if (addLicense) put(doc, uniqueName(doc, "resources/other", licenseName), license);
+  if (!sameFont || addLicense) commit(file, doc);
+  return { path: name, revision: doc.revision! };
+}
+
 export function createMdkResourceFolder(
   file: string,
   parent: string,
@@ -1592,13 +1620,14 @@ export function saveMdkPublication(file: string, edits: PublicationPresetEdit[],
 function applyPublicationEdit(doc: Document, edit: PublicationPresetEdit) {
   if (!isTable(edit) || !isTable(edit.options) || !isTable(edit.metadata) ||
     (edit.format !== "pdf" && edit.format !== "epub") ||
-    (edit.presetId !== undefined && typeof edit.presetId !== "string"))
+    (edit.presetId !== undefined && typeof edit.presetId !== "string") ||
+    (edit.font !== undefined && typeof edit.font !== "string"))
     throw new Error(t("出版配置无效。"));
 
   const { format } = edit;
   let id = edit.presetId;
   const optionEdits = Object.entries(edit.options);
-  if (optionEdits.length) {
+  if (optionEdits.length || edit.font !== undefined) {
     const raw = optionalTable(doc, "publication.toml");
     const presets = raw.presets ?? [];
     if (!Array.isArray(presets)) throw new Error(t("出版预设必须为表数组。"));
@@ -1623,7 +1652,25 @@ function applyPublicationEdit(doc: Document, edit: PublicationPresetEdit) {
     if (format === "epub" && options.layout === "reflowable") {
       for (const key of ["page_width", "page_height", "spread", "first_single"]) delete options[key];
     }
-    const next = { ...current, id, [format]: options };
+    let next: Table = { ...current, id, [format]: options };
+    if (edit.font !== undefined) {
+      const systemFont = systemFontName(edit.font);
+      const body = isTable(current.body) ? { ...current.body } : {};
+      delete body.font;
+      delete body.font_family;
+      if (systemFont || ["serif", "sans-serif", "monospace"].includes(edit.font)) {
+        body.font = "generic";
+        body.font_family = systemFont ? "sans-serif" : edit.font;
+      } else if (edit.font) {
+        validatePath(edit.font);
+        if (!edit.font.startsWith("resources/") || !isFontFile(edit.font))
+          throw new Error(t("字体路径无效。"));
+        body.font = edit.font;
+      }
+      if (Object.keys(body).length) next.body = body;
+      else delete next.body;
+      next = setSystemFontSetting(next, systemFont);
+    }
     const updated = [...presets];
     updated[index < 0 ? updated.length : index] = next;
     const source = stringify({ ...raw, presets: updated });
@@ -1801,7 +1848,7 @@ export function deleteProjectFile(file: string, internalPath: string) {
   return project(doc);
 }
 
-function referenceIssues(doc: Document): ValidationIssue[] {
+function referenceIssues(doc: Document, onText?: (path: string, source: string) => void): ValidationIssue[] {
   const issues: ValidationIssue[] = [],
     used = new Set<string>();
   const files = new Set(
@@ -2008,6 +2055,7 @@ function referenceIssues(doc: Document): ValidationIssue[] {
       });
       continue;
     }
+    onText?.(entry.entryName, source);
     const walk = (tokens: Token[]) => {
       for (const token of tokens) {
         const url =
@@ -2033,7 +2081,7 @@ function referenceIssues(doc: Document): ValidationIssue[] {
       });
   return issues;
 }
-function diagnostics(doc: Document): ValidationIssue[] {
+function diagnostics(doc: Document, onText?: (path: string, source: string) => void): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const control = contents(doc),
     header = manifest(doc),
@@ -2093,7 +2141,7 @@ function diagnostics(doc: Document): ValidationIssue[] {
       field,
       message: t("当前展示器未实现此设置：{0}", field),
     });
-  for (const item of referenceIssues(doc)) {
+  for (const item of referenceIssues(doc, onText)) {
     const status =
       item.status ??
       (item.code === "E_EXTERNAL_MEDIA" ? "unverified" : undefined);
@@ -2772,4 +2820,9 @@ export function readMdkResource(file: string, internalPath: string) {
   )
     throw new Error(t("SVG 含活动内容或外部引用，仅提供源码或文件信息。"));
   return `data:${detectMediaType(bytes) ?? "application/octet-stream"};base64,${bytes.toString("base64")}`;
+}
+
+export function readMdkFont(file: string, internalPath: string) {
+  if (!internalPath.startsWith("resources/")) throw new Error(t("字体路径无效。"));
+  return fontDataUrl(internalPath, mdkAttachment(file, internalPath).getData());
 }

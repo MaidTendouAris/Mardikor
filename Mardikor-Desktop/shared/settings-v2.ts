@@ -10,8 +10,29 @@ import {
 } from "./schema";
 import { settingsFields } from "./settings-v2-fields";
 import { typographySupports } from "./v2-typography";
+import { systemFontName, systemFontReference, validSystemFontName } from "./fonts";
 
 export const applicationNamespace = "com.mardikor.editor";
+
+export function readSystemFontSetting(style: Table) {
+  const app = isTable(style.extensions) ? style.extensions[applicationNamespace] : undefined;
+  return isTable(app) && validSystemFontName(app.system_font) ? app.system_font : undefined;
+}
+
+export function setSystemFontSetting(style: Table, name?: string) {
+  const extensions = isTable(style.extensions) ? { ...style.extensions } : {};
+  const current = extensions[applicationNamespace];
+  if (!name && (!isTable(current) || !Object.hasOwn(current, "system_font"))) return style;
+  const next = { ...style };
+  const app = isTable(current) ? { ...current } : {};
+  if (name) app.system_font = name;
+  else delete app.system_font;
+  if (Object.keys(app).length) extensions[applicationNamespace] = app;
+  else delete extensions[applicationNamespace];
+  if (Object.keys(extensions).length) next.extensions = extensions;
+  else delete next.extensions;
+  return next;
+}
 const supportsReadingStyle = (field: string) =>
   /^(?:toc\.|document_title\.|numbering\.)/.test(field) &&
   Object.hasOwn(settingsFields, field);
@@ -345,12 +366,15 @@ export function inspectV2Settings(raw: Table, mode: string) {
     delete catalogue.explicit["toc.heading_max_level"];
   }
   const family = (body.font_family ?? "sans-serif") as string;
+  const systemFont = readSystemFontSetting(raw);
   settings.appearance = {
     theme: "default",
     font_family:
       typeof body.font === "string" && body.font.startsWith("resources/")
         ? body.font
-        : family,
+        : systemFont && (body.font === undefined || body.font === "generic")
+          ? systemFontReference(systemFont)
+          : family,
     font_size: (body.font_size ?? 16) as number,
     line_height: (body.line_height ?? 1.7) as number,
     paragraph_spacing: (body.paragraph_spacing ?? 0.8) as number,
@@ -419,7 +443,7 @@ export function updateV2Settings(
       set("body", "font", font);
     else {
       set("body", "font", "generic");
-      set("body", "font_family", font);
+      set("body", "font_family", systemFontName(font) ? "sans-serif" : font);
     }
   }
   for (const key of ["text", "background", "link"] as const)
@@ -484,5 +508,11 @@ export function updateV2Settings(
     set("extensions", applicationNamespace, {
       generate_contents_markdown: after.export.mdk.generate_contents_markdown,
     });
-  return { raw: merge(raw, patch), changed: Object.keys(patch).length > 0 };
+  const merged = merge(raw, patch);
+  return {
+    raw: before.appearance.font_family !== after.appearance.font_family
+      ? setSystemFontSetting(merged, systemFontName(after.appearance.font_family))
+      : merged,
+    changed: Object.keys(patch).length > 0,
+  };
 }

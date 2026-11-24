@@ -18,13 +18,16 @@ import type {
 import {
   escapeXml,
   preparePublication,
+  publicationSource,
   type PreparedPublication,
+  type SystemFontData,
 } from "./publication";
 import { publicationHtml } from "./publication-render";
 import { publicationRasterSize } from "./media";
 import { pdfCjkAliases, restorePdfSourceCharacters } from "./pdf-text";
 import { buildEpub } from "./epub";
 import { t, setAppLocale, type AppLocale } from "../shared/i18n";
+import { systemFontName } from "../shared/fonts";
 
 type PdfDetails = Pick<
   PreparedPublication,
@@ -48,14 +51,11 @@ export type PublicationWork =
 async function run(work: PublicationWork) {
   if (work.kind === "prepare") {
     if (work.access) await initEnvelopeCrypto();
-    const prepared = withAccess(work.access, () => preparePublication(
-      work.file,
-      work.format,
-      {
+    const runtime = {
         engine: work.engine,
         assetDirectory: work.assetDirectory,
         localConfiguration: () => work.configuration,
-        verifyImages: (images) => {
+        verifyImages: (images: { path: string; data: Buffer }[]) => {
           for (const image of images) {
             try {
               publicationRasterSize(image.data);
@@ -64,8 +64,19 @@ async function run(work: PublicationWork) {
             }
           }
         },
-      },
-      work.presetId,
+    };
+    const input = withAccess(work.access, () => publicationSource(work.file, work.format, runtime, work.presetId));
+    const font = systemFontName((input.resolved?.settings ?? input.source.project.settings).appearance.font_family);
+    const systemFont = font && (work.format === "pdf" || input.resolved?.publication.epub.embed_font)
+      ? await new Promise<SystemFontData>((resolve) => {
+          parentPort!.once("message", (reply: { bytes?: Uint8Array; error?: string }) =>
+            resolve({ name: font, bytes: reply.bytes && Buffer.from(reply.bytes), error: reply.error }),
+          );
+          parentPort!.postMessage({ systemFont: font });
+        })
+      : undefined;
+    const prepared = withAccess(work.access, () => preparePublication(
+      work.file, work.format, runtime, work.presetId, input, systemFont,
     ));
     if (!prepared.issues.some(({ severity }) => severity === "error"))
       prepared.renderedHtml = publicationHtml(prepared);

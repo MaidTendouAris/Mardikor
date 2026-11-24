@@ -1,6 +1,6 @@
 {
   "name": "mardikor",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "A portable creative workspace for MDK projects.",
   "author": "Mardikor",
   "private": true,
@@ -22,6 +22,7 @@
     "test:desktop": "node scripts/smoke-desktop.mjs",
     "test:revision": "tsx scripts/smoke-revision.ts",
     "test:editor": "tsx scripts/smoke-editor.ts",
+    "test:heading-sections": "tsx scripts/smoke-heading-sections.ts",
     "test:groups": "tsx scripts/smoke-groups.ts",
     "test:native-drag": "tsx scripts/smoke-native-drag.ts",
     "test:markdown-tools": "tsx scripts/smoke-markdown-tools.ts",

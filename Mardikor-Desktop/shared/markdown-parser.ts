@@ -103,12 +103,19 @@ const frontMatter: RuleBlock = (state, start, end, silent) => {
   }
   return false;
 };
+function ignoreInitialBom(parser: MarkdownIt) {
+  parser.core.ruler.before("normalize", "mdk_source_bom", (state) => {
+    if (!state.env.continuedPage && state.src.startsWith("\ufeff"))
+      state.src = state.src.slice(1);
+  });
+}
 export function createMarkdownParser(containers = true, taskCheckboxes = true) {
   const parser = new MarkdownIt("commonmark", {
     html: false,
     linkify: false,
     typographer: false,
   }).enable(["table", "strikethrough"]);
+  ignoreInitialBom(parser);
   // The plug-in's declarations target MarkdownIt's equivalent CJS interface.
   parser.use(footnote as unknown as (md: MarkdownIt) => void);
   const backlink = parser.renderer.rules.footnote_anchor!;
@@ -151,10 +158,7 @@ export function createMdkMarkdownParser(taskCheckboxes = true) {
     linkify: false,
     typographer: false,
   }).enable(["table", "strikethrough"]);
-  parser.core.ruler.before("normalize", "mdk_source_bom", (state) => {
-    if (!state.env.continuedPage && state.src.startsWith("\uFEFF"))
-      state.src = state.src.slice(1);
-  });
+  ignoreInitialBom(parser);
   const escape: NonNullable<typeof parser.renderer.rules.html_inline> = (
     tokens,
     index,

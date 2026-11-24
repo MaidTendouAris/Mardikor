@@ -102,10 +102,16 @@ export interface EpubPresetOptions {
 export type PublicationPresetEdit = {
   format: PublicationFormat;
   presetId?: string;
+  font?: string;
   options: Record<string, string | number | boolean>;
   metadata: Partial<MdkPublicationMetadata>;
 };
-export type PublicationPresetInfo = { id: string; name: string } & (
+export type PublicationPresetInfo = {
+  id: string;
+  name: string;
+  font: string;
+  inheritsFont: boolean;
+} & (
   | { format: "pdf"; options: PdfPresetOptions }
   | { format: "epub"; options: EpubPresetOptions; automaticFontEmbedding: boolean }
 );

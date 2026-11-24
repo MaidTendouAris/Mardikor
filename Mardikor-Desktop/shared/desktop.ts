@@ -16,6 +16,7 @@ import type {
   ResourceInsertionResult,
 } from "./mdk";
 import type { NativeDocumentDrag, NativeDocumentDrop } from "./resources";
+import type { DocumentPosition } from "./document-position";
 import type {
   PublicationConfiguration,
   PublicationFormat,
@@ -27,12 +28,14 @@ import type {
 
 export interface MdkCommands {
   publicationInfo: (path: string) => PublicationInfo;
+  packFont: (path: string, revision: string) => Promise<{ path: string; revision: string } | null>;
+  readFont: (path: string, internalPath: string) => string;
   configurePublication: (
     path: string,
     configuration: PublicationConfiguration,
     revision: string,
     format?: PublicationFormat,
-  ) => PublicationInfo;
+  ) => PublicationInfo | Promise<PublicationInfo>;
   saveMdkPublication: (path: string, edits: PublicationPresetEdit[], revision: string) => {
     ids: (string | undefined)[];
     revision: string;
@@ -42,6 +45,7 @@ export interface MdkCommands {
     format: PublicationFormat,
     presetId?: string,
   ) => Promise<PublicationPlan>;
+  previewPdf: (path: string, fingerprint: string, presetId?: string) => Promise<void>;
   exportPublication: (
     path: string,
     output: string,
@@ -154,6 +158,7 @@ export interface Preferences {
   appTheme?: AppTheme;
   pageLength?: number;
   showPageMarkers?: boolean;
+  allowTableHorizontalScroll?: boolean;
   shortcuts?: import("./shortcuts").ShortcutOverrides;
   language?: import("./i18n").LanguagePreference;
 }
@@ -200,7 +205,10 @@ export interface DesktopApi {
   ): Promise<Awaited<ReturnType<MdkCommands[K]>>>;
   dialog(kind: DialogKind, defaultPath?: string): Promise<string | null>;
   recent(): Promise<RecentProject[]>;
+  documentPosition(file: string): Promise<DocumentPosition | undefined>;
+  trackDocumentPosition(file: string, position: DocumentPosition): void;
   locale(): Promise<import("./i18n").AppLocale>;
+  systemFonts(): Promise<import("./fonts").SystemFont[]>;
   preferences(value?: Preferences): Promise<Preferences>;
   readingPreferences(
     change?: import("./reading").ReadingChange,

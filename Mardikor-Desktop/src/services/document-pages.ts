@@ -116,7 +116,7 @@ export function paginateMarkdown(text: string, length: number, v2 = false): Docu
   const env: { references?: References } = {};
   const parser = v2 ? v2Blocks : blocks;
   parser.block.parse(
-    text.replace(/\r\n?/g, "\n").replaceAll("\0", "\ufffd"),
+    text.replace(/^\ufeff/, "").replace(/\r\n?/g, "\n").replaceAll("\0", "\ufffd"),
     parser,
     env,
     tokens,

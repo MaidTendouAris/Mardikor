@@ -1,7 +1,8 @@
 import { t } from "./i18n";
 import type { ValidationIssue } from "./mdk";
 import { isTable, merge, type Table } from "./schema";
-import { inspectV2Settings } from "./settings-v2";
+import { inspectV2Settings, readSystemFontSetting, setSystemFontSetting } from "./settings-v2";
+import { systemFontName } from "./fonts";
 import { settingsFields } from "./settings-v2-fields";
 import { validFeatureToken } from "./mdk-v2";
 import {
@@ -30,6 +31,11 @@ export function publicationPresetInfo(preset: V2Preset, settings: Table, mode: s
   const { id, name, format } = preset;
   const raw = preset.raw[format];
   const options = isTable(raw) ? raw : {};
+  const resolved = inspectV2Settings(publicationStyle(settings, preset), mode).settings;
+  const font = resolved.appearance.font_family;
+  const body = preset.raw.body;
+  const inheritsFont = !readSystemFontSetting(preset.raw) &&
+    (!isTable(body) || (body.font === undefined && body.font_family === undefined));
   const number = (key: string, fallback: number) => {
     const value = options[key];
     return (typeof value === "number" || typeof value === "bigint") && Number.isFinite(Number(value))
@@ -49,21 +55,20 @@ export function publicationPresetInfo(preset: V2Preset, settings: Table, mode: s
       include_toc: options.include_toc === true,
       chapter_break: options.chapter_break === "page" ? "page" : "none",
     };
-    return { id, name, format, options: pdf };
+    return { id, name, format, options: pdf, font, inheritsFont };
   }
-  const reading = inspectV2Settings(publicationStyle(settings, preset), mode).settings;
   const epub: EpubPresetOptions = {
     layout: fixed ? "fixed" : "reflowable",
-    direction: (options.direction ?? reading.mode.comic.reading_direction) === "rtl" ? "rtl" : "ltr",
-    spread: (options.spread ?? reading.mode.comic.spread_mode) === "double" ? "double" : "single",
-    first_single: typeof options.first_single === "boolean" ? options.first_single : Boolean(reading.v2?.firstSingle),
+    direction: (options.direction ?? resolved.mode.comic.reading_direction) === "rtl" ? "rtl" : "ltr",
+    spread: (options.spread ?? resolved.mode.comic.spread_mode) === "double" ? "double" : "single",
+    first_single: typeof options.first_single === "boolean" ? options.first_single : Boolean(resolved.v2?.firstSingle),
     page_width: number("page_width", 800),
     page_height: number("page_height", 1200),
     include_cover: options.include_cover === true,
     toc_in_spine: options.toc_in_spine === true,
-    embed_font: typeof options.embed_font === "boolean" ? options.embed_font : fixed,
+    embed_font: typeof options.embed_font === "boolean" ? options.embed_font : fixed || !!systemFontName(font),
   };
-  return { id, name, format, options: epub, automaticFontEmbedding: typeof options.embed_font !== "boolean" };
+  return { id, name, format, options: epub, font, inheritsFont, automaticFontEmbedding: typeof options.embed_font !== "boolean" };
 }
 const styleSections = [
   "body",
@@ -316,7 +321,12 @@ export function publicationStyle(raw: Table, preset: V2Preset) {
   const style: Table = {};
   for (const key of styleSections)
     if (preset.raw[key] !== undefined) style[key] = preset.raw[key];
-  return merge(raw, style);
+  const merged = merge(raw, style);
+  const systemFont = readSystemFontSetting(preset.raw);
+  const body = style.body;
+  return systemFont || (isTable(body) && (body.font !== undefined || body.font_family !== undefined))
+    ? setSystemFontSetting(merged, systemFont)
+    : merged;
 }
 
 export function resolveV2Publication(
@@ -389,7 +399,7 @@ export function resolveV2Publication(
       layout: fixed ? "pre-paginated" : "reflowable",
       include_cover: options.include_cover === true,
       embed_font:
-        typeof options.embed_font === "boolean" ? options.embed_font : fixed,
+        typeof options.embed_font === "boolean" ? options.embed_font : fixed || !!systemFontName(settings.appearance.font_family),
       toc_in_spine: options.toc_in_spine === true,
       direction: (options.direction ??
         settings.mode.comic

@@ -66,8 +66,10 @@ import { MAX_OUTLINE_DEPTH } from "../../shared/mdk-v2";
 import {
   splitMarkdownByHeading,
   markdownHeadings,
+  moveMarkdownSection,
   requiresSourceMode,
   type MarkdownHeading,
+  type SectionSide,
 } from "../../shared/markdown";
 import { defaultSettings } from "../../shared/defaults";
 import { isManuscript } from "../../shared/workspace";
@@ -94,14 +96,17 @@ import {
 } from "../../shared/desktop";
 import type { Ask, Notify } from "../App";
 import type { ReadingChange, ReadingPreferences } from "../../shared/reading";
+import { countDocumentCharacters, type DocumentPosition } from "../../shared/document-position";
+import { fallbackFontFamily, fallbackFontUrl, systemFontName } from "../../shared/fonts";
 import { previewTextLimit } from "../services/document-size";
-import { replacePages } from "../services/document-pages";
+import { replacePages, type DocumentPages } from "../services/document-pages";
 import { useMarkdownHeadings } from "../services/markdown-tasks";
 import {
   shortcuts,
   shortcutKey,
   shortcutFromEvent,
-  visualNativeKeys,
+  isVisualShortcut,
+  shortcutLabel,
 } from "../../shared/shortcuts";
 
 export interface WorkspaceHandle {
@@ -126,6 +131,7 @@ export const Workspace = forwardRef<
     initialProject?: MdkProject;
     initialView?: Tab;
     initialFragment?: string;
+    visible: boolean;
     preferences: Preferences;
     reading: ReadingPreferences;
     changeReading: (change: ReadingChange) => Promise<ReadingPreferences>;
@@ -145,6 +151,7 @@ export const Workspace = forwardRef<
     initialProject,
     initialView = "preview",
     initialFragment,
+    visible,
     preferences,
     reading,
     changeReading,
@@ -204,9 +211,10 @@ export const Workspace = forwardRef<
     truncated: boolean;
   }>();
   const [cliInfo, setCliInfo] = useState(false);
-  const [projectFont, setProjectFont] = useState("");
+  const [loadedFontPath, setLoadedFontPath] = useState("");
   const [buffers, setBuffers] = useState<Record<string, Buffer>>({});
   const buffersRef = useRef(buffers);
+  const contentVersions = useRef(new Map<string, number>());
   buffersRef.current = buffers;
   const [groups, setGroups] = useState<EditorGroupState[]>(() => [
     newEditorGroup(),
@@ -244,13 +252,48 @@ export const Workspace = forwardRef<
   );
   const [sidebarRatio, setSidebarRatio] = useState(0.5);
   const pageLength = preferences.pageLength ?? defaultPageLength;
-  const saveKey = shortcutKey(saveShortcut, preferences.shortcuts);
-  const splitKey = shortcutKey(splitShortcut, preferences.shortcuts);
+  const saveKey = shortcutLabel(shortcutKey(saveShortcut, preferences.shortcuts));
+  const splitKey = shortcutLabel(shortcutKey(splitShortcut, preferences.shortcuts));
   const sidebarSections = useRef<HTMLDivElement>(null);
   const [groupRatio, setGroupRatio] = useState(0.5);
   const groupContainer = useRef<HTMLDivElement>(null);
   const scrollProgress = useRef(0);
   const fileProgress = useRef(new Map<string, number>());
+  const lastManuscript = useRef<DocumentPosition>(undefined);
+  const [resumePosition, setResumePosition] = useState<DocumentPosition>();
+  useEffect(() => {
+    let live = true;
+    if (file) void desktop().documentPosition(file).then((position) => {
+      if (live) setResumePosition(position);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [file]);
+  function trackPosition() {
+    const loaded = projectRef.current;
+    if (!file || !loaded) return;
+    const group = groupsRef.current.find(({ id }) => id === activeId);
+    if (!group?.path) return;
+    let position = group.tab === "reader" ? group.readingPosition : undefined;
+    const view = group.tab === "settings" ? "preview" : group.tab;
+    if (!position && isManuscript(loaded, group.path)) {
+      const visual = group.visualCursor;
+      position = {
+        path: group.path, entryId: group.entryId, view,
+        scroll: fileProgress.current.get(group.path) ?? 0,
+        ...(view === "source" && { cursor: group.cursor }),
+        ...(view === "write" && visual && { visual: { start: visual.start, offset: visual.offset } }),
+      };
+    }
+    if (position) lastManuscript.current = position;
+    const fallback = lastManuscript.current ??
+      loaded.contents.entries.find((entry) => !!entry.path);
+    if (!fallback) return;
+    const current = visible && !deliveryOpen && position
+      ? position
+      : { path: fallback.path, view: "preview" as const, scroll: fileProgress.current.get(fallback.path) ?? 0 };
+    desktop().trackDocumentPosition(file, current);
+  }
+  useEffect(trackPosition, [file, activeId, activeGroup, visible, deliveryOpen, project]);
   function syncScroll(origin: string, ratio: number) {
     const source = groupsRef.current.find((g) => g.id === origin);
     if (!source) return;
@@ -260,6 +303,7 @@ export const Workspace = forwardRef<
       if (group.id !== origin)
         groupEditors.current[group.id]?.scrollTo(scrollProgress.current);
     }
+    if (origin === activeId) trackPosition();
   }
   function patchGroup(
     id: string,
@@ -276,6 +320,8 @@ export const Workspace = forwardRef<
     setGroups(next);
   }
   function putBuffer(next: Buffer) {
+    if (buffersRef.current[next.path]?.content !== next.content)
+      contentVersions.current.set(next.path, (contentVersions.current.get(next.path) ?? 0) + 1);
     buffersRef.current = { ...buffersRef.current, [next.path]: next };
     setBuffers(buffersRef.current);
   }
@@ -351,11 +397,49 @@ export const Workspace = forwardRef<
       ? markdown
       : (outlineBuffer?.content ??
         (outlineText?.path === outlinePath ? outlineText.text : ""));
-  const headings = useMarkdownHeadings(
-    outlinePath,
-    outlineSource,
-    !!project?.projectId,
-  );
+  const v2 = !!project?.projectId;
+  const { headings, fresh: freshOutline } = useMarkdownHeadings(outlinePath, outlineSource, v2);
+  const [sectionReveal, setSectionReveal] = useState<{
+    group: string;
+    path: string;
+    tab: Tab;
+    content: string;
+    heading: MarkdownHeading;
+  }>();
+  const [movedHeading, setMovedHeading] = useState<{ index: number }>();
+  const currentSectionMove = useRef<typeof moveSection>(undefined);
+  const canMoveSection =
+    freshOutline && visible && !deliveryOpen && !busy && !!project &&
+    !project.readonly && !project.files.some((item) => item.path === activePath && item.readonly) &&
+    isMarkdown && outlinePath === activePath && (tab === "source" || tab === "write");
+  const contentVersion = contentVersions.current.get(activePath);
+  const moveSection = useMemo(() => {
+    if (!canMoveSection) return;
+    return function move(from: MarkdownHeading, to: MarkdownHeading, side: SectionSide) {
+      const current = buffersRef.current[activePath];
+      const group = groupsRef.current.find(({ id }) => id === activeId);
+      if (
+        currentSectionMove.current !== move || locked.current || !current ||
+        current.content !== outlineSource || contentVersions.current.get(activePath) !== contentVersion ||
+        group?.path !== activePath || group.tab !== tab
+      ) return false;
+      const next = moveMarkdownSection(current.content, headings, from, to, side, v2);
+      if (!next || !groupEditors.current[activeId]?.moveSection(current.content, next.content, next.heading)) return false;
+      setSectionReveal({ group: activeId, path: activePath, tab, content: next.content, heading: next.heading });
+      return true;
+    };
+  }, [canMoveSection, file, activeId, activePath, tab, outlineSource, contentVersion, headings, v2]);
+  currentSectionMove.current = moveSection;
+  useEffect(() => {
+    if (!sectionReveal) return;
+    if (activeId !== sectionReveal.group || activePath !== sectionReveal.path || tab !== sectionReveal.tab || outlineSource !== sectionReveal.content) {
+      setSectionReveal(undefined);
+    } else if (freshOutline) {
+      setSectionReveal(undefined);
+      setMovedHeading({ index: sectionReveal.heading.index });
+      void jumpHeading(sectionReveal.heading).catch((error) => notify(String(error), true));
+    }
+  }, [sectionReveal, activeId, activePath, tab, outlineSource, freshOutline]);
   const findOutline = useMemo(() => {
     const match = currentFind?.results?.matches.find(
       ({ document }) => document.path === outlinePath,
@@ -393,41 +477,65 @@ export const Workspace = forwardRef<
       setBuffers(next);
     }
   }, [groupPaths]);
-  const characterCount = useMemo(() => {
-    if (markdown.length > previewTextLimit) return markdown.length;
-    let count = 0;
-    for (const _character of markdown) count++;
-    return count;
-  }, [markdown]);
-  useEffect(() => {
-    const source = settings.appearance.font_family;
-    if (!source.startsWith("resources/")) {
-      setProjectFont("");
-      return;
+  const characterCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const { path } of project?.contents.documents ?? []) {
+      const draft = buffers[path];
+      const saved = project?.documentCharacters?.[path];
+      if (draft && (draft.content !== draft.saved || saved === undefined))
+        counts.set(path, countDocumentCharacters(draft.content));
+      else if (saved !== undefined) counts.set(path, saved);
     }
+    return {
+      counts,
+      total: [...counts.values()].reduce((sum, count) => sum + count, 0),
+    };
+  }, [project, buffers]);
+  const currentCount = characterCounts.counts.get(
+    (tab === "reader" && activeGroup.readingPosition?.path) || activePath,
+  );
+  const cursorLabel = tab === "source"
+    ? t("行 {0}，列 {1}", cursor.line, cursor.column)
+    : tab === "write" && activeGroup.visualCursor
+      ? t("第 {0} 页，正文字符 {1}", activeGroup.visualCursor.page, activeGroup.visualCursor.characters)
+      : "—";
+  const fontSource = settings.appearance.font_family;
+  const installedFont = systemFontName(fontSource);
+  const packagedFont = fontSource.startsWith("resources/");
+  const fontSizeOnDisk = project?.files.find(({ path }) => path === fontSource)?.bytes;
+  const projectFont = (packagedFont || installedFont)
+    ? [loadedFontPath === fontSource && "MardikorProjectFont", fallbackFontFamily,
+      settings.v2?.fontFamily ?? "sans-serif"].filter(Boolean).join(", ")
+    : "";
+  useEffect(() => {
+    const face = new FontFace(fallbackFontFamily, `url("${fallbackFontUrl}")`, { display: "swap" });
+    document.fonts.add(face);
+    return () => { document.fonts.delete(face); };
+  }, []);
+  useEffect(() => {
+    setLoadedFontPath("");
+    if (!packagedFont && !installedFont) return;
     let live = true;
     let font: FontFace | null = null;
-    void desktop()
-      .invoke("readResource", file, source)
-      .then(async (data) => {
-        font = new FontFace("MardikorProjectFont", `url(${data})`);
+    void (async () => {
+        const source = installedFont
+          ? `local(${JSON.stringify(installedFont)})`
+          : `url(${await desktop().invoke("readFont", file, fontSource)})`;
+        font = new FontFace("MardikorProjectFont", source);
         await font.load();
         if (live) {
           document.fonts.add(font);
-          setProjectFont("MardikorProjectFont");
+          setLoadedFontPath(fontSource);
         }
-      })
-      .catch((error) => {
-        if (live) {
-          setProjectFont("");
-          notify(String(error), true);
-        }
+      })()
+      .catch(() => {
+        if (live) notify(t("字体 {0} 无法加载，已使用内置回退字体。", installedFont ?? fontSource), true);
       });
     return () => {
       live = false;
       if (font) document.fonts.delete(font);
     };
-  }, [file, settings.appearance.font_family, notify]);
+  }, [file, fontSource, installedFont, packagedFont, fontSizeOnDisk, notify]);
   useEffect(() => onDirty(hasUnsavedChanges), [hasUnsavedChanges, onDirty]);
   useEffect(
     () =>
@@ -641,6 +749,7 @@ export const Workspace = forwardRef<
     entryId?: string,
     reuse = false,
     fragment?: string,
+    resume?: DocumentPosition,
   ) {
     const item = loaded.files.find((f) => f.path === path);
     if (item?.kind === "directory") return;
@@ -690,6 +799,10 @@ export const Workspace = forwardRef<
       ).find(({ anchor: value }) => value === anchor);
       if (target) heading = { path, index: target.index, key: Date.now() };
     }
+    if (resume) {
+      scrollProgress.current = resume.scroll;
+      fileProgress.current.set(path, resume.scroll);
+    }
     patchGroup(groupId, (g) => ({
       path,
       entryId,
@@ -706,6 +819,10 @@ export const Workspace = forwardRef<
       revision: g.revision + 1,
       reveal: undefined,
       heading,
+      cursor: resume?.cursor ?? { line: 1, column: 1 },
+      visualCursor: undefined,
+      readingPosition: undefined,
+      resume,
     }));
   }
   async function refreshBuffers(
@@ -1251,9 +1368,10 @@ export const Workspace = forwardRef<
   async function changeTab(next: Tab, groupId = activeId) {
     if (standalone && next === "settings")
       throw new Error(t("单 Markdown 工程没有 settings.toml。"));
-    const target = groupsRef.current.find((g) => g.id === groupId)!;
-    if (next !== "reader" && target.tab !== "reader" && !(await flush(false)))
-      return;
+    const target = groupsRef.current.find((g) => g.id === groupId);
+    if (!target || (next !== "reader" && target.tab !== "reader" && !(await flush(false))))
+      return false;
+    if (groupsRef.current.find((g) => g.id === groupId)?.path !== target.path) return false;
     const targetBuffer = buffersRef.current[target.path];
     next = editorView(
       editorFileKind(project, target.path),
@@ -1266,13 +1384,33 @@ export const Workspace = forwardRef<
       tab: next,
       keepVisual: undefined,
       outlinePath: undefined,
+      resume: undefined,
+      readingPosition: undefined,
       revision: g.revision + 1,
     }));
+    return true;
   }
-  function updateContent(path: string, content: string) {
+  async function resumeDocument() {
+    if (!resumePosition || !project || !(await flush(false))) return;
+    const loaded = projectRef.current ?? project;
+    const entry = loaded.contents.entries.find(({ id, path }) =>
+      id === resumePosition.entryId && path === resumePosition.path,
+    ) ?? loaded.contents.entries.find(({ path }) => path === resumePosition.path);
+    const position = {
+      ...resumePosition,
+      entryId: entry?.id,
+      view: resumePosition.view === "reader" && !entry ? "preview" as const : resumePosition.view,
+    };
+    await loadFile(
+      position.path, loaded, position.view, activeId,
+      position.entryId, true, undefined, position,
+    );
+    setResumePosition(undefined);
+  }
+  function updateContent(path: string, content: string, pagination?: DocumentPages) {
     const current = buffersRef.current[path];
     if (current && current.content !== content)
-      putBuffer({ ...current, content, pagination: undefined });
+      putBuffer({ ...current, content, pagination });
   }
   async function revert() {
     if (
@@ -1540,6 +1678,18 @@ export const Workspace = forwardRef<
       ? t("已自动分类导入 {0} 项资源。", result.count)
       : t("已导入 {0} 项资源至 {1}。", result.count));
   }
+  async function packProjectFont() {
+    if (!(await flush()) || !projectRef.current) return;
+    const result = await desktop().invoke("packFont", file, projectRef.current.revision);
+    if (!result) return;
+    await refreshRef.current();
+    setSettings((current) => ({
+      ...current,
+      appearance: { ...current.appearance, font_family: result.path },
+    }));
+    setSettingsDirty(true);
+    notify(t("字体已打包至 {0}。", result.path));
+  }
   async function extractResources(paths: string[], projectFiles = false) {
     if (!project) return;
     const result = await desktop().invoke(
@@ -1596,32 +1746,29 @@ export const Workspace = forwardRef<
         action,
       ]),
     );
+    let compositionTarget: EventTarget | null = null;
+    const startComposition = (event: CompositionEvent) => { compositionTarget = event.target; };
+    const endComposition = () => { compositionTarget = null; };
     const keydown = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (
         !projectRef.current ||
-        event.defaultPrevented ||
+        event.defaultPrevented || compositionTarget === event.target ||
         target?.closest('dialog, [role="dialog"], [role="listbox"]')
       )
         return;
+      const key = shortcutFromEvent(event);
+      if (!key) return;
+      const action = bindings.get(key);
       if (deliveryOpen) {
-        const action = bindings.get(shortcutFromEvent(event) ?? "");
-        if (action && "id" in action && action.id === "save") {
+        if (action?.id === "save") {
           event.preventDefault();
           event.stopPropagation();
           if (!event.repeat) void shortcutActions.current.saveDocument();
         }
         return;
       }
-      const mac = /Mac/i.test(navigator.platform);
-      if (
-        event.key.toLowerCase() === "f" &&
-        !event.altKey &&
-        !event.shiftKey &&
-        (mac
-          ? event.metaKey && !event.ctrlKey
-          : event.ctrlKey && !event.metaKey)
-      ) {
+      if (key === "Ctrl+F") {
         const groupId = target?.closest<HTMLElement>("[data-editor-group]")
           ?.dataset.editorGroup;
         const editable = target?.closest(
@@ -1641,24 +1788,11 @@ export const Workspace = forwardRef<
         }
         return;
       }
-      const key = shortcutFromEvent(event);
-      if (!key) return;
-      const action = bindings.get(key);
-      const groupId = target
-        ?.closest('.document-body[contenteditable="true"]')
-        ?.closest<HTMLElement>("[data-editor-group]")?.dataset.editorGroup;
-      if (!action) {
-        if (groupId && visualNativeKeys.has(key)) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        return;
-      }
+      // The editor handles visual actions after ProseMirror has read the
+      // latest native selection. Workspace actions remain in capture phase.
+      if (!action || isVisualShortcut(action)) return;
       const state = shortcutActions.current;
-      if ("level" in action || "command" in action) {
-        if (!groupId) return;
-        if (!event.repeat) groupEditors.current[groupId]?.format(action);
-      } else if (!event.repeat) {
+      if (!event.repeat) {
         if (action.id === "save") void state.saveDocument();
         else if (!locked.current) {
           if (action.id === "split") state.splitEditor();
@@ -1673,8 +1807,16 @@ export const Workspace = forwardRef<
       event.preventDefault();
       event.stopPropagation();
     };
+    window.addEventListener("compositionstart", startComposition, true);
+    window.addEventListener("compositionend", endComposition, true);
+    window.addEventListener("focusout", endComposition, true);
     window.addEventListener("keydown", keydown, true);
-    return () => window.removeEventListener("keydown", keydown, true);
+    return () => {
+      window.removeEventListener("compositionstart", startComposition, true);
+      window.removeEventListener("compositionend", endComposition, true);
+      window.removeEventListener("focusout", endComposition, true);
+      window.removeEventListener("keydown", keydown, true);
+    };
   }, [shortcutsEnabled, deliveryOpen, preferences.shortcuts, activeId]);
   function startResize(event: React.MouseEvent) {
     const start = event.clientX,
@@ -1902,6 +2044,8 @@ export const Workspace = forwardRef<
             active={activeHeading}
             enabled={isMarkdown}
             follow={followOutline}
+            move={moveSection}
+            moved={movedHeading}
             emptyMessage={
               outlineSource.length > previewTextLimit
                 ? t("文稿较大，实时大纲已暂停。")
@@ -1975,6 +2119,13 @@ export const Workspace = forwardRef<
             </span>
           </div>
           <div className="button-row document-topbar-actions">
+            {!deliveryOpen && resumePosition && project && isManuscript(project, resumePosition.path) &&
+              project.files.some(({ path, is_text }) => path === resumePosition.path && is_text) && (
+              <button type="button" className="button small" disabled={busy}
+                title={resumePosition.path} onClick={() => void execute(resumeDocument)}>
+                {t("从上次关闭的位置开始")}
+              </button>
+            )}
             <button
               className="icon-button"
               aria-label={t("打开文件所在位置")}
@@ -2156,6 +2307,7 @@ export const Workspace = forwardRef<
                 initialFragment={index === 0 ? initialFragment : undefined}
                 settings={settings}
                 projectFont={projectFont}
+                packProjectFont={packProjectFont}
                 modelPool={modelPool}
                 onScroll={(ratio) => syncScroll(group.id, ratio)}
                 getScrollProgress={() =>
@@ -2168,6 +2320,7 @@ export const Workspace = forwardRef<
                 theme={theme}
                 pageLength={pageLength}
                 showPageMarkers={preferences.showPageMarkers !== false}
+                allowTableHorizontalScroll={preferences.allowTableHorizontalScroll !== false}
                 reading={reading}
                 changeReading={changeReading}
                 ask={ask}
@@ -2177,6 +2330,7 @@ export const Workspace = forwardRef<
                 busy={busy}
                 editingBlocked={operation === "work" || publicationBusy}
                 shortcutOverrides={preferences.shortcuts}
+                shortcutsEnabled={shortcutsEnabled && !deliveryOpen}
                 directoryDirty={directoryDirty}
                 notify={notify}
                 execute={execute}
@@ -2216,6 +2370,7 @@ export const Workspace = forwardRef<
                 }}
                 changeTab={(tab) => changeTab(tab, group.id)}
                 updateContent={(content) => updateContent(group.path, content)}
+                updateSectionContent={(content, pagination) => updateContent(group.path, content, pagination)}
                 setPagination={(content, pagination) => {
                   const current = buffersRef.current[group.path];
                   if (
@@ -2234,7 +2389,7 @@ export const Workspace = forwardRef<
                         current.pagination.pages[index].readOnly,
                     )
                   )
-                    return [];
+                    return;
                   const next = replacePages(
                     current.content,
                     current.pagination,
@@ -2246,7 +2401,7 @@ export const Workspace = forwardRef<
                       content: next.content,
                       pagination: next.pagination,
                     });
-                  return next.applied;
+                  return next;
                 }}
                 importResources={() => insertFromPicker(group.id)}
                 pasteImage={(image) => pasteImage(group.id, image)}
@@ -2278,17 +2433,15 @@ export const Workspace = forwardRef<
             {hasUnsavedChanges ? t("有未保存的更改") : t("所有更改已保存")}
             {busy ? t(" · 正在处理") : ""}
           </div>
-          <span>
-            {tab === "source"
-              ? t("行 {0}，列 {1}", cursor.line, cursor.column)
-              : ""}
-            {settings.preview.show_word_count && isMarkdown
+          <span className="document-counters">
+            {settings.preview.show_word_count && project && !standalone
               ? t(
-                  " · {0}{1} 字符",
-                  markdown.length > previewTextLimit ? t("约 ") : "",
-                  characterCount.toLocaleString(appLocale()),
+                  "{0} / 本文 {1} 字符 / 全部文档 {2} 字符",
+                  cursorLabel,
+                  currentCount?.toLocaleString(appLocale()) ?? "—",
+                  characterCounts.total.toLocaleString(appLocale()),
                 )
-              : ""}
+              : tab === "source" ? cursorLabel : ""}
           </span>
           <div className="zoom-control">
             <button

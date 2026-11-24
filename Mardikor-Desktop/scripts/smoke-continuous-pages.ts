@@ -181,6 +181,7 @@ try {
   await expect
     .poll(() => fs.readFile(file, "utf8"))
     .toContain("第二页编辑验证");
+  await expect(page.locator(".document-topbar .save-label")).toHaveText("已保存");
   await expect(editor).toBeFocused();
   await page.keyboard.press("Control+End");
   await expect(pane.locator(`[data-editor-page="${target + 2}"]`)).toHaveCount(
@@ -189,6 +190,7 @@ try {
   await expect(editor).toHaveAttribute("data-test-editor-instance", "original");
   await page.keyboard.press("Control+z");
   await expect(editor).not.toContainText("第二页编辑验证");
+  await expect(page.locator(".editor-statusbar")).toContainText("有未保存的更改");
   await page.keyboard.press("Control+s");
   await expect.poll(() => fs.readFile(file, "utf8")).toBe(source);
 
@@ -290,8 +292,12 @@ try {
       .locator(".document-canvas")
       .evaluate((node) => node.scrollWidth - node.clientWidth),
   ).toBeLessThan(4);
+  await window.getByRole("tab", { name: "源码", exact: true }).click();
+  const outline = window.locator(".heading-outline");
+  await expect(outline).toContainText("文稿较大，实时大纲已暂停。");
+  await expect(outline.locator('[draggable="true"], .heading-outline-actions')).toHaveCount(0);
   console.log(
-    "Over two million characters stay bounded and can jump to the last page.",
+    "Over two million characters stay bounded, can jump to the last page, and suppress section moves.",
   );
 } finally {
   await large.close();
